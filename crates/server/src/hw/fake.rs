@@ -549,6 +549,15 @@ impl FakeFr7 {
         self.head().web_requests.clone()
     }
 
+    /// A controller that connects sends stop until the head stands still, in case one that
+    /// died left it moving. Wait for that to end, check that nothing else was sent, and
+    /// forget it, so that a test can go on to say what is sent afterwards.
+    pub fn settle_after_connect(&self) {
+        let stops = [visca::pan_tilt_stop(), visca::zoom_stop(), visca::focus_stop()];
+        settle("the camera", || self.commands(), |c| stops.contains(c));
+        self.clear_seen();
+    }
+
     pub fn clear_seen(&self) {
         let mut h = self.head();
         h.seen.clear();
@@ -784,6 +793,12 @@ impl FakeAutoPod {
         self.seen().into_iter().filter(|c| !questions.contains(&c.as_str())).collect()
     }
 
+    /// As `FakeFr7::settle_after_connect`, for the column.
+    pub fn settle_after_connect(&self) {
+        settle("the pedestal", || self.orders(), |c| c == autopod::STOP);
+        self.clear_seen();
+    }
+
     pub fn clear_seen(&self) {
         self.column().seen.clear();
     }
@@ -801,4 +816,20 @@ impl Drop for FakeAutoPod {
     fn drop(&mut self) {
         self.quit.store(true, Ordering::Relaxed);
     }
+}
+
+/// Wait until `sent` has stopped growing, then check that it holds stops and nothing else.
+fn settle<T: std::fmt::Debug>(who: &str, sent: impl Fn() -> Vec<T>, is_stop: impl Fn(&T) -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let (mut count, mut since) = (sent().len(), Instant::now());
+    while count == 0 || since.elapsed() < Duration::from_millis(250) {
+        assert!(Instant::now() < deadline, "{who} was still being sent commands after connecting: {:?}", sent());
+        std::thread::sleep(Duration::from_millis(10));
+        let now = sent().len();
+        if now != count {
+            (count, since) = (now, Instant::now());
+        }
+    }
+    let all = sent();
+    assert!(all.iter().all(is_stop), "{who} was sent more than a stop on connecting: {all:?}");
 }

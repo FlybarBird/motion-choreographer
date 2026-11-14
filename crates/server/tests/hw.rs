@@ -219,6 +219,9 @@ fn the_rig_follows_a_moving_target_and_touches_nothing_until_it_is_driven() {
     assert_eq!(rig.status().iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["FR7", "AutoPod+"]);
     assert_eq!(rig.status()[1].calibrated, Some(true));
 
+    // On connecting each adapter sends a stop, in case a server that died left the rig moving.
+    fr7.settle_after_connect();
+    pod.settle_after_connect();
     // Connected and idle, the adapters only ask where the rig is.
     std::thread::sleep(Duration::from_millis(400));
     assert!(fr7.commands().is_empty(), "idle sent {:02X?}", fr7.commands());
@@ -295,6 +298,7 @@ fn an_absolute_move_is_one_command_and_the_head_runs_its_own_ramp() {
     cfg.fr7_absolute_moves = true;
     let mut rig = HardwareRig::start(&cfg, &axes);
     wait_until("the camera answers", || rig.problem().is_none());
+    fr7.settle_after_connect();
 
     let ride = Ride { pan: 30.0, tilt: -10.0, seconds: 2.0 };
     let began = Instant::now();

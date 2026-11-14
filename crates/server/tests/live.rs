@@ -43,6 +43,9 @@ impl Rig {
                 && s.first().adapters[1].calibrated == Some(true)
         });
         assert!(st.telemetry.hardware);
+        // On connecting the server sends each device a stop. After that, nothing until Arm.
+        self.fr7.settle_after_connect();
+        self.pod.settle_after_connect();
         project
     }
 

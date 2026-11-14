@@ -431,6 +431,10 @@ fn run(cfg: PodConfig, state: Arc<Mutex<State>>) {
             let mm = height_mm(&cfg.map, raw);
             let (mode, limits, moved) = {
                 let mut s = lock();
+                // A server that died while live leaves the column on its last speed command.
+                if fresh && s.mode == Mode::Idle {
+                    s.mode = Mode::Stop;
+                }
                 let moved = s.connected && (raw - s.raw).abs() > 1.0;
                 s.raw = raw;
                 s.mm = mm;
