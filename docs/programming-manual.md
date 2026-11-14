@@ -76,10 +76,20 @@ Stop, Cue, Lock, Arm or Disarm, Record, the state chips, a one-line hint, the
 audio meters, and E-STOP at the far right.
 
 **Camera bar** (third row): one chip per camera in its own colour, with a dot
-for its state. Click a chip to select that camera. Hover it for detail.
+for its state. Click a chip to select that camera. Hover it for detail. At its
+right end is **Show settings**.
 
 **Tabs.** The rest of the window is panels you can drag by their tabs, split
 and regroup. **View > Reset layout** puts them back.
+
+**Show settings.** What belongs to the whole show and not to one song (the
+cameras, their rigs, lenses, positions, limits and keep-out rules, the frame
+rate, the stage model, the audio output and the timecode inputs) is set in one
+place. **Show settings** on the camera bar puts it where the panels are;
+**Close settings** or Esc brings the panels back. The header, the transport,
+E-STOP and the camera bar stay on screen and keep working. While it is open
+the keys that edit or move through the song do nothing: only Space, the
+camera keys and Cmd-S act. The setup guide goes through every page.
 
 | Tab | What it is for |
 | --- | --- |
@@ -89,7 +99,7 @@ and regroup. **View > Reset layout** puts them back.
 | Stage | The venue from outside, with every camera and its view cone |
 | Multiview | Every camera's picture at once |
 | Reference monitor | The frame of the reference video under the playhead |
-| Inspector | Whatever is selected: a move, a clip, a marker. With nothing selected, the song and the project. |
+| Inspector | Whatever is selected: a move, a clip, a marker. With nothing selected, the song. |
 | Rig controller | Hand control of the selected camera, its devices, and tracking while live |
 | Timeline | The song |
 | Graph editor | The selected clip as curves |
@@ -207,7 +217,7 @@ Click a clip to select it. **Shift-click** adds to the selection. Drag across
 empty space to draw a box round several. With several selected: drag to move
 them together, **Delete** removes them, **Cmd-D** copies them after the
 selection. Click empty space to select nothing, which is also how you get the
-song and project settings in the Inspector.
+song's name, start and length in the Inspector.
 
 ### The Inspector for a move
 
@@ -625,7 +635,7 @@ On a Mac, Cmd; elsewhere, Ctrl.
 | Cmd-S | Save |
 | `\` | Fit the song to the window |
 | F | Graph editor: fit the view |
-| Escape | Cancel a drag or close a dialog |
+| Escape | Cancel a drag, close a dialog, or close Show settings |
 | Shift while dragging | Snapping off. In the graph editor, keep to one direction. |
 | Alt while dragging | Copy a clip. In the graph editor, break a handle. Place a stamped file by hand. |
 | Arrows, `[` `]`, `,` `.` | With the Rig controller pad clicked: pan and tilt, zoom, elevation |

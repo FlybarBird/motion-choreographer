@@ -144,8 +144,17 @@ with its own axis lanes. A preset belongs to one camera and always lands on
 that camera's lane, whichever lane the pointer is over. A move can be dragged
 to another camera's lane afterwards.
 
-Cameras are added, named, reordered and removed in the Inspector with nothing
-selected, under **Cameras**. **Add a camera** copies the selected camera's
+Everything that belongs to the whole show and not to one song is in **Show
+settings**: press the button at the right end of the camera bar. It takes the
+place of the panels until **Close settings** or Esc; the header, the transport
+with E-STOP and the camera bar stay on screen. Its pages are listed at the
+left: the show (Cameras, Frame rate and faults, Stage model), the selected
+camera (Rig connection, Lens, Position on the stage, Rig limits, Keep-out
+rules) and the server (Audio output, Timecode inputs). Changing anything
+there needs the edit lease, with the show disarmed.
+
+Cameras are added, named, reordered and removed on its **Cameras** page.
+**Add a camera** copies the selected camera's
 lens, limits and rules onto a new one on the simulator, two metres to its
 right. Removing a camera removes its presets, and its clips block Arm until
 they are deleted. Rig limits, keep-out rules, the rig settings, the lens and
@@ -166,7 +175,7 @@ typed width), the focal length at the wide and long ends, and the widest
 aperture. The list offers the FR7 kit zoom (FE PZ 28-135mm F4 G OSS) and four
 other E-mount zooms; any other lens is typed in.
 
-From those the Inspector shows, for the zoom the camera is at now: the focal
+From those the **Lens** page of Show settings shows, for the zoom the camera is at now: the focal
 length, the angle of view (wide, high and diagonal), how far away the centre of
 the frame lands in the stage model, how wide and high the frame is there, and
 the range that is sharp at that distance. Tick **At a distance of** to work
@@ -183,13 +192,13 @@ The Program monitor is a rendering of the venue from where the camera stands.
 Until a model is imported it shows a small built-in stage. To use your own:
 
 - Drop an `.obj` or `.3ds` file on the window, or use **Import a model** in the
-  Inspector under **Stage** (or type its path in the field beside it).
+  Show settings under **Stage model** (or type its path in the field beside it).
 - An OBJ's `.mtl` file is read from the same folder for its colours. Textures
   are not used; each surface takes its material's colour.
 - The app reads the file and sends the server a compact mesh, so every station
   sees the same model. Up to 1.5 million triangles and 200 MB.
 
-The Inspector then shows the model's size in metres. If it is wrong, change
+The Stage model page then shows the model's size in metres. If it is wrong, change
 **One unit is** (millimetres, centimetres, metres, inches, feet; the first guess
 comes from the model's size) or **Up** (OBJ files are taken as Y up, 3DS as Z
 up). **Turned** and **Moved** place it; **Sit on the floor** puts its lowest
@@ -218,7 +227,7 @@ stage to it; **Fit** does so again. In the flat views **Cut** hides a ceiling or
 a near wall. Right-drag or Shift-drag slides the view and the scroll wheel
 zooms. Escape cancels a drag, and **Undo move** puts the last camera moved back.
 
-The same numbers are in the Inspector under **Position on the stage**: floor
+The same numbers are in Show settings under **Position on the stage**: floor
 position, heading, and the height of the lens above the floor with the column
 down. **Face the stage** turns the camera to the middle of the model and **Drop
 to the surface below** stands it on whatever is under it. Placing cameras needs
@@ -237,7 +246,7 @@ the server runs on. While a song plays free-run, the playhead is the count of
 samples the sound card has played, with the millisecond of jitter between its
 callbacks filtered out, so picture and sound cannot drift apart.
 
-Each output channel is routed in the Inspector (with nothing selected) to one of:
+Each output channel is routed in Show settings, under **Audio output**, to one of:
 
 - **Program**: the mono mix of every unmuted clip.
 - **LTC timecode**: the song's timecode, generated while it plays.
@@ -324,8 +333,7 @@ frame rate from the project is refused, and the bar says which rate arrived.
 Audio is sought to the code and pulled back in with a short crossfade whenever
 it is more than a frame out.
 
-The inputs are chosen in the Inspector with nothing selected, under **Timecode
-inputs**: the LTC device and channel, the MIDI port, the Art-Net address to
+The inputs are chosen in Show settings, under **Timecode inputs**: the LTC device and channel, the MIDI port, the Art-Net address to
 listen on. They are devices on the server machine.
 
 ### Files that carry timecode
@@ -438,9 +446,8 @@ against its tolerance.
 
 ## Limits and keep-out rules
 
-Project settings (the Inspector with nothing selected) hold, per axis, the
-range, top speed and top acceleration under **Rig limits**, and a
-list of **Keep-out rules** of the form "when elevation is below 200 mm, tilt
+Show settings holds, for each camera and per axis, the range, top speed and
+top acceleration under **Rig limits**, and a list of **Keep-out rules** of the form "when elevation is below 200 mm, tilt
 must be above -10 degrees".
 
 Both are checked twice. On the timeline, a clip that leaves the range or breaks
