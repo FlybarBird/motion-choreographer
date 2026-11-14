@@ -3,6 +3,7 @@
 pub mod audio;
 pub mod engine;
 pub mod http;
+pub mod lock;
 pub mod media;
 pub mod record;
 pub mod rig;

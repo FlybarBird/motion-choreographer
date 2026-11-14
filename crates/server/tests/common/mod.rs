@@ -1,7 +1,8 @@
 #![allow(dead_code)]
 
-use ptz_core::api::Status;
-use ptz_core::client::Api;
+use ptz_core::api::{MediaInfo, Status, TransportRequest};
+use ptz_core::client::{Api, ApiErr};
+use ptz_core::transport::Action;
 use ptz_server::engine::Config;
 use ptz_server::http::{self, Running};
 use std::path::{Path, PathBuf};
@@ -88,4 +89,25 @@ pub fn wait_for(api: &Api, mut done: impl FnMut(&Status) -> bool) -> Status {
         assert!(Instant::now() < deadline, "timed out waiting; last status: {st:?}");
         std::thread::sleep(Duration::from_millis(15));
     }
+}
+
+/// The message of a refusal with the given HTTP status; anything else fails the test.
+pub fn refused(result: Result<impl std::fmt::Debug, ApiErr>, code: u16) -> String {
+    match result {
+        Err(ApiErr::Refused { code: got, msg }) if got == code => msg,
+        other => panic!("expected a {code} refusal, got {other:?}"),
+    }
+}
+
+pub fn do_act(api: &Api, action: Action) -> Status {
+    api.act(action, &TransportRequest::default()).unwrap_or_else(|e| panic!("{action:?}: {e:?}"))
+}
+
+/// Write `bytes` to a fixture file and import it under `name`.
+pub fn import(api: &Api, t: &TestServer, name: &str, bytes: &[u8]) -> Result<MediaInfo, ApiErr> {
+    let dir = t.dir.join("fixtures");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(name);
+    std::fs::write(&path, bytes).unwrap();
+    api.upload_media(name, std::fs::File::open(path).unwrap())
 }

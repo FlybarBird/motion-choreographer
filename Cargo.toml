@@ -21,6 +21,7 @@ symphonia = { version = "0.6", default-features = false, features = ["wav", "aif
 rubato = "5"
 audioadapter-buffers = "5"
 midir = "0.11"
+socket2 = { version = "0.6", features = ["all"] }
 ureq = { version = "3", default-features = false, features = ["json"] }
 tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 md-5 = "0.10"
