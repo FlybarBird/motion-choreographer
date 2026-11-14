@@ -82,7 +82,65 @@ the live loop sends to every camera twenty times a second.
 
 ## 2. Install
 
-### On a Mac
+There are two ways to install: build **installers** once and run them on each
+machine, or build and install straight onto the Mac you are sitting at.
+
+### With the installers
+
+On a machine with the build tools above, from the project folder:
+
+```sh
+make package
+```
+
+That writes two installers into `dist/`, for the kind of machine it was run on:
+
+| Installer | On a Mac | On Linux | Use it on |
+| --- | --- | --- | --- |
+| The app, with the show server as an option | `PTZ-Programmer-<version>-macos-<arch>.pkg` | `ptz-programmer-<version>-linux-<arch>.run` | Every station with a screen |
+| The show server alone | `PTZ-Server-<version>-macos-<arch>.pkg` | `ptz-server-<version>-linux-<arch>.run` | A machine that only runs the show |
+
+A Mac installer has to be built on a Mac: an Apple Silicon one on an Apple
+Silicon Mac, an Intel one on an Intel Mac. The machines you install on need
+none of the build tools.
+
+**Which parts go where.** The show server runs on one machine. Every station
+needs the app. So:
+
+- one computer doing everything: the app installer, with the server;
+- the show machine plus remote stations: the app installer with the server on
+  the show machine (or the server installer, if it has no screen), and the app
+  installer *without* the server on each remote station.
+
+**On a Mac**, double-click the `.pkg`. The **Installation Type** step lists
+two parts: *PTZ Programmer*, which is always installed, and *Show server and
+tools*, which is ticked to start with. Clear it for a station that only
+connects to a server elsewhere.
+
+- The installers are not signed with an Apple Developer ID, so the first time
+  macOS will not open one on a double-click. Right-click it and choose
+  **Open**, or run `sudo installer -pkg <file> -target /`.
+- The app goes to `/Applications/PTZ Programmer.app`.
+- The server and tools (`ptz-server`, `ptz-probe`, `ptz-bringup`) go to
+  `/usr/local/ptz-programmer/bin`. New terminal windows find them by name.
+
+**On Linux**, run the installer:
+
+```sh
+sh ptz-programmer-<version>-linux-<arch>.run        # asks whether to install the server too
+sh ptz-programmer-<version>-linux-<arch>.run --no-server
+sh ptz-server-<version>-linux-<arch>.run
+```
+
+It installs under `~/.local` (`--prefix` chooses somewhere else), adds PTZ
+Programmer to the applications menu, and says so if a library the programs
+need is missing. `--help` lists the options.
+
+An app installed without the server greys out **Start a server on this
+computer** on the connect screen. Enter the address of the show machine
+instead.
+
+### Straight onto this Mac
 
 From the project folder:
 
@@ -115,6 +173,10 @@ the app while it is running. The show data is not touched.
 links. It leaves the show data (`~/PTZProgrammer`) and the app's settings
 file (see [Where things are kept](#where-things-are-kept)); delete those by
 hand if you want them gone.
+
+This way of installing keeps everything in your own home folder, with the
+server inside the app. Do not mix it with the installers on one Mac: remove
+one before using the other.
 
 ### From source, on a Mac or Linux
 
@@ -676,16 +738,22 @@ way; copy the log off the machine after a show if it matters.
 
 ### Update
 
-Back up the data folder, quit the app, stop the server, pull the new source
-and run `make install-mac` again. It replaces the app and the tools. The data
+Back up the data folder, quit the app, stop the server, pull the new source,
+then build and run the installers again (or `make install-mac`, if that is how
+it was installed). That replaces the app and the tools. The data
 folder is not touched, and a project saved by an earlier version is brought up
 to date when the server opens it.
 
 ### Remove
 
-`make uninstall-mac` removes `~/Applications/PTZ Programmer.app` and the three
-links in `~/.local/bin`. The data folder and the app's settings file stay
-until you delete them.
+How to remove it depends on how it was installed. In every case the data
+folder and the app's settings file stay until you delete them.
+
+| Installed with | Remove with |
+| --- | --- |
+| The Mac installers | `sudo rm -rf "/Applications/PTZ Programmer.app" /usr/local/ptz-programmer /etc/paths.d/ptz-programmer`, then `sudo pkgutil --forget com.ptzprogrammer.app` and `sudo pkgutil --forget com.ptzprogrammer.server` |
+| The Linux installers | The same installer with `--uninstall` (the app installer also takes `--with-server` to remove the server with it) |
+| `make install-mac` | `make uninstall-mac` |
 
 ---
 

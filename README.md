@@ -66,6 +66,39 @@ removes the app and the links and leaves the show data alone.
 The ad hoc signature is enough for the Mac that built it. A second Mac, for a
 remote station, builds its own copy the same way.
 
+### Installers
+
+```sh
+make package
+```
+
+Builds for the machine it is run on and writes two installers into `dist/`:
+
+| | On a Mac | On Linux |
+| --- | --- | --- |
+| The app, with the show server as an option | `PTZ-Programmer-<version>-macos-<arch>.pkg` | `ptz-programmer-<version>-linux-<arch>.run` |
+| The show server and tools alone | `PTZ-Server-<version>-macos-<arch>.pkg` | `ptz-server-<version>-linux-<arch>.run` |
+
+The app installer always installs the app. **Show server and tools**
+(`ptz-server`, `ptz-probe`, `ptz-bringup`) is a checkbox in the Mac installer,
+ticked to start with, and a question in the Linux one (`--with-server` and
+`--no-server` answer it in advance). Clear it on a station that only connects
+to a server elsewhere; use the server installer on a machine that runs the
+show without a screen.
+
+- **Mac:** the app goes to `/Applications`, the server and tools to
+  `/usr/local/ptz-programmer/bin`, which the installer puts on PATH for new
+  terminals. The packages are not signed with a Developer ID unless
+  `PTZ_INSTALLER_SIGN` names one, so on another Mac open one with a
+  right-click and **Open**, or run `sudo installer -pkg <file> -target /`.
+- **Linux:** `sh ptz-programmer-<version>-linux-<arch>.run` installs under
+  `~/.local` (or `--prefix`), with an entry in the applications menu.
+  `--uninstall` removes what it installed.
+
+An app installed without the server greys out **Start a server on this
+computer** and says why. A Mac installer has to be built on a Mac, and one for
+Apple Silicon on an Apple Silicon Mac.
+
 ### A remote operator station
 
 ```sh
