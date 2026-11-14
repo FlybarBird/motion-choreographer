@@ -514,17 +514,28 @@ impl Shell {
         if !matches!(self.dialog, Dialog::None) {
             return;
         }
-        let cmd = ctx.input(|i| i.modifiers.command);
         let shift = ctx.input(|i| i.modifiers.shift);
         let pressed = |k: Key| ctx.input(|i| i.key_pressed(k));
-        if cmd && pressed(Key::Z) {
-            if shift {
+        // The modifiers that came with the key, not those held when the frame ends:
+        // a quick Cmd-Z can be pressed and let go inside one frame.
+        let chord = |k: Key| {
+            ctx.input(|i| {
+                i.events.iter().find_map(|e| match e {
+                    egui::Event::Key { key, pressed: true, modifiers, .. } if *key == k => Some(*modifiers),
+                    _ => None,
+                })
+            })
+        };
+        let with_cmd = |k: Key| chord(k).is_some_and(|m| m.command);
+        let alone = |k: Key| chord(k).is_some_and(|m| !m.command);
+        if let Some(m) = chord(Key::Z).filter(|m| m.command) {
+            if m.shift {
                 s.redo();
             } else {
                 s.undo();
             }
         }
-        if cmd && pressed(Key::S) {
+        if with_cmd(Key::S) {
             if let Some(song) = &s.song {
                 s.link.send(Cmd::Save(song.id.clone()));
             }
@@ -532,7 +543,7 @@ impl Shell {
         if ctx.text_edit_focused() {
             return;
         }
-        if cmd && pressed(Key::D) {
+        if with_cmd(Key::D) {
             timeline_ui::duplicate_selection(s);
         }
         if pressed(Key::Escape) {
@@ -568,13 +579,13 @@ impl Shell {
         if pressed(Key::Backslash) {
             s.fit_requested = true;
         }
-        if pressed(Key::M) && !cmd {
+        if alone(Key::M) {
             timeline_ui::add_marker(s);
         }
         if pressed(Key::Delete) || pressed(Key::Backspace) {
             timeline_ui::delete_selection(s);
         }
-        if pressed(Key::K) && !cmd {
+        if alone(Key::K) {
             crate::graph::add_key_at_playhead(s);
         }
     }

@@ -162,6 +162,19 @@ fn dragging_the_end_of_a_move_makes_it_longer_with_custom_time() {
     r.harness.key_press_modifiers(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::Z);
     r.harness.run_steps(2);
     assert_eq!(r.song().motion_clip(&id).unwrap(), &after);
+
+    // A chord pressed and let go inside one frame still counts: no modifier is held when the frame ends.
+    for pressed in [true, false] {
+        r.harness.event(egui::Event::Key {
+            key: egui::Key::Z,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND,
+        });
+    }
+    r.harness.run_steps(2);
+    assert_eq!(r.song().motion_clip(&id).unwrap(), &before);
 }
 
 #[test]
