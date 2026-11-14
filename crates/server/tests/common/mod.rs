@@ -49,6 +49,8 @@ impl TestServer {
 
     fn launch(dir: PathBuf, key: Option<String>, tweak: impl FnOnce(&mut Config)) -> TestServer {
         let mut cfg = Config::new(&dir);
+        // Tests never open a sound card: the renderer runs on the monotonic clock.
+        cfg.audio = ptz_server::engine::AudioChoice::Off;
         tweak(&mut cfg);
         let running = http::start(&cfg, "127.0.0.1:0", key.clone()).expect("server starts");
         TestServer { dir, url: running.url(), key, running: Some(running), keep: false }

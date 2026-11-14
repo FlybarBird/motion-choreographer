@@ -26,7 +26,7 @@ run-app:
 probe:
 	cargo build -p ptz-server --bins
 	@dir=$$(mktemp -d); \
-	target/debug/ptz-server --data "$$dir" --bind 127.0.0.1:$(PROBE_PORT) >"$$dir/server.log" 2>&1 & pid=$$!; \
+	target/debug/ptz-server --data "$$dir" --bind 127.0.0.1:$(PROBE_PORT) --no-audio >"$$dir/server.log" 2>&1 & pid=$$!; \
 	sleep 1; \
 	target/debug/ptz-probe --server http://127.0.0.1:$(PROBE_PORT); status=$$?; \
 	kill $$pid 2>/dev/null; wait $$pid 2>/dev/null; rm -rf "$$dir"; \

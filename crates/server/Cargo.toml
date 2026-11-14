@@ -33,6 +33,7 @@ futures-util = { workspace = true }
 cpal = { workspace = true }
 symphonia = { workspace = true }
 rubato = { workspace = true }
+audioadapter-buffers = { workspace = true }
 midir = { workspace = true }
 ureq = { workspace = true }
 md-5 = { workspace = true }

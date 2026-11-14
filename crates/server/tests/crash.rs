@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 fn launch(dir: &std::path::Path) -> (Child, String) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_ptz-server"))
-        .args(["--data", dir.to_str().unwrap(), "--bind", "127.0.0.1:0"])
+        .args(["--data", dir.to_str().unwrap(), "--bind", "127.0.0.1:0", "--no-audio"])
         .stdout(Stdio::piped())
         .spawn()
         .expect("ptz-server binary");
