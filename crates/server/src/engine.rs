@@ -1005,13 +1005,22 @@ impl Show {
             None => Err("the pass has no usable file name".into()),
         };
         if let Err(e) = &saved {
-            self.log("record_warning", json!({ "song": song_id, "pass": pass.id, "problem": format!("Raw samples were not kept: {e}") }));
+            self.log(
+                "record_warning",
+                json!({ "song": song_id, "pass": pass.id, "problem": format!("Raw samples were not kept: {e}") }),
+            );
         }
         let curves = record::fit_pass(&pass.samples, 1.0);
         let keys: BTreeMap<Axis, usize> = curves.iter().map(|(a, k)| (*a, k.len())).collect();
         let Some(entry) = self.songs.get(&song_id) else { return };
-        let punched =
-            edit::punch_keys(&entry.song, &self.project, pass.start_frame, frames - 1, curves, saved.is_ok().then(|| pass.id.clone()));
+        let punched = edit::punch_keys(
+            &entry.song,
+            &self.project,
+            pass.start_frame,
+            frames - 1,
+            curves,
+            saved.is_ok().then(|| pass.id.clone()),
+        );
         match punched {
             Ok((song, clip)) => match self.replace_working(&song_id, song, "record") {
                 Ok(_) => self.log(
@@ -1056,7 +1065,10 @@ impl Show {
         let curves = record::fit_pass(&samples, req.scale);
         let song = edit::replace_curves(&entry.song, &self.project, clip_id, curves).map_err(|r| Fail::invalid(r.to_string()))?;
         let out = self.replace_working(&song_id, song, "refit")?;
-        self.log("record_refit", json!({ "song": song_id, "clip": clip_id, "pass": pass_id_of(&out.song, clip_id), "scale": req.scale }));
+        self.log(
+            "record_refit",
+            json!({ "song": song_id, "clip": clip_id, "pass": pass_id_of(&out.song, clip_id), "scale": req.scale }),
+        );
         Ok(out)
     }
 

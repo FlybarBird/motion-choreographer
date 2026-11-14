@@ -208,7 +208,12 @@ async fn estop_reset(State(app): State<App>, Client(c): Client) -> Reply<Status>
     Ok(Json(s.status(&c)))
 }
 
-async fn refit(State(app): State<App>, Client(c): Client, Path(clip): Path<String>, Json(req): Json<Refit>) -> Reply<WorkingSong> {
+async fn refit(
+    State(app): State<App>,
+    Client(c): Client,
+    Path(clip): Path<String>,
+    Json(req): Json<Refit>,
+) -> Reply<WorkingSong> {
     Ok(Json(lock(&app.show).refit(&c, &clip, &req)?))
 }
 
