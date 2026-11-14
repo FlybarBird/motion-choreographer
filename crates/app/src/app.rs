@@ -459,6 +459,8 @@ impl Shell {
         if serde_json::to_string(&self.dock).unwrap_or_default() != before {
             self.layout_changed = true;
         }
+        // Whatever was or was not drawn above, this is where a jog is sent, changed or stopped.
+        crate::rig_ui::settle(ui.ctx(), &mut self.session);
 
         if let Some(path) = self.session.stage_import_wanted.take() {
             self.import_stage(path);

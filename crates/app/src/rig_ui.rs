@@ -31,7 +31,14 @@ pub struct Controller {
     /// The pointer was already down on the controller last frame.
     pressed: bool,
     last_sent: Option<Instant>,
-    moving: bool,
+    /// The camera this station is moving by hand now. Only [`Controller::settle`] changes it, and it
+    /// never lets go of a camera without sending it a stop.
+    moving: Option<String>,
+    /// What the controller on the screen asked for in this frame. Nothing, when it was not drawn.
+    ask: Option<Ask>,
+    /// The rig was stopped, or kept from starting, with a control still held: the control has to be
+    /// let go before it moves anything again.
+    let_go_first: bool,
     /// The controller has keyboard focus, so the arrow keys drive the rig, not the playhead.
     pub keyboard: bool,
     preset_name: String,
@@ -46,7 +53,9 @@ impl Default for Controller {
             held: None,
             pressed: false,
             last_sent: None,
-            moving: false,
+            moving: None,
+            ask: None,
+            let_go_first: false,
             keyboard: false,
             preset_name: String::new(),
             probe: None,
@@ -54,24 +63,74 @@ impl Default for Controller {
     }
 }
 
+/// What the controller asks for in one frame.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Ask {
+    /// The camera in hand.
+    pub camera: String,
+    /// How far the pad, the sliders and the keys are pushed, as a velocity.
+    pub jog: Jog,
+    /// Whether this station may move the rig by hand now. See [`blocked`].
+    pub allowed: bool,
+}
+
 impl Controller {
-    /// What to send now, if anything: the velocity again every `SEND_EVERY`
-    /// while it is not zero, and a single stop when it returns to zero.
-    pub fn due(&mut self, want: Jog, now: Instant) -> Option<Jog> {
-        if want.is_zero() {
-            if self.moving {
-                self.moving = false;
-                self.last_sent = Some(now);
-                return Some(Jog::default());
+    /// The one place a jog is decided: what to send now, and to which camera.
+    ///
+    /// A camera is moved only while the controller is on the screen asking for it, the operator's hands
+    /// are on this window (`hands_on`: it has the focus and no dialog is over it) and moving is allowed.
+    /// The velocity goes out again every `SEND_EVERY`. The moment any of that stops being so, or the camera
+    /// in hand is another one, the camera that was moving is sent a stop. After a stop that the operator
+    /// did not make by letting go, nothing moves until the control has been let go and pressed again.
+    pub fn settle(&mut self, hands_on: bool, now: Instant) -> Vec<(String, Jog)> {
+        let ask = self.ask.take();
+        match &ask {
+            Some(ask) if ask.jog.is_zero() => self.let_go_first = false,
+            Some(ask) => {
+                let another_camera = self.moving.as_ref().is_some_and(|camera| *camera != ask.camera);
+                if !hands_on || !ask.allowed || another_camera {
+                    self.let_go_first = true;
+                }
             }
-            return None;
+            None => {
+                if self.moving.is_some() {
+                    self.let_go_first = true;
+                }
+            }
         }
-        if self.moving && self.last_sent.is_some_and(|t| now.duration_since(t) < SEND_EVERY) {
-            return None;
+        let want = ask.filter(|ask| hands_on && ask.allowed && !self.let_go_first && !ask.jog.is_zero());
+
+        let mut send = Vec::new();
+        if let Some(camera) = self.moving.take_if(|camera| want.as_ref().is_none_or(|ask| ask.camera != *camera)) {
+            send.push((camera, Jog::default()));
+            self.last_sent = Some(now);
         }
-        self.moving = true;
-        self.last_sent = Some(now);
-        Some(want)
+        if let Some(ask) = want {
+            let due = self.moving.is_none() || self.last_sent.is_none_or(|t| now.duration_since(t) >= SEND_EVERY);
+            if due {
+                self.last_sent = Some(now);
+                send.push((ask.camera.clone(), ask.jog));
+            }
+            self.moving = Some(ask.camera);
+        }
+        send
+    }
+
+    /// The control in hand moves nothing until it is let go and pressed again.
+    pub fn waits_to_be_let_go(&self) -> bool {
+        self.let_go_first
+    }
+}
+
+/// Send what the hand controls ask for. Called once a frame, after the window has been drawn, whether the
+/// controller was drawn or not: that is how a camera is stopped when the controller is no longer there.
+pub fn settle(ctx: &egui::Context, s: &mut Session) {
+    let hands_on = ctx.input(|i| i.focused) && !crate::app::modal_open(ctx);
+    for (camera, jog) in s.rig.settle(hands_on, Instant::now()) {
+        s.link.send(Cmd::Jog(camera, jog));
+    }
+    if s.rig.moving.is_some() {
+        ctx.request_repaint_after(SEND_EVERY);
     }
 }
 
@@ -277,15 +336,13 @@ fn controller(ui: &mut Ui, s: &mut Session) {
     };
     let from_keys = if focused { ui.input(|i| key_jog(|k| i.key_down(k))) } else { Jog::default() };
     let stick = combine(from_pointer, from_keys, 1.0);
-    let want = if why.is_some() { Jog::default() } else { combine(from_pointer, from_keys, s.rig.speed) };
-    if let Some(jog) = s.rig.due(want, Instant::now()) {
-        s.link.send(Cmd::Jog(s.cam_id().to_string(), jog));
-    }
-    if !want.is_zero() {
-        ui.ctx().request_repaint_after(SEND_EVERY);
-    }
+    // Asked for here; sent, or not, by `settle` when the frame is done.
+    let ask = Ask { camera: s.cam_id().to_string(), jog: combine(from_pointer, from_keys, s.rig.speed), allowed: why.is_none() };
+    s.rig.ask = Some(ask);
+    let let_go = s.rig.waits_to_be_let_go() && why.is_none();
 
-    paint_surface(ui, s, &surface, if why.is_some() { Jog::default() } else { stick }, focused, why.is_some());
+    let at_rest = why.is_some() || let_go;
+    paint_surface(ui, s, &surface, if at_rest { Jog::default() } else { stick }, focused, why.is_some());
     if let Some(control) = resp.hover_pos().and_then(|p| surface.control_at(p)) {
         if why.is_none() {
             ui.ctx().set_cursor_icon(if matches!(control, Control::Pad) {
@@ -299,6 +356,9 @@ fn controller(ui: &mut Ui, s: &mut Session) {
     match &why {
         Some(why) => {
             ui.label(RichText::new(why).color(AMBER).small());
+        }
+        None if let_go => {
+            ui.label(RichText::new("The rig was stopped. Let go, then press again to move it.").color(AMBER).small());
         }
         None if focused => {
             ui.label(RichText::new("Keys: arrows pan and tilt,  [ ]  zoom,  , .  elevation").color(BLUE).small());
@@ -522,19 +582,61 @@ mod tests {
         let t0 = Instant::now();
         let ms = |n: u64| t0 + Duration::from_millis(n);
         let jog = Jog { pan: 0.2, ..Jog::default() };
-        assert_eq!(c.due(Jog::default(), ms(0)), None, "nothing is sent while nothing is held");
+        let frame = |c: &mut Controller, jog: Jog, at: u64| {
+            c.ask = Some(Ask { camera: "cam1".into(), jog, allowed: true });
+            c.settle(true, ms(at))
+        };
+        let to_cam1 = |jog: Jog| vec![("cam1".to_string(), jog)];
+        assert_eq!(frame(&mut c, Jog::default(), 0), vec![], "nothing is sent while nothing is held");
         // 60 frames a second for one second: about 30 messages, never more than 250 ms apart.
         let mut sent = Vec::new();
-        for frame in 0..60u64 {
-            if c.due(jog, ms(10 + frame * 1000 / 60)).is_some() {
-                sent.push(10 + frame * 1000 / 60);
+        for n in 0..60u64 {
+            if !frame(&mut c, jog, 10 + n * 1000 / 60).is_empty() {
+                sent.push(10 + n * 1000 / 60);
             }
         }
         assert_eq!(sent[0], 10, "the first movement goes out at once");
         assert!((28..=31).contains(&sent.len()), "{} messages in a second", sent.len());
         assert!(sent.windows(2).all(|w| w[1] - w[0] <= 50), "gaps stay far inside the server's 250 ms watchdog");
-        assert_eq!(c.due(Jog::default(), ms(1020)), Some(Jog::default()), "release stops the rig at once");
-        assert_eq!(c.due(Jog::default(), ms(1040)), None, "and only once");
-        assert_eq!(c.due(jog, ms(1041)), Some(jog), "a new press does not wait out the interval");
+        assert_eq!(frame(&mut c, Jog::default(), 1020), to_cam1(Jog::default()), "release stops the rig at once");
+        assert_eq!(frame(&mut c, Jog::default(), 1040), vec![], "and only once");
+        assert_eq!(frame(&mut c, jog, 1041), to_cam1(jog), "a new press does not wait out the interval");
+    }
+
+    #[test]
+    fn the_camera_being_moved_is_always_sent_a_stop_before_anything_else_happens() {
+        let t0 = Instant::now();
+        let jog = Jog { pan: 0.2, ..Jog::default() };
+        let ask = |camera: &str, jog: Jog, allowed: bool| Some(Ask { camera: camera.into(), jog, allowed });
+        let stop = |camera: &str| vec![(camera.to_string(), Jog::default())];
+        // Each way the hand can come off a moving camera: what is asked next, and whether hands are on the window.
+        let ways: [(&str, Option<Ask>, bool); 4] = [
+            ("the controller is not drawn", None, true),
+            ("another camera is in hand", ask("cam2", jog, true), true),
+            ("moving is no longer allowed", ask("cam1", jog, false), true),
+            ("a dialog or another window has the operator", ask("cam1", jog, true), false),
+        ];
+        for (way, next, hands_on) in ways {
+            let mut c = Controller { ask: ask("cam1", jog, true), ..Controller::default() };
+            assert_eq!(c.settle(true, t0), vec![("cam1".to_string(), jog)]);
+            c.ask = next.clone();
+            assert_eq!(c.settle(hands_on, t0 + Duration::from_millis(5)), stop("cam1"), "{way}");
+            // Still held when that has passed: nothing moves, on either camera.
+            for (n, camera) in ["cam1", "cam2", "cam1"].into_iter().enumerate() {
+                c.ask = ask(camera, jog, true);
+                assert_eq!(c.settle(true, t0 + Duration::from_millis(100 * (n as u64 + 1))), vec![], "{way}, then held");
+            }
+            // Let go, press again: it moves.
+            c.ask = ask("cam2", Jog::default(), true);
+            assert_eq!(c.settle(true, t0 + Duration::from_millis(500)), vec![], "{way}");
+            c.ask = ask("cam2", jog, true);
+            assert_eq!(c.settle(true, t0 + Duration::from_millis(520)), vec![("cam2".to_string(), jog)], "{way}");
+        }
+
+        // A control pressed while moving is not allowed does not start the rig when it becomes allowed.
+        let mut c = Controller { ask: ask("cam1", jog, false), ..Controller::default() };
+        assert_eq!(c.settle(true, t0), vec![]);
+        c.ask = ask("cam1", jog, true);
+        assert_eq!(c.settle(true, t0 + Duration::from_millis(40)), vec![]);
     }
 }

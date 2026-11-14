@@ -429,3 +429,123 @@ fn e_stop_is_sent_to_a_server_out_of_reach_and_the_operator_is_told_when_it_does
     assert!(r.harness.query_by_label(STOP_NOT_SENT).is_none(), "the notice goes when the stop is latched");
     assert!(r.harness.query_by_label("E-STOP LATCHED").is_some());
 }
+
+fn cam_jogs(r: &Rig) -> Vec<(String, Jog)> {
+    r.cmds.try_iter().filter_map(|c| if let Cmd::Jog(camera, jog) = c { Some((camera, jog)) } else { None }).collect()
+}
+
+/// Run a few frames, far enough apart for a held control to repeat its velocity.
+fn hold_on(r: &mut Rig) {
+    for _ in 0..3 {
+        std::thread::sleep(crate::rig_ui::SEND_EVERY + std::time::Duration::from_millis(5));
+        r.harness.run_steps(1);
+    }
+}
+
+/// Three cameras, the Rig controller in front, and where to press its pad to pan right.
+fn at_the_controller() -> (Rig, Pos2) {
+    let (project, presets) = three_cameras();
+    let mut r = rig_with(project, presets, song());
+    r.harness.state_mut().show_tab(Tab::Rig);
+    r.harness.run_steps(3);
+    let pad = r.harness.state().session.rig.probe.expect("the controller was drawn").pad;
+    (r, pos2(pad.right() - 8.0, pad.center().y))
+}
+
+fn press_and_hold(r: &mut Rig, at: Pos2) {
+    r.harness.hover_at(at);
+    r.harness.run_steps(2);
+    r.harness.drag_at(at);
+    r.harness.run_steps(3);
+}
+
+/// The camera that was moving was sent a stop, last of all, and nothing else was set moving.
+fn assert_stopped(sent: &[(String, Jog)], camera: &str, when: &str) {
+    let last = sent.iter().rev().find(|(c, _)| c == camera).map(|(_, jog)| *jog);
+    assert_eq!(last, Some(Jog::default()), "{when}: the last thing {camera} was sent is a stop: {sent:?}");
+    let others: Vec<_> = sent.iter().filter(|(c, jog)| c != camera && !jog.is_zero()).collect();
+    assert!(others.is_empty(), "{when}: no other camera was set moving: {others:?}");
+}
+
+#[test]
+fn a_held_pad_stops_the_camera_it_was_moving_when_another_camera_is_taken_in_hand() {
+    let (mut r, right) = at_the_controller();
+    press_and_hold(&mut r, right);
+    let moving = cam_jogs(&r);
+    assert!(moving.iter().all(|(camera, jog)| camera == "cam1" && jog.pan > 0.0) && !moving.is_empty(), "{moving:?}");
+
+    // With the pad still held, 2 takes the second camera in hand.
+    r.harness.key_press(egui::Key::Num2);
+    r.harness.run_steps(2);
+    assert_eq!(r.harness.state().session.cam_id(), "cam2");
+    hold_on(&mut r);
+    assert_stopped(&cam_jogs(&r), "cam1", "after the camera changed");
+
+    // The second camera moves once the pad has been let go and pressed again.
+    r.harness.drop_at(right);
+    r.harness.run_steps(3);
+    assert!(cam_jogs(&r).iter().all(|(_, jog)| jog.is_zero()));
+    press_and_hold(&mut r, right);
+    let moving = cam_jogs(&r);
+    assert!(moving.iter().all(|(camera, jog)| camera == "cam2" && jog.pan > 0.0) && !moving.is_empty(), "{moving:?}");
+    r.harness.drop_at(right);
+    r.harness.run_steps(3);
+    assert_stopped(&cam_jogs(&r), "cam2", "after letting go");
+}
+
+#[test]
+fn a_held_jog_key_stops_when_the_controller_leaves_the_screen() {
+    let (mut r, right) = at_the_controller();
+    r.click(right);
+    let _ = cam_jogs(&r);
+    r.harness.key_down(egui::Key::ArrowLeft);
+    r.harness.run_steps(3);
+    assert!(cam_jogs(&r).iter().any(|(camera, jog)| camera == "cam1" && jog.pan < 0.0), "the arrow drives the rig");
+
+    // The Inspector shares the controller's group: bringing it forward covers the controller.
+    r.harness.state_mut().show_tab(Tab::Inspector);
+    r.harness.run_steps(2);
+    hold_on(&mut r);
+    assert_stopped(&cam_jogs(&r), "cam1", "with the controller covered");
+
+    // Coming back with the key still down does not set it off again.
+    r.harness.state_mut().show_tab(Tab::Rig);
+    r.harness.run_steps(2);
+    hold_on(&mut r);
+    assert!(cam_jogs(&r).iter().all(|(_, jog)| jog.is_zero()));
+}
+
+#[test]
+fn a_held_pad_stops_when_the_hand_is_taken_off_it_by_anything_else() {
+    type Change = fn(&mut Rig, bool);
+    let cases: [(&str, Change); 5] = [
+        ("a dialog opens", |r, on| r.harness.state_mut().session.confirm_takeover = on),
+        ("the window loses focus", |r, on| r.harness.input_mut().focused = !on),
+        ("the lease is lost", |r, on| r.harness.state_mut().session.status.you_hold_lease = !on),
+        ("the server is lost", |r, on| r.harness.state_mut().session.lost = on.then(|| "Lost the server".to_string())),
+        ("E-Stop is latched", |r, on| r.harness.state_mut().session.status.transport.estop = on),
+    ];
+    for (when, change) in cases {
+        let (mut r, right) = at_the_controller();
+        press_and_hold(&mut r, right);
+        assert!(cam_jogs(&r).iter().any(|(_, jog)| jog.pan > 0.0), "{when}: the pad drives the rig first");
+
+        change(&mut r, true);
+        r.harness.run_steps(2);
+        hold_on(&mut r);
+        assert_stopped(&cam_jogs(&r), "cam1", when);
+
+        // It passes with the pad still held: the rig does not start again by itself.
+        change(&mut r, false);
+        r.harness.run_steps(3);
+        hold_on(&mut r);
+        let after = cam_jogs(&r);
+        assert!(after.iter().all(|(_, jog)| jog.is_zero()), "{when}, then not: the rig set off again: {after:?}");
+
+        // Let go and press again, and it moves.
+        r.harness.drop_at(right);
+        r.harness.run_steps(3);
+        press_and_hold(&mut r, right);
+        assert!(cam_jogs(&r).iter().any(|(_, jog)| jog.pan > 0.0), "{when}: a new press moves the rig");
+    }
+}
