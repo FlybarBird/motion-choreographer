@@ -275,6 +275,31 @@ pub fn icon_button(
     look: Look,
     min_size: egui::Vec2,
 ) -> egui::Response {
+    icon_button_sensing(ui, enabled, glyph, label, look, min_size, egui::Sense::click())
+}
+
+/// An [`icon_button`] that only a click presses. It never has the keyboard, so Tab passes it by and
+/// neither Space nor Enter can press it. For the controls that the manual says have no key.
+pub fn click_only_button(
+    ui: &mut egui::Ui,
+    enabled: bool,
+    glyph: &str,
+    label: &str,
+    look: Look,
+    min_size: egui::Vec2,
+) -> egui::Response {
+    icon_button_sensing(ui, enabled, glyph, label, look, min_size, egui::Sense::CLICK)
+}
+
+fn icon_button_sensing(
+    ui: &mut egui::Ui,
+    enabled: bool,
+    glyph: &str,
+    label: &str,
+    look: Look,
+    min_size: egui::Vec2,
+    sense: egui::Sense,
+) -> egui::Response {
     let id = egui::Id::new("icon_button_glyph");
     let size = 15.0;
     let ink = match look {
@@ -284,7 +309,7 @@ pub fn icon_button(
     };
     let text = egui::RichText::new(label).color(ink);
     let text = if matches!(look, Look::Solid(_)) { text.font(semibold(13.0)) } else { text };
-    let mut button = egui::Button::new((egui::Atom::custom(id, egui::vec2(size, size)), text)).min_size(min_size);
+    let mut button = egui::Button::new((egui::Atom::custom(id, egui::vec2(size, size)), text)).min_size(min_size).sense(sense);
     match look {
         Look::Solid(c) if enabled => button = button.fill(c).stroke(Stroke::NONE),
         Look::Outline(c) if enabled => button = button.fill(with_alpha(c, 22)).stroke(Stroke::new(1.0, with_alpha(c, 150))),

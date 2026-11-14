@@ -589,3 +589,77 @@ fn undo_and_redo_leave_the_song_alone_while_a_text_field_has_the_keyboard() {
     r.harness.run_steps(2);
     assert_eq!(*r.song(), before, "and Cmd-Shift-Z puts it back");
 }
+
+/// Space is the transport's key and nothing else's, and Arm, Disarm, E-Stop and Reset E-Stop have no key
+/// at all (programming manual, section 14). So the buttons of the transport bar cannot be reached with
+/// Tab, and Space does not press a button that Tab has left the keyboard on.
+#[test]
+fn space_runs_the_transport_once_and_presses_no_button() {
+    // After a click on a button.
+    let mut r = rig(song());
+    let cue = rect_of(&r, "Cue").center();
+    r.click(cue);
+    assert_eq!(acts(&r), vec![Action::Cue]);
+    r.harness.key_press(egui::Key::Space);
+    r.harness.run_steps(3);
+    assert_eq!(acts(&r), vec![Action::Play], "after a click on Cue");
+
+    // Tab goes round the window and never lands on the transport bar.
+    let mut r = rig(song());
+    let mut landed_on_new = false;
+    for _ in 0..150 {
+        r.harness.key_press(egui::Key::Tab);
+        r.harness.run_steps(2);
+        for label in [crate::app::ARM_LABEL, "Rehearse", "Stop", "Cue", "Record"] {
+            assert!(!r.harness.get_by_label(label).is_focused(), "Tab put the keyboard on {label}");
+        }
+        landed_on_new |= r.harness.get_by_label("New").is_focused();
+    }
+    assert!(landed_on_new, "Tab does reach the ordinary buttons");
+    {
+        let s = &mut r.harness.state_mut().session;
+        s.status.transport.estop = true;
+        s.status.transport.output = Output::Armed;
+    }
+    for _ in 0..150 {
+        r.harness.key_press(egui::Key::Tab);
+        r.harness.run_steps(2);
+        for label in ["Reset E-Stop", "Disarm"] {
+            assert!(!r.harness.get_by_label(label).is_focused(), "Tab put the keyboard on {label}");
+        }
+    }
+    {
+        let s = &mut r.harness.state_mut().session;
+        s.status.transport.estop = false;
+        s.status.transport.output = Output::Rehearse;
+    }
+    r.harness.run_steps(2);
+    assert_eq!(acts(&r), vec![]);
+    for key in [egui::Key::Space, egui::Key::Enter] {
+        r.harness.key_press(key);
+        r.harness.run_steps(3);
+    }
+    assert_eq!(acts(&r), vec![Action::Play], "Space ran the transport and Enter did nothing to it");
+
+    // With the keyboard on New, Space still means the transport: no dialog opens behind the operator's back.
+    while !r.harness.get_by_label("New").is_focused() {
+        r.harness.key_press(egui::Key::Tab);
+        r.harness.run_steps(2);
+    }
+    r.harness.key_press(egui::Key::Space);
+    r.harness.run_steps(3);
+    assert_eq!(acts(&r), vec![Action::Play]);
+    assert!(!crate::app::modal_open(&r.harness.ctx), "Space did not press New");
+
+    // E-STOP is the one button of the bar that Tab reaches. Space there stops, and does not play.
+    let mut tabs = 0;
+    while !r.harness.get_by_label("E-STOP").is_focused() {
+        assert!(tabs < 150, "Tab never reached E-STOP");
+        r.harness.key_press(egui::Key::Tab);
+        r.harness.run_steps(2);
+        tabs += 1;
+    }
+    r.harness.key_press(egui::Key::Space);
+    r.harness.run_steps(3);
+    assert_eq!(acts(&r), vec![Action::Estop], "with the keyboard on E-STOP");
+}
