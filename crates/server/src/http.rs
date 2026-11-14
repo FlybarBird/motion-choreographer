@@ -248,6 +248,14 @@ async fn sync_presets(State(app): State<App>, Client(c): Client) -> Reply<Vec<Pr
     Ok(Json(lock(&app.show).sync_presets(&c)?))
 }
 
+async fn preset_thumb(State(app): State<App>, Path(id): Path<String>) -> Result<Response, Fail> {
+    let path = lock(&app.show).preset_thumbnail(&id)?;
+    match tokio::fs::read(&path).await {
+        Ok(bytes) => Ok(bytes_reply("image/jpeg", bytes)),
+        Err(_) => Err(Fail::not_found("That preset has no picture")),
+    }
+}
+
 async fn rig_jog(State(app): State<App>, Client(c): Client, Json(jog): Json<Jog>) -> Reply<Status> {
     let mut s = lock(&app.show);
     s.jog(&c, jog)?;
@@ -499,6 +507,7 @@ pub fn router(app: App) -> Router {
         .route("/presets", get(get_presets).post(post_preset))
         .route("/presets/sync", post(sync_presets))
         .route("/presets/{id}", delete(delete_preset))
+        .route("/presets/{id}/thumb.jpg", get(preset_thumb))
         .route("/rig/jog", post(rig_jog))
         .route("/record/{clip}/refit", post(refit))
         .route("/media", get(list_media).post(upload_media))
