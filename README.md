@@ -83,7 +83,8 @@ and the click is heard as the playhead crosses it.
 
 The server plays the audio, not the app, so the sound comes out of the machine
 the server runs on. While a song plays free-run, the playhead is the count of
-samples the sound card has played, so picture and sound cannot drift apart.
+samples the sound card has played, with the millisecond of jitter between its
+callbacks filtered out, so picture and sound cannot drift apart.
 
 Each output channel is routed in the Inspector (with nothing selected) to one of:
 
@@ -101,6 +102,57 @@ ptz-server --audio-device "USB"    # use the output whose name contains this
 ptz-server --no-audio              # never open a device
 ptz-server --selftest-audio        # one second of tone on the left, then the right
 ```
+
+## Keys, the graph editor and Record
+
+A preset move is one block. To shape a move by hand it becomes keys:
+
+- Click the triangle on the **Camera move** lane to open the Pan, Tilt, Zoom,
+  Focus and Elevation lanes. Each key is a diamond. Drag keys, drag a box round
+  several, Delete removes them.
+- Click a lane's name to select it; `K` adds a key at the playhead on the
+  selected lanes (on every lane of the clip when none is selected).
+- **Convert to keys** in the Inspector or the graph editor turns a preset move
+  into keys that trace the same path. A keys clip can drive some axes and leave
+  the rest to whatever came before it.
+
+The **Graph editor** tab shows the selected clip as one curve per axis. It
+shares the timeline's zoom, scroll and playhead. The ruler on the left measures
+the axis whose chip is outlined; click a curve to switch.
+
+| Do this | To |
+| --- | --- |
+| Drag a key | Change its time and value. Shift keeps it to one direction. |
+| Drag a handle | Bend the curve. The opposite handle stays in line; hold Alt to break it. |
+| Hold, Linear, Bezier | Choose how the curve leaves the selected keys. |
+| Easy Ease, Ease In, Ease Out | Flatten the handles so the move starts or lands gently. |
+| Double-click a curve | Add a key there without changing the shape. |
+| `F` or **Frame** | Fit the view to the selected keys, or the clip. |
+| **Speed** | Show how fast each axis moves. The amber line is the fastest the axis can go; anything above it is filled amber and named, and the clip turns amber on the timeline. |
+
+The **Rig controller** tab drives the simulator by hand: drag the pad for pan
+and tilt, the three sliders for zoom, focus and elevation. They spring back and
+the rig stops when you let go. Click the pad to use the keys: arrows for pan and
+tilt, `[` `]` zoom, `,` `.` elevation. **Top speed** scales all of it. **Store
+preset** saves where the rig is now. If the app stops sending (a dropped
+connection) the rig stops within a quarter of a second. Hand control is refused
+while the rig is armed.
+
+To record a move by hand:
+
+1. Open the axis lanes and click the red dot on each lane Record should write.
+   Pan and Tilt are on to start with.
+2. Press **Record**, then play. The enabled axes follow the rig controller; the
+   others keep playing the timeline.
+3. Stop, Cue or **Record off** ends the pass. It lands on the timeline as a
+   keys clip covering exactly the frames it was recorded on, replacing those
+   axes over that range and nothing else. One undo removes the whole pass.
+
+The pass is reduced to as few keys as reproduce it within 0.05 degrees of pan
+and tilt, 0.2 % of zoom and focus and 1 mm of elevation; a stretch where the
+rig stood still is two keys. The raw samples are kept beside the song
+(`songs/<id>/passes/`), and **Fewer keys** / **More keys** in the Inspector fit
+them again looser or tighter. Record works in Rehearse only.
 
 ## Transport
 
@@ -134,7 +186,7 @@ It refuses to run unless the rig is the simulator and the show is idle.
 | `scripts/macos-install.sh` | The Mac installer. |
 
 Data folder (`~/PTZProgrammer` by default): `project.json`, `presets.json`,
-`songs/<id>/working.json`, `draft.json` and `rev/NNNN.json`, `media/<id>/`
+`songs/<id>/working.json`, `draft.json`, `rev/NNNN.json` and `passes/`, `media/<id>/`
 (the original file, the decoded audio, the waveform overview), `log/`.
 Every file is written to a temporary name and renamed, so a crash never leaves a
 half-written song.
