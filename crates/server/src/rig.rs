@@ -4,6 +4,54 @@
 
 use ptz_core::api::{AdapterStatus, Jog};
 use ptz_core::pose::{Axis, AxisTable, Pose, Preset};
+use std::time::Instant;
+
+/// A plain pan and tilt move the head may run by itself: where it ends and how long it has.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Ride {
+    pub pan: f64,
+    pub tilt: f64,
+    pub seconds: f64,
+}
+
+/// One command to the rig: where it should be now, and how fast that is changing.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Drive {
+    pub target: Pose,
+    /// Units per second on each axis.
+    pub velocity: Pose,
+    /// Share of each axis's top speed the rig may use. Positioning runs slow.
+    pub scale: f64,
+    /// Set while the playhead is inside a plain preset move and the project asks for
+    /// absolute moves. An adapter that cannot do that follows `target` as usual.
+    pub ride: Option<Ride>,
+}
+
+impl Drive {
+    pub fn to(target: Pose, scale: f64) -> Drive {
+        Drive { target, velocity: Pose::default(), scale, ride: None }
+    }
+}
+
+/// A pose and the moment the rig was there, axis by axis: the devices are read at different times.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct PoseReading {
+    pub pose: Pose,
+    pub at: [Instant; 5],
+}
+
+impl PoseReading {
+    pub fn all_at(pose: Pose, at: Instant) -> PoseReading {
+        PoseReading { pose, at: [at; 5] }
+    }
+}
+
+/// A preset read from the device, with its picture when the device has one.
+#[derive(Clone, PartialEq, Debug)]
+pub struct DevicePreset {
+    pub preset: Preset,
+    pub thumbnail: Option<Vec<u8>>,
+}
 
 pub trait RigAdapter: Send {
     fn is_simulator(&self) -> bool {
@@ -18,19 +66,41 @@ pub trait RigAdapter: Send {
     /// Latest known pose.
     fn pose(&self) -> Pose;
 
+    /// Latest known pose and when it was read. Hardware answers a few tens of
+    /// milliseconds late; the live loop compares against where the target was then.
+    fn reading(&self) -> PoseReading {
+        PoseReading::all_at(self.pose(), Instant::now())
+    }
+
     /// Advance by `dt` seconds. Called every engine tick.
     fn tick(&mut self, _dt: f64, _axes: &AxisTable) {}
 
-    /// Follow `target`. `speed_scale` limits top speed while positioning.
-    fn drive(&mut self, target: &Pose, speed_scale: f64);
+    /// Follow the command. Called every engine tick while live; an adapter that
+    /// stops hearing it stops the rig.
+    fn drive(&mut self, cmd: &Drive);
 
     /// Stop every axis where it is.
     fn stop(&mut self);
 
     fn is_moving(&self) -> bool;
 
-    /// Presets stored on the device, with poses.
+    /// Presets stored on the device, with poses, when they can be read without moving it.
     fn presets(&mut self) -> Result<Vec<Preset>, String>;
+
+    /// Start reading the device's presets by recalling each one, which moves the rig.
+    fn begin_preset_sync(&mut self) -> Result<(), String> {
+        Err("This rig's presets are read without moving it".into())
+    }
+
+    /// The outcome of a preset sync, once, when it has finished.
+    fn take_preset_sync(&mut self) -> Option<Result<Vec<DevicePreset>, String>> {
+        None
+    }
+
+    /// What a running preset sync is doing, for the operator.
+    fn preset_sync_progress(&self) -> Option<String> {
+        None
+    }
 
     /// Hand control. Only the simulator accepts it.
     fn jog(&mut self, _jog: Jog) -> Result<(), String> {
@@ -45,11 +115,6 @@ pub trait RigAdapter: Send {
 
     /// Put the given axes of a virtual rig at `pose` (Rehearse monitor). Hardware ignores this.
     fn sync_virtual(&mut self, _pose: &Pose, _axes: &[Axis]) {}
-
-    /// Thumbnail JPEG for a device preset, if the device has one.
-    fn preset_thumbnail(&mut self, _camera_number: u32) -> Option<Vec<u8>> {
-        None
-    }
 }
 
 pub fn seeded_presets() -> Vec<Preset> {
@@ -91,6 +156,8 @@ pub struct Simulator {
     moving: bool,
     /// Speed of each axis under hand control, in its own units per second.
     jog_speed: [f64; 5],
+    /// When the pose last advanced.
+    read_at: Instant,
 }
 
 /// Share of an axis's acceleration limit used to ramp a jog up and down. A real head ramps
@@ -99,7 +166,7 @@ pub const JOG_ACCEL: f64 = 0.5;
 
 impl Default for Simulator {
     fn default() -> Self {
-        Simulator { pose: Pose::home(), mode: Mode::Idle, moving: false, jog_speed: [0.0; 5] }
+        Simulator { pose: Pose::home(), mode: Mode::Idle, moving: false, jog_speed: [0.0; 5], read_at: Instant::now() }
     }
 }
 
@@ -121,6 +188,7 @@ impl RigAdapter for Simulator {
             detail: "Built-in virtual rig. No hardware moves.".into(),
             calibrated: None,
             round_trip_ms: None,
+            raw_position: None,
         }]
     }
 
@@ -132,8 +200,13 @@ impl RigAdapter for Simulator {
         self.pose
     }
 
+    fn reading(&self) -> PoseReading {
+        PoseReading::all_at(self.pose, self.read_at)
+    }
+
     fn tick(&mut self, dt: f64, axes: &AxisTable) {
         let before = self.pose;
+        self.read_at = Instant::now();
         match self.mode {
             Mode::Idle => {}
             Mode::Drive { target, scale } => {
@@ -167,9 +240,9 @@ impl RigAdapter for Simulator {
         self.moving = before != self.pose;
     }
 
-    fn drive(&mut self, target: &Pose, speed_scale: f64) {
+    fn drive(&mut self, cmd: &Drive) {
         self.jog_speed = [0.0; 5];
-        self.mode = Mode::Drive { target: *target, scale: speed_scale };
+        self.mode = Mode::Drive { target: cmd.target, scale: cmd.scale };
     }
 
     fn stop(&mut self) {
@@ -215,7 +288,7 @@ mod tests {
         let axes = AxisTable::default();
         let mut sim = Simulator::new();
         let target = Pose { pan: 90.0, tilt: 10.0, zoom: 1.0, focus: 0.5, elevation: 300.0 };
-        sim.drive(&target, 1.0);
+        sim.drive(&Drive::to(target, 1.0));
         let mut last = sim.pose();
         for _ in 0..60 {
             sim.tick(1.0 / 60.0, &axes);
