@@ -178,6 +178,8 @@ impl LtcDecoder {
     pub fn feed(&mut self, samples: &[f32]) -> Vec<LtcReading> {
         let mut out = Vec::new();
         for &x in samples {
+            // An infinite sample would pin the envelope at infinity and nothing after it would be heard.
+            let x = if x.is_finite() { x } else { 0.0 };
             self.sample_index += 1;
             self.envelope = (self.envelope * 0.9995).max(x.abs());
             let threshold = self.envelope * 0.2;
@@ -327,5 +329,19 @@ mod tests {
         let got = decode_all(&audio);
         assert!(got.iter().any(|r| r.tc.to_frames(rate) == 1020));
         assert!(got.iter().any(|r| r.tc.to_frames(rate) == 5020));
+    }
+
+    #[test]
+    fn a_sample_that_is_not_a_number_does_not_deafen_the_decoder() {
+        // A float file or input device can carry an infinite or not-a-number sample.
+        let rate = FrameRate::F30;
+        for bad in [f32::INFINITY, f32::NEG_INFINITY, f32::NAN] {
+            let mut audio = encode(1000, 30, rate, 48000, 0.5, 1.0);
+            audio.push(bad);
+            audio.extend(encode(5000, 30, rate, 48000, 0.5, 1.0));
+            let got = decode_all(&audio);
+            assert!(got.iter().any(|r| r.tc.to_frames(rate) == 1020), "{bad}");
+            assert!(got.iter().any(|r| r.tc.to_frames(rate) == 5020), "code after a {bad} sample is still read");
+        }
     }
 }
