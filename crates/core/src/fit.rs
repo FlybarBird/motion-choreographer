@@ -75,16 +75,47 @@ fn segment(samples: &[f64], a: usize, b: usize) -> ([Key; 2], usize, f64) {
     best
 }
 
+/// A rig at rest for at least this many frames is a still section, not part of a move.
+const MIN_STILL: usize = 6;
+
+/// Runs of samples that do not move, as inclusive index pairs.
+fn stills(samples: &[f64], tolerance: f64) -> Vec<(usize, usize)> {
+    let eps = tolerance * 0.02;
+    let mut runs = Vec::new();
+    let mut a = 0;
+    while a + 1 < samples.len() {
+        let mut b = a;
+        while b + 1 < samples.len() && (samples[b + 1] - samples[a]).abs() <= eps {
+            b += 1;
+        }
+        if b - a >= MIN_STILL {
+            runs.push((a, b));
+        }
+        a = b.max(a + 1);
+    }
+    runs
+}
+
 /// Fit keys to one value per frame. Key frames are indices into `samples`.
-/// Every sample is reproduced within `tolerance`; a still section becomes two keys.
+/// Every sample is reproduced within `tolerance`; a still section becomes two
+/// keys with a flat line between them.
 pub fn fit_keys(samples: &[f64], tolerance: f64) -> Vec<Key> {
     match samples.len() {
         0 => return Vec::new(),
         1 => return vec![Key::new(0, samples[0], Interp::Bezier)],
         _ => {}
     }
-    let mut cuts = vec![0usize, samples.len() - 1];
-    let mut stack = vec![(0usize, samples.len() - 1)];
+    let last = samples.len() - 1;
+    let still = stills(samples, tolerance);
+    let is_still = |a: usize, b: usize| still.iter().any(|(s, e)| *s <= a && b <= *e);
+    // The ends of the pass and of every still section are keys whatever the fit says.
+    let mut fixed = vec![0, last];
+    fixed.extend(still.iter().flat_map(|(a, b)| [*a, *b]));
+    fixed.sort_unstable();
+    fixed.dedup();
+
+    let mut cuts = fixed.clone();
+    let mut stack: Vec<(usize, usize)> = fixed.windows(2).map(|w| (w[0], w[1])).filter(|(a, b)| !is_still(*a, *b)).collect();
     while let Some((a, b)) = stack.pop() {
         if b - a < 2 {
             continue;
@@ -103,7 +134,7 @@ pub fn fit_keys(samples: &[f64], tolerance: f64) -> Vec<Key> {
         let before = cuts.len();
         let mut i = 1;
         while i + 1 < cuts.len() {
-            if segment(samples, cuts[i - 1], cuts[i + 1]).2 <= tolerance {
+            if fixed.binary_search(&cuts[i]).is_err() && segment(samples, cuts[i - 1], cuts[i + 1]).2 <= tolerance {
                 cuts.remove(i);
             } else {
                 i += 1;
@@ -115,9 +146,16 @@ pub fn fit_keys(samples: &[f64], tolerance: f64) -> Vec<Key> {
     }
     let mut keys: Vec<Key> = Vec::with_capacity(cuts.len());
     for w in cuts.windows(2) {
-        let ([k0, k1], _, _) = segment(samples, w[0], w[1]);
+        let [k0, mut k1] =
+            if is_still(w[0], w[1]) { hermite(samples, w[0], w[1], 0.0, 0.0) } else { segment(samples, w[0], w[1]).0 };
         match keys.last_mut() {
-            Some(last) => last.out_handle = k0.out_handle,
+            Some(prev) => {
+                prev.out_handle = k0.out_handle;
+                if is_still(w[0], w[1]) {
+                    // Dead level, not level within the noise floor.
+                    k1.value = prev.value;
+                }
+            }
             None => keys.push(k0),
         }
         keys.push(k1);
@@ -166,6 +204,12 @@ mod tests {
         let keys = fit_keys(&s, 0.05);
         assert!(max_error(&s, &keys) <= 0.05 + 1e-9);
         assert!(keys.len() <= 8, "{} keys", keys.len());
+        // The stills are dead level between their two keys, not level within the tolerance.
+        assert_eq!((keys[0].frame, keys[1].frame), (0, 100));
+        assert!((0..=100).all(|i| keys_value(&keys, i as f64) == Some(0.0)));
+        let rest = keys_value(&keys, 299.0).unwrap();
+        assert!((rest - 20.0).abs() < 0.002);
+        assert!((200..300).all(|i| (keys_value(&keys, i as f64).unwrap() - rest).abs() < 1e-12));
     }
 
     #[test]

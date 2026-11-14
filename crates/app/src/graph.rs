@@ -17,6 +17,8 @@ use std::collections::BTreeSet;
 pub const RULER_H: f32 = 20.0;
 /// How close the pointer must be to a key or handle to grab it.
 const GRAB_PX: f32 = 8.0;
+/// How far above or below a curve a click still counts as on it.
+const CURVE_PX: f32 = 8.0;
 const PAD: f32 = 10.0;
 /// Where the max-speed line sits in the speed view, as a fraction of the plot height.
 const LIMIT_AT: f32 = 0.66;
@@ -215,7 +217,7 @@ pub fn hit(plot: &Plot, song: &Song, clip: Option<&MotionClip>, graph: &Graph, s
                 })
                 .collect();
             let (top, bottom) = ys.iter().fold((f32::MAX, f32::MIN), |(t, b), y| (t.min(*y), b.max(*y)));
-            if pos.y >= top - 5.0 && pos.y <= bottom + 5.0 {
+            if pos.y >= top - CURVE_PX && pos.y <= bottom + CURVE_PX {
                 return Hit::Curve { axis: *axis, frame };
             }
         }
@@ -575,13 +577,21 @@ fn toolbar(ui: &mut Ui, s: &mut Session, clip: Option<&MotionClip>) -> bool {
             s.graph.speed = !s.graph.speed;
             s.graph.cancel();
         }
-        if ui.small_button("Frame").on_hover_text("Fit the view to the selected keys, or the whole clip  ( F )").clicked() {
+        if ui
+            .add(egui::Button::new(RichText::new("Frame").small()).small())
+            .on_hover_text("Fit the view to the selected keys, or the whole clip  ( F )")
+            .clicked()
+        {
             frame_it = true;
         }
         let Some(clip) = clip else { return };
         ui.separator();
         if clip.is_preset_move() {
-            if ui.small_button("Convert to keys").on_hover_text("Turn this preset move into keys you can edit here").clicked() {
+            if ui
+                .add(egui::Button::new(RichText::new("Convert to keys").small()).small())
+                .on_hover_text("Turn this preset move into keys you can edit here")
+                .clicked()
+            {
                 let id = clip.id.clone();
                 s.edit(|song, project| edit::convert_to_keys(song, project, &id));
             }
