@@ -1,6 +1,7 @@
 //! The show server: storage, transport, rig, and the HTTP/WebSocket API.
 
 pub mod audio;
+pub mod bringup;
 pub mod engine;
 pub mod http;
 pub mod hw;
