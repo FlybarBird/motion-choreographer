@@ -422,6 +422,12 @@ impl ShowEngine {
             TransportAction::Arm => {
                 info!("Armed for live hardware output");
             }
+            TransportAction::Disarm => {
+                self.clock.pause();
+                self.audio.pause();
+                self.sync_audio_to_frames(next.playhead_frames);
+                info!("Disarmed — returned to idle (hardware still)");
+            }
             TransportAction::SaveCommit => {
                 if let Some(id) = current.song_id.clone() {
                     let mut songs = self.songs.lock();

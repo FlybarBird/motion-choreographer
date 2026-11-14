@@ -186,6 +186,7 @@ fn parse_action(s: &str) -> Option<TransportAction> {
         "save_commit" | "commit" => TransportAction::SaveCommit,
         "prepare" => TransportAction::Prepare,
         "arm" => TransportAction::Arm,
+        "disarm" => TransportAction::Disarm,
         "play" => TransportAction::Play,
         "preview" => TransportAction::Preview,
         "stop" => TransportAction::Stop,
