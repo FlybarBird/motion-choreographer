@@ -5,7 +5,7 @@ use crate::panels::{self, text_field};
 use crate::session::Session;
 use crate::theme::*;
 use crate::{monitor, timeline_ui};
-use egui::{vec2, Align, Color32, Key, Layout, RichText, Stroke, Ui};
+use egui::{vec2, Align, Key, Layout, RichText, Stroke, Ui};
 use egui_dock::{DockArea, DockState, NodeIndex};
 use ptz_core::edit;
 use ptz_core::time::Timecode;
@@ -200,22 +200,10 @@ impl egui_dock::TabViewer for Viewer<'_> {
 }
 
 /// A transport button: enabled when the server says so, with the server's reason when not.
-fn action_button(
-    ui: &mut Ui,
-    s: &mut Session,
-    action: Action,
-    label: &str,
-    fill: Option<(Color32, Color32)>,
-    min_w: f32,
-) -> bool {
+fn action_button(ui: &mut Ui, s: &mut Session, action: Action, glyph: &str, label: &str, look: Look, min_w: f32) -> bool {
     let g = &s.status.guidance;
     let enabled = g.allows(action) && s.lost.is_none();
-    let text = RichText::new(label).size(13.5);
-    let button = match fill {
-        Some((bg, ink)) if enabled => egui::Button::new(text.color(ink).strong()).fill(bg),
-        _ => egui::Button::new(text),
-    };
-    let resp = ui.add_enabled(enabled, button.min_size(vec2(min_w, 30.0)));
+    let resp = icon_button(ui, enabled, glyph, label, look, vec2(min_w, 30.0));
     let reason = if s.lost.is_some() { Some("The server is not reachable") } else { g.reason(action) };
     let resp = match reason {
         Some(r) if !enabled => resp.on_disabled_hover_text(r),
@@ -226,6 +214,23 @@ fn action_button(
         return true;
     }
     false
+}
+
+/// The icon that stands for a transport action wherever it is offered.
+fn action_glyph(action: Action) -> &'static str {
+    match action {
+        Action::Play => icon::PLAY,
+        Action::Stop => icon::STOP,
+        Action::Cue => icon::SKIP_BACK,
+        Action::Arm => icon::POWER,
+        Action::Disarm => icon::PROHIBIT,
+        Action::Lock => icon::LOCK_SIMPLE,
+        Action::Unlock => icon::LOCK_SIMPLE_OPEN,
+        Action::RecordOn | Action::RecordOff => icon::RECORD,
+        Action::Estop => icon::WARNING_OCTAGON,
+        Action::ResetEstop => icon::ARROW_COUNTER_CLOCKWISE,
+        _ => icon::PLAY,
+    }
 }
 
 impl Shell {
@@ -240,28 +245,36 @@ impl Shell {
         self.dropped_files(ui);
 
         egui::Panel::top("song_header")
-            .frame(egui::Frame::new().fill(NAVY).inner_margin(egui::Margin::symmetric(10, 7)))
+            .show_separator_line(false)
+            .frame(egui::Frame::new().fill(PANEL_DARK).inner_margin(egui::Margin::symmetric(12, 6)))
             .show(ui, |ui| self.header(ui));
         egui::Panel::top("transport_bar")
-            .frame(egui::Frame::new().fill(PANEL_DARK).inner_margin(egui::Margin::symmetric(10, 7)))
+            .show_separator_line(false)
+            .frame(egui::Frame::new().fill(PANEL).inner_margin(egui::Margin::symmetric(12, 8)))
             .show(ui, |ui| self.transport(ui));
         egui::Panel::top("camera_bar")
-            .frame(egui::Frame::new().fill(CHARCOAL).inner_margin(egui::Margin::symmetric(10, 4)))
+            .show_separator_line(false)
+            .frame(egui::Frame::new().fill(BASE).inner_margin(egui::Margin { left: 12, right: 12, top: 6, bottom: 2 }))
             .show(ui, |ui| crate::camera_ui::bar(ui, &mut self.session));
         if let Some(lost) = self.session.lost.clone() {
             egui::Panel::top("lost_banner")
-                .frame(egui::Frame::new().fill(RED).inner_margin(egui::Margin::symmetric(10, 5)))
+                .show_separator_line(false)
+                .frame(egui::Frame::new().fill(RED).inner_margin(egui::Margin::symmetric(12, 6)))
                 .show(ui, |ui| {
                     ui.label(
-                        RichText::new(format!("{lost}. The show keeps running on the server; this window is not in control."))
-                            .strong(),
+                        RichText::new(format!(
+                            "{}  {lost}. The show keeps running on the server; this window is not in control.",
+                            icon::PLUGS
+                        ))
+                        .font(semibold(13.0))
+                        .color(egui::Color32::WHITE),
                     );
                 });
         }
 
         let before = serde_json::to_string(&self.dock).unwrap_or_default();
         self.session.rig.keyboard = false;
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(NAVY)).show(ui, |ui| {
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(BASE).inner_margin(egui::Margin::same(4))).show(ui, |ui| {
             let style = dock_style(ui.style());
             let mut viewer = Viewer { session: &mut self.session };
             DockArea::new(&mut self.dock)
@@ -292,12 +305,14 @@ impl Shell {
         let song_id = s.song.as_ref().map(|x| x.id.clone());
         let st = s.status.song.clone();
         ui.horizontal(|ui| {
-            ui.label(RichText::new("PTZ Programmer").strong().color(BLUE));
-            ui.separator();
+            ui.spacing_mut().item_spacing.x = 4.0;
+            ui.label(RichText::new(icon::VIDEO_CAMERA).font(icon_font(18.0)).color(ACCENT));
+            ui.label(RichText::new("PTZ Programmer").font(semibold(13.5)));
+            ui.add_space(8.0);
             let parked = s.status.transport.run == Run::Stopped && s.status.transport.output == Output::Rehearse;
             let need_lease = can_edit.clone().err().filter(|_| !s.status.you_hold_lease || s.lost.is_some());
-            let gate = |ui: &mut Ui, enabled: bool, label: &str, why: Option<String>, tip: &str| -> bool {
-                let r = ui.add_enabled(enabled, egui::Button::new(label));
+            let gate = |ui: &mut Ui, enabled: bool, glyph: &str, label: &str, why: Option<String>, tip: &str| -> bool {
+                let r = icon_button(ui, enabled, glyph, label, Look::Quiet, vec2(0.0, 26.0));
                 let r = match (&why, enabled) {
                     (Some(w), false) => r.on_disabled_hover_text(w.clone()),
                     _ => r.on_hover_text(tip),
@@ -305,11 +320,11 @@ impl Shell {
                 r.clicked()
             };
             let park_why = need_lease.clone().or_else(|| (!parked).then(|| "Stop and disarm to change songs".to_string()));
-            if gate(ui, park_why.is_none(), "New", park_why.clone(), "Start a new song") {
+            if gate(ui, park_why.is_none(), icon::PLUS, "New", park_why.clone(), "Start a new song") {
                 let n = s.songs.len() + 1;
                 self.dialog = Dialog::New { name: format!("Song {n}"), start_tc: next_start(s) };
             }
-            if gate(ui, park_why.is_none(), "Load", park_why.clone(), "Open another song") {
+            if gate(ui, park_why.is_none(), icon::FOLDER_OPEN, "Load", park_why.clone(), "Open another song") {
                 s.link.send(Cmd::RefreshSongs);
                 self.dialog = Dialog::Load;
             }
@@ -319,13 +334,13 @@ impl Shell {
                 .clone()
                 .or_else(|| (!has).then(|| "No song is open".to_string()))
                 .or_else(|| (!dirty).then(|| "Nothing to save".to_string()));
-            if gate(ui, save_why.is_none(), "Save", save_why, "Save the draft  ( Cmd-S )") {
+            if gate(ui, save_why.is_none(), icon::FLOPPY_DISK, "Save", save_why, "Save the draft  ( Cmd-S )") {
                 if let Some(id) = &song_id {
                     s.link.send(Cmd::Save(id.clone()));
                 }
             }
             let any_why = need_lease.clone().or_else(|| (!has).then(|| "No song is open".to_string()));
-            if gate(ui, any_why.is_none(), "Save As", any_why.clone(), "Save a copy under a new name and open it") {
+            if gate(ui, any_why.is_none(), icon::COPY, "Save As", any_why.clone(), "Save a copy under a new name and open it") {
                 let name = s.song.as_ref().map(|x| format!("{} copy", x.name)).unwrap_or_default();
                 self.dialog = Dialog::SaveAs { name };
             }
@@ -334,7 +349,7 @@ impl Shell {
                 .err()
                 .or_else(|| (!has).then(|| "No song is open".to_string()))
                 .or_else(|| (!dirty).then(|| "No changes since the last Save".to_string()));
-            if gate(ui, revert_why.is_none(), "Revert", revert_why, "Go back to the last Save") {
+            if gate(ui, revert_why.is_none(), icon::ARROW_COUNTER_CLOCKWISE, "Revert", revert_why, "Go back to the last Save") {
                 self.dialog = Dialog::Revert;
             }
             let clean = st.as_ref().is_some_and(|x| x.committed_clean);
@@ -347,6 +362,7 @@ impl Shell {
             if gate(
                 ui,
                 commit_why.is_none(),
+                icon::SEAL_CHECK,
                 "Commit",
                 commit_why,
                 "Freeze this draft as the next revision. Only committed revisions can be armed",
@@ -355,7 +371,8 @@ impl Shell {
                     s.link.send(Cmd::Commit(id.clone()));
                 }
             }
-            ui.separator();
+            ui.add_space(8.0);
+            ui.spacing_mut().item_spacing.x = 8.0;
 
             match &s.song {
                 Some(song) => {
@@ -385,9 +402,9 @@ impl Shell {
                             Some(n) => format!("revision {n} + edits"),
                             None => "never committed".to_string(),
                         };
-                        ui.label(RichText::new(rev).color(if st.committed_clean { GREEN } else { MUTED }));
+                        chip(ui, &rev, if st.committed_clean { GREEN } else { MUTED }, false);
                         if st.dirty {
-                            ui.label(RichText::new("unsaved").color(AMBER)).on_hover_text(
+                            chip(ui, "unsaved", AMBER, false).on_hover_text(
                                 "The draft has changes since the last Save. They are kept on the server either way",
                             );
                         }
@@ -397,7 +414,10 @@ impl Shell {
                     if n > 0 {
                         let blocking = s.song.as_ref().map(|song| s.compiled.blocking_count(song)).unwrap_or(0);
                         let text = format!("{n} issue{}", if n == 1 { "" } else { "s" });
-                        let r = ui.add(egui::Label::new(RichText::new(text).color(AMBER).strong()).sense(egui::Sense::click()));
+                        ui.label(RichText::new(icon::WARNING).font(icon_font(15.0)).color(AMBER));
+                        let r = ui.add(
+                            egui::Label::new(RichText::new(text).color(AMBER).font(semibold(13.0))).sense(egui::Sense::click()),
+                        );
                         let tip = if blocking > 0 {
                             "Arm is blocked until these are fixed or accepted. Click to go to the first"
                         } else {
@@ -436,15 +456,16 @@ impl Shell {
                     {
                         s.link.send(Cmd::ReleaseLease);
                     }
-                    ui.label(RichText::new("You hold the edit lease").color(GREEN));
+                    chip(ui, "You hold the edit lease", GREEN, false);
                 } else {
                     let (label, text, force) = match &s.status.lease {
                         Some(l) => ("Take over", format!("Watching. {} holds the edit lease", l.holder), true),
                         None => ("Take the lease", "Watching. Nobody holds the edit lease".to_string(), false),
                     };
-                    if ui.button(label).clicked() {
+                    if ui.add(filled(label, ACCENT)).clicked() {
                         s.link.send(Cmd::TakeLease { name: s.station.clone(), force });
                     }
+                    ui.label(RichText::new(icon::EYE).font(icon_font(15.0)).color(AMBER));
                     ui.label(RichText::new(text).color(AMBER));
                 }
                 ui.label(RichText::new(&s.link.base).color(MUTED).small());
@@ -459,30 +480,35 @@ impl Shell {
             // E-Stop is always first to be laid out on the right, and always enabled.
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if t.estop {
-                    action_button(ui, s, Action::ResetEstop, "Reset E-Stop", Some((AMBER, NAVY)), 120.0);
-                    ui.label(RichText::new("E-STOP LATCHED").color(RED).strong());
+                    let reset = action_glyph(Action::ResetEstop);
+                    action_button(ui, s, Action::ResetEstop, reset, "Reset E-Stop", Look::Solid(AMBER), 130.0);
+                    chip(ui, "E-STOP LATCHED", RED, true);
                 } else {
-                    let b = egui::Button::new(RichText::new("E-STOP").color(OFF_WHITE).strong().size(14.0))
-                        .fill(RED)
-                        .stroke(Stroke::new(1.5, OFF_WHITE))
-                        .min_size(vec2(96.0, 32.0));
-                    if ui.add(b).on_hover_text("Stop all motion now. Works from any station, with or without the lease").clicked()
-                    {
+                    let r = icon_button(ui, true, icon::WARNING_OCTAGON, "E-STOP", Look::Solid(RED), vec2(108.0, 34.0));
+                    if r.on_hover_text("Stop all motion now. Works from any station, with or without the lease").clicked() {
                         s.act(Action::Estop);
                     }
                 }
-                ui.separator();
+                ui.add_space(4.0);
                 crate::media_ui::meters(ui, s);
-                ui.separator();
+                ui.add_space(4.0);
 
                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                     let frame = s.playhead().floor() as i64;
-                    ui.label(RichText::new(s.timecode_at(frame)).monospace().size(22.0).color(if s.status.hardware_live {
+                    let ink = if t.estop {
+                        RED
+                    } else if s.status.hardware_live {
                         GREEN
                     } else {
                         OFF_WHITE
-                    }));
-                    ui.add_space(6.0);
+                    };
+                    egui::Frame::new()
+                        .fill(BASE)
+                        .stroke(Stroke::new(1.0, LINE))
+                        .corner_radius(7)
+                        .inner_margin(egui::Margin::symmetric(12, 3))
+                        .show(ui, |ui| ui.label(RichText::new(s.timecode_at(frame)).monospace().size(22.0).color(ink)));
+                    ui.add_space(4.0);
 
                     // The main button: whatever the server says is the next step.
                     let g = s.status.guidance.clone();
@@ -490,43 +516,40 @@ impl Shell {
                     let live = t.output != Output::Rehearse;
                     match primary {
                         Some(action) => {
-                            let fill = match action {
-                                Action::Play if live => (GREEN, NAVY),
-                                Action::Stop => (OFF_WHITE, NAVY),
-                                _ => (BLUE, OFF_WHITE),
+                            let look = match action {
+                                Action::Play if live => Look::Solid(GREEN),
+                                Action::Stop => Look::Solid(OFF_WHITE),
+                                _ => Look::Solid(ACCENT),
                             };
-                            action_button(ui, s, action, &g.primary_label, Some(fill), 118.0);
+                            action_button(ui, s, action, action_glyph(action), &g.primary_label, look, 124.0);
                         }
                         None => {
-                            ui.add_enabled(
-                                false,
-                                egui::Button::new(RichText::new("Rehearse").size(13.5)).min_size(vec2(118.0, 30.0)),
-                            )
-                            .on_disabled_hover_text(g.hint.clone());
+                            icon_button(ui, false, icon::PLAY, "Rehearse", Look::Plain, vec2(124.0, 30.0))
+                                .on_disabled_hover_text(g.hint.clone());
                         }
                     }
                     if primary != Some(Action::Stop) {
-                        action_button(ui, s, Action::Stop, "Stop", None, 0.0);
+                        action_button(ui, s, Action::Stop, icon::STOP, "Stop", Look::Plain, 0.0);
                     }
-                    action_button(ui, s, Action::Cue, "Cue", None, 0.0);
-                    ui.separator();
+                    action_button(ui, s, Action::Cue, icon::SKIP_BACK, "Cue", Look::Plain, 0.0);
+                    ui.add_space(6.0);
 
                     if t.locked() {
-                        action_button(ui, s, Action::Unlock, "Unlock", None, 0.0);
+                        action_button(ui, s, Action::Unlock, icon::LOCK_SIMPLE_OPEN, "Unlock", Look::Plain, 0.0);
                     } else {
                         crate::lock_ui::lock_menu(ui, s);
                     }
                     if t.output == Output::Rehearse {
-                        action_button(ui, s, Action::Arm, ARM_LABEL, Some((GREEN, NAVY)), 0.0);
+                        action_button(ui, s, Action::Arm, icon::POWER, ARM_LABEL, Look::Outline(GREEN), 0.0);
                     } else {
-                        action_button(ui, s, Action::Disarm, "Disarm", Some((AMBER, NAVY)), 0.0);
+                        action_button(ui, s, Action::Disarm, icon::PROHIBIT, "Disarm", Look::Outline(AMBER), 0.0);
                     }
                     if t.record {
-                        action_button(ui, s, Action::RecordOff, "Record off", Some((RED, OFF_WHITE)), 0.0);
+                        action_button(ui, s, Action::RecordOff, icon::RECORD, "Record off", Look::Solid(RED), 0.0);
                     } else {
-                        action_button(ui, s, Action::RecordOn, "Record", None, 0.0);
+                        action_button(ui, s, Action::RecordOn, icon::RECORD, "Record", Look::Outline(RED), 0.0);
                     }
-                    ui.separator();
+                    ui.add_space(6.0);
                     crate::lock_ui::state_chips(ui, s);
                     ui.add(egui::Label::new(RichText::new(&g.hint).color(MUTED)).truncate());
                 });
@@ -672,7 +695,7 @@ impl Shell {
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         let ok = valid && !name.trim().is_empty();
-                        if ui.add_enabled(ok, egui::Button::new("Create").fill(BLUE)).clicked() {
+                        if ui.add_enabled(ok, filled("Create", ACCENT)).clicked() {
                             s.link.send(Cmd::NewSong { name: name.trim().to_string(), start_tc: Some(start_tc.clone()) });
                             close = true;
                         }
@@ -734,7 +757,7 @@ impl Shell {
                     ui.add(egui::TextEdit::singleline(name).desired_width(300.0));
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        if ui.add_enabled(!name.trim().is_empty(), egui::Button::new("Save copy").fill(BLUE)).clicked() {
+                        if ui.add_enabled(!name.trim().is_empty(), filled("Save copy", ACCENT)).clicked() {
                             if let Some(song) = &s.song {
                                 s.link.send(Cmd::CopySong { id: song.id.clone(), name: name.trim().to_string() });
                             }
@@ -753,7 +776,7 @@ impl Shell {
                     ui.label("Every change since the last Save is dropped. This cannot be undone.");
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        if ui.add(egui::Button::new("Revert").fill(AMBER)).clicked() {
+                        if ui.add(filled("Revert", AMBER)).clicked() {
                             if let Some(song) = &s.song {
                                 s.link.send(Cmd::Revert(song.id.clone()));
                             }
@@ -772,7 +795,7 @@ impl Shell {
                     ui.label("The draft and every committed revision are removed from the server.");
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        if ui.add(egui::Button::new("Delete").fill(RED)).clicked() {
+                        if ui.add(filled("Delete", RED)).clicked() {
                             s.link.send(Cmd::DeleteSong(id.clone()));
                             next = Some(Dialog::Load);
                         }
@@ -791,7 +814,7 @@ impl Shell {
                 ui.label(RichText::new("The pedestal does not move. E-Stop stops the camera and abandons the sync.").color(MUTED));
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if ui.add(egui::Button::new("Move the camera and sync").fill(AMBER)).clicked() {
+                    if ui.add(filled("Move the camera and sync", AMBER)).clicked() {
                         s.link.send(Cmd::SyncPresets(s.cam_id().to_string()));
                         s.confirm_sync = false;
                     }
@@ -825,7 +848,7 @@ impl Shell {
                 }
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    if ui.add(egui::Button::new("Rename").fill(BLUE)).clicked() {
+                    if ui.add(filled("Rename", ACCENT)).clicked() {
                         apply = true;
                     }
                     if ui.button("Cancel").clicked() {
@@ -886,7 +909,7 @@ impl Shell {
             );
             ui.add_space(10.0);
             ui.horizontal(|ui| {
-                if ui.add(egui::Button::new(format!("Set the song start to {file_start}")).fill(BLUE)).clicked() {
+                if ui.add(filled(format!("Set the song start to {file_start}"), ACCENT)).clicked() {
                     choice = Some(true);
                 }
                 if ui.button("Place it where I dropped it").clicked() {
@@ -1010,13 +1033,13 @@ impl PtzApp {
     fn connect_screen(&mut self, ui: &mut Ui, error: Option<String>, busy: bool) {
         let mut go = false;
         let mut start_local = false;
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(NAVY)).show(ui, |ui| {
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(BASE)).show(ui, |ui| {
             ui.vertical_centered(|ui| {
                 ui.add_space((ui.available_height() * 0.18).max(20.0));
                 ui.label(RichText::new("PTZ Programmer").size(30.0).strong());
                 ui.label(RichText::new("Timeline programming and playout for the FR7 and its pedestal").color(MUTED));
                 ui.add_space(18.0);
-                egui::Frame::new().fill(CHARCOAL).corner_radius(10).inner_margin(egui::Margin::same(18)).show(ui, |ui| {
+                egui::Frame::new().fill(PANEL).corner_radius(10).inner_margin(egui::Margin::same(18)).show(ui, |ui| {
                     ui.set_width(430.0);
                     egui::Grid::new("connect_grid").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
                         ui.label("Show server");
@@ -1051,13 +1074,7 @@ impl PtzApp {
                             ui.label("Connecting");
                         } else {
                             let ok = !self.settings.server.trim().is_empty() && !self.settings.station.trim().is_empty();
-                            if ui
-                                .add_enabled(
-                                    ok,
-                                    egui::Button::new(RichText::new("Connect").strong()).fill(BLUE).min_size(vec2(110.0, 32.0)),
-                                )
-                                .clicked()
-                            {
+                            if ui.add_enabled(ok, filled("Connect", ACCENT).min_size(vec2(110.0, 32.0))).clicked() {
                                 go = true;
                             }
                             if ui

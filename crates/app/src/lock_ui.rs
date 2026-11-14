@@ -3,7 +3,7 @@
 use crate::link::Cmd;
 use crate::session::Session;
 use crate::theme::*;
-use egui::{Color32, RichText, Stroke, Ui};
+use egui::{RichText, Ui};
 use ptz_core::api::TransportRequest;
 use ptz_core::chase::ChaseState;
 use ptz_core::transport::{Action, Output, Run, TimeMode};
@@ -71,36 +71,26 @@ pub fn lock_menu(ui: &mut Ui, s: &mut Session) {
     }
 }
 
-fn chip(ui: &mut Ui, text: &str, fill: Color32, ink: Color32) -> egui::Response {
-    egui::Frame::new()
-        .fill(fill)
-        .stroke(Stroke::new(1.0, mix(fill, OFF_WHITE, 0.25)))
-        .corner_radius(4)
-        .inner_margin(egui::Margin::symmetric(7, 2))
-        .show(ui, |ui| ui.label(RichText::new(text).color(ink).small().strong()))
-        .response
-}
-
 /// The five transport fields, each as its own chip.
 pub fn state_chips(ui: &mut Ui, s: &Session) {
     let t = s.status.transport;
     match t.output {
-        Output::Rehearse => chip(ui, "REHEARSE", LANE, OFF_WHITE).on_hover_text("Nothing is sent to the rig"),
-        Output::Positioning => chip(ui, "ARMING", AMBER, NAVY).on_hover_text("The rig is moving to the pose at the playhead"),
-        Output::Armed => chip(ui, "ARMED", GREEN, NAVY).on_hover_text("Play moves the rig"),
+        Output::Rehearse => chip(ui, "REHEARSE", MUTED, false).on_hover_text("Nothing is sent to the rig"),
+        Output::Positioning => chip(ui, "ARMING", AMBER, true).on_hover_text("The rig is moving to the pose at the playhead"),
+        Output::Armed => chip(ui, "ARMED", GREEN, true).on_hover_text("Play moves the rig"),
     };
     match t.time {
-        TimeMode::FreeRun => chip(ui, "FREE RUN", LANE, OFF_WHITE).on_hover_text("The server's own clock drives the playhead"),
+        TimeMode::FreeRun => chip(ui, "FREE RUN", MUTED, false).on_hover_text("The server's own clock drives the playhead"),
         _ => {
             let lock = &s.status.lock;
             let name = lock.source.as_deref().map(|src| source_name(s, src)).unwrap_or_else(|| "code".into());
-            let (word, fill, ink) = match (lock.chase, t.run) {
-                (_, Run::WaitingForCode) => ("WAITING FOR", AMBER, NAVY),
-                (ChaseState::Locked, _) => ("LOCKED TO", BLUE, OFF_WHITE),
-                (ChaseState::Freewheel, _) => ("FREEWHEEL", AMBER, NAVY),
-                _ => ("LOCK:", LANE, OFF_WHITE),
+            let (word, color, solid) = match (lock.chase, t.run) {
+                (_, Run::WaitingForCode) => ("WAITING FOR", AMBER, true),
+                (ChaseState::Locked, _) => ("LOCKED TO", BLUE, true),
+                (ChaseState::Freewheel, _) => ("FREEWHEEL", AMBER, true),
+                _ => ("LOCK:", MUTED, false),
             };
-            let r = chip(ui, &format!("{word} {name}"), fill, ink);
+            let r = chip(ui, &format!("{word} {name}"), color, solid);
             let mut tip = match &lock.last_code {
                 Some(code) => format!("Last code {code}"),
                 None => "No code has arrived yet".to_string(),
@@ -115,7 +105,7 @@ pub fn state_chips(ui: &mut Ui, s: &Session) {
         }
     };
     if t.record {
-        chip(ui, "REC", RED, OFF_WHITE).on_hover_text("Play writes the rig's movement onto the record axes");
+        chip(ui, "REC", RED, true).on_hover_text("Play writes the rig's movement onto the record axes");
     }
     if let Some(p) = &s.status.lock.problem {
         ui.label(RichText::new(p).color(AMBER));

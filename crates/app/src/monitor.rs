@@ -94,9 +94,9 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
     } else if held {
         ("HELD  this camera stopped where it was".to_string(), RED, OFF_WHITE)
     } else if live {
-        (if simulated { "LIVE  simulator".to_string() } else { "LIVE  rig is moving".to_string() }, GREEN, NAVY)
+        (if simulated { "LIVE  simulator".to_string() } else { "LIVE  rig is moving".to_string() }, GREEN, BASE)
     } else {
-        ("REHEARSE  nothing is sent to the rig".to_string(), with_alpha(NAVY, 230), OFF_WHITE)
+        ("REHEARSE  nothing is sent to the rig".to_string(), with_alpha(BASE, 230), OFF_WHITE)
     };
     badge(&painter, pic.left_top() + vec2(8.0, 8.0), Align2::LEFT_TOP, &text, fill_c, ink);
     let what = match source {

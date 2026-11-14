@@ -18,6 +18,7 @@ serde_json = { workspace = true }
 eframe = { workspace = true }
 egui = { workspace = true }
 egui_dock = { workspace = true }
+egui-phosphor = { workspace = true }
 ureq = { workspace = true }
 tungstenite = { workspace = true }
 image = { workspace = true }

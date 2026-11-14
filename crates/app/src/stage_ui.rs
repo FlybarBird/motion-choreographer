@@ -658,7 +658,7 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
         if let Some(at) = probe.screen([lens[0], lens[1], lens[2] + 0.25]).filter(|at| rect.contains(*at)) {
             let on = i == selected;
             let text = format!("{} {}", i + 1, camera.name);
-            let ink = if on { NAVY } else { camera_color(i) };
+            let ink = if on { BASE } else { camera_color(i) };
             let fill = if on { camera_color(i) } else { with_alpha(PANEL_DARK, 215) };
             labels[i] = crate::monitor::badge(&clipped, at + vec2(0.0, -4.0), Align2::CENTER_BOTTOM, &text, fill, ink);
         }
@@ -666,7 +666,7 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
     s.stage_view.labels = labels;
     for p in &s.stage_view.measure {
         if let Some(at) = probe.screen(*p) {
-            clipped.circle(at, 4.0, OFF_WHITE, Stroke::new(1.0, NAVY));
+            clipped.circle(at, 4.0, OFF_WHITE, Stroke::new(1.0, BASE));
         }
     }
 

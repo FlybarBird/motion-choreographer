@@ -4,7 +4,7 @@ use crate::link::Cmd;
 use crate::session::Session;
 use crate::theme::*;
 use crate::timeline_ui::PresetDrag;
-use egui::{vec2, Color32, RichText, Sense, Stroke, StrokeKind, Ui};
+use egui::{vec2, RichText, Sense, Stroke, StrokeKind, Ui};
 use ptz_core::compile::{suggested_duration, Issue};
 use ptz_core::edit;
 use ptz_core::pose::{Axis, Preset};
@@ -79,7 +79,7 @@ fn preset_card(ui: &mut Ui, preset: &Preset, picture: Option<egui::TextureId>) -
     let width = ui.available_width().clamp(120.0, 400.0);
     let (rect, resp) = ui.allocate_exact_size(vec2(width, 58.0), Sense::hover());
     let p = ui.painter_at(rect);
-    let fill = if resp.hovered() { Color32::from_rgb(0x34, 0x36, 0x46) } else { LANE };
+    let fill = if resp.hovered() { CONTROL } else { LANE };
     p.rect(rect, 6.0, fill, Stroke::new(1.0, LINE), StrokeKind::Inside);
     let thumb = egui::Rect::from_min_size(rect.min + vec2(5.0, 5.0), THUMB);
     crate::stage::paint_picture(&p, thumb, picture);
