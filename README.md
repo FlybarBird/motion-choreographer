@@ -462,7 +462,7 @@ only be changed while stopped and disarmed.
 | AutoPod+ address | The leg box, port 80 unless given. |
 | Counts per degree, counts run backwards | How the head reports pan and tilt. |
 | Speed steps | The speed of each of the 24 VISCA steps. Assumed until bring-up measures them. |
-| Plain moves | Send a preset move as one absolute move and let the head run it, instead of steering it. |
+| Plain moves | Send a preset move as one absolute move and let the head run it, instead of steering it. A camera with a keep-out rule that names pan or tilt is steered all the same: the rules are checked on the curve, and only a steered head stays on it. |
 | Query delay | How old a position is when it arrives. |
 | Arm moves at, Tracking fault after, tolerances | As described under Going live. |
 | AutoPod+ height map | Raw position against measured height, at three heights or more. **Add the current height** takes the raw value from the leg box. |

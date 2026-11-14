@@ -1556,6 +1556,12 @@ impl Show {
         if !camera.rig.fr7_absolute_moves || self.transport.run != Run::Playing || self.transport.output != Output::Armed {
             return None;
         }
+        // The keep-out rules are checked on the curve. A head on a ramp of its own is not on the
+        // curve, so where a rule watches pan or tilt the head is steered along what was checked.
+        let head = |a: Axis| matches!(a, Axis::Pan | Axis::Tilt);
+        if camera.keep_out.iter().any(|r| head(r.when_axis) || head(r.then_axis)) {
+            return None;
+        }
         let e = self.entry()?;
         let f = self.frame_f;
         let clip = e.song.motion.iter().find(|c| {

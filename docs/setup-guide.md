@@ -578,7 +578,7 @@ mix real rigs and simulated ones.
 | AutoPod+ address | The leg box. Port 80 unless you add one. |
 | Counts per degree, Counts run backwards | How the head reports pan and tilt. From bring-up. |
 | Speed steps | The speed of each VISCA step. Shows *assumed* until bring-up has measured them. |
-| Plain moves | Send a preset move as one command and let the head run it. Use it if bring-up showed that steering strays. |
+| Plain moves | Send a preset move as one command and let the head run it. Use it if bring-up showed that steering strays. A camera with a keep-out rule that names pan or tilt is steered all the same. |
 | Query delay | How old a position is when it arrives. Zero uses the round trip measured as it runs. |
 | Arm moves at | The share of top speed used to travel to the playhead when arming. Half to start with. |
 | Tracking fault after, Tolerance | How far and for how long an axis may be off the timeline while live before that camera is held |

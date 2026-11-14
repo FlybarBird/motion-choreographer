@@ -678,3 +678,67 @@ fn estop_reaches_the_rig_while_the_show_itself_is_held_up() {
     do_act(&api, Action::Disarm);
     wait_for(&api, |s| !s.telemetry.halting);
 }
+
+#[test]
+fn with_plain_moves_a_camera_whose_keep_out_rules_watch_pan_or_tilt_is_steered_along_the_checked_curve() {
+    let t = TestServer::start("live-plain-keep-out");
+    let api = t.client("a");
+    api.take_lease("Luke-MacBook", false).unwrap();
+    let rig = Rig::start();
+    let mut project = rig.connect(&api);
+    // The desk: with the column below 100 mm the head must not look further down than 8 degrees.
+    let rule = KeepOutRule {
+        name: "Desk".into(),
+        when_axis: Axis::Elevation,
+        when: Cmp::Below,
+        when_value: 100.0,
+        then_axis: Axis::Tilt,
+        must_be: Cmp::Above,
+        must_value: -8.0,
+    };
+    project.cameras[0].rig.fr7_absolute_moves = true;
+    project.cameras[0].keep_out = vec![rule.clone()];
+    let project = api.put_project(&project).unwrap();
+    wait_for(&api, |s| s.first().adapters.len() == 2 && s.first().adapters.iter().all(|a| a.connected));
+
+    // Column up 400 mm while tilting down 30 degrees. On the timeline the two ease together, so the
+    // column is clear of the desk before the tilt passes 8 degrees: the song arms. Left to its own
+    // ramp the head would be down there in a fraction of the time, with the column still low.
+    let mark = store(&api, "Over the desk", Pose { tilt: -30.0, elevation: 400.0, ..Pose::home() });
+    let (song_id, clip) = song_with_move(&api, &project, "Plain", &mark);
+    let end = {
+        let song = api.working(&song_id).unwrap().song;
+        let c = song.motion_clip(&clip).unwrap();
+        c.start_frame + c.duration_frames
+    };
+    do_act(&api, Action::Arm);
+    wait_for(&api, |s| s.transport.output == Output::Armed);
+    rig.fr7.clear_seen();
+    do_act(&api, Action::Play);
+
+    let mut worst: Option<Pose> = None;
+    loop {
+        let (_, tilt, ..) = rig.fr7.pose();
+        let at = Pose { tilt, elevation: rig.pod.height_mm(), ..Pose::home() };
+        if rule.violated(&at) && worst.is_none_or(|w| at.tilt < w.tilt) {
+            worst = Some(at);
+        }
+        let st = api.status().unwrap();
+        assert_eq!(st.telemetry.fault, None);
+        assert_eq!(st.transport.output, Output::Armed);
+        if st.frame > end {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        worst.is_none(),
+        "the rig broke \"{}\": tilt reached {:.1} degrees with the column at {:.0} mm",
+        rule.describe(),
+        worst.unwrap().tilt,
+        worst.unwrap().elevation
+    );
+    let absolute = rig.fr7.commands().into_iter().filter(|c| c.starts_with(&[0x81, 0x01, 0x06, 0x02])).count();
+    assert_eq!(absolute, 0, "the head was steered, not sent off on a ramp of its own");
+    assert!(rig.fr7.pose().1 < -29.0 && rig.pod.height_mm() > 390.0, "and the move was made: {:?}", rig.pose());
+}
