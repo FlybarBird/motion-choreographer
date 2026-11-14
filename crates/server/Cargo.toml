@@ -1,0 +1,40 @@
+[package]
+name = "ptz-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "PTZ Programmer show server"
+
+[lib]
+name = "ptz_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ptz-server"
+path = "src/main.rs"
+
+[[bin]]
+name = "ptz-probe"
+path = "src/bin/probe.rs"
+
+[[bin]]
+name = "ptz-bringup"
+path = "src/bin/bringup.rs"
+
+[dependencies]
+ptz-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true }
+axum = { workspace = true }
+futures-util = { workspace = true }
+cpal = { workspace = true }
+symphonia = { workspace = true }
+rubato = { workspace = true }
+midir = { workspace = true }
+ureq = { workspace = true }
+md-5 = { workspace = true }
+
+[lints]
+workspace = true
