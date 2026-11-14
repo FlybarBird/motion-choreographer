@@ -86,6 +86,8 @@ pub struct Session {
     /// A model file chosen in the Inspector, for the window to import.
     pub stage_import_wanted: Option<std::path::PathBuf>,
     /// Where the Multiview drew each camera's tile last frame, for the UI tests.
+    /// Show settings, and the page it is on, while it is open in place of the panels.
+    pub settings: Option<crate::settings_ui::Page>,
     pub probe_tiles: Vec<(String, egui::Rect)>,
     /// The camera's own picture of each preset that has one.
     pub preset_pictures: HashMap<String, PresetPicture>,
@@ -165,6 +167,7 @@ impl Session {
             world: Default::default(),
             stage_view: Default::default(),
             stage_import_wanted: None,
+            settings: None,
             probe_tiles: Vec::new(),
             preset_pictures: HashMap::new(),
             confirm_sync: false,

@@ -395,6 +395,30 @@ fn e_stop(ui: &mut Ui, s: &mut Session) {
     }
 }
 
+/// Space: the transport's key and nothing else's.
+fn transport_key(ctx: &egui::Context, s: &mut Session) {
+    // With the keyboard on E-STOP, Space presses E-STOP and does nothing else.
+    if ctx.data(|d| d.get_temp::<bool>(e_stop_has_keyboard_id())).unwrap_or(false) {
+        return;
+    }
+    // A button that Tab left the keyboard on is not pressed as well: it gives the keyboard up
+    // before it can take the key.
+    if !s.rig.keyboard {
+        ctx.memory_mut(|m| {
+            if let Some(id) = m.focused() {
+                m.surrender_focus(id);
+            }
+        });
+    }
+    // Space runs the transport. Releasing the E-Stop latch takes a click on its own button.
+    // A key does what its button would: nothing, while the button is off.
+    if let Some(action) = s.status.guidance.primary.filter(|a| !matches!(a, Action::Estop | Action::ResetEstop)) {
+        if s.offers(action) {
+            s.act(action);
+        }
+    }
+}
+
 /// The icon that stands for a transport action wherever it is offered.
 fn action_glyph(action: Action) -> &'static str {
     match action {
@@ -452,18 +476,14 @@ impl Shell {
         }
 
         let before = serde_json::to_string(&self.dock).unwrap_or_default();
+        // The rig controller is not drawn while Show settings is open, so it does not have the keyboard.
         self.session.rig.keyboard = false;
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(BASE).inner_margin(egui::Margin::same(4))).show(ui, |ui| {
-            let style = dock_style(ui.style());
-            let mut viewer = Viewer { session: &mut self.session };
-            DockArea::new(&mut self.dock)
-                .style(style)
-                .show_close_buttons(false)
-                .show_add_buttons(false)
-                .show_leaf_close_all_buttons(false)
-                .show_leaf_collapse_buttons(false)
-                .show_inside(ui, &mut viewer);
-        });
+        if let Some(mut page) = self.session.settings {
+            crate::settings_ui::area(ui, &mut self.session, &mut page);
+            self.session.settings = Some(page);
+        } else {
+            self.panels(ui);
+        }
         if serde_json::to_string(&self.dock).unwrap_or_default() != before {
             self.layout_changed = true;
         }
@@ -478,6 +498,20 @@ impl Shell {
         }
         self.dialogs(ui.ctx());
         self.toasts(ui.ctx());
+    }
+
+    fn panels(&mut self, ui: &mut Ui) {
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(BASE).inner_margin(egui::Margin::same(4))).show(ui, |ui| {
+            let style = dock_style(ui.style());
+            let mut viewer = Viewer { session: &mut self.session };
+            DockArea::new(&mut self.dock)
+                .style(style)
+                .show_close_buttons(false)
+                .show_add_buttons(false)
+                .show_leaf_close_all_buttons(false)
+                .show_leaf_collapse_buttons(false)
+                .show_inside(ui, &mut viewer);
+        });
     }
 
     fn header(&mut self, ui: &mut Ui) {
@@ -792,6 +826,19 @@ impl Shell {
         if ctx.text_edit_focused() {
             return;
         }
+        crate::camera_ui::shortcuts(&ctx, s);
+        if s.settings.is_some() {
+            // Esc closes Show settings, unless it is closing a list that is open over it. The song is
+            // out of sight, so the keys that edit it or move through it do nothing; Space still runs
+            // the transport, which is still on screen.
+            if pressed(Key::Escape) && !egui::Popup::is_any_open(&ctx) {
+                s.settings = None;
+            }
+            if pressed(Key::Space) {
+                transport_key(&ctx, s);
+            }
+            return;
+        }
         if let Some(m) = chord(Key::Z).filter(|m| m.command) {
             if m.shift {
                 s.redo();
@@ -802,30 +849,11 @@ impl Shell {
         if with_cmd(Key::D) {
             timeline_ui::duplicate_selection(s);
         }
-        crate::camera_ui::shortcuts(&ctx, s);
         if pressed(Key::Escape) {
             s.timeline.cancel();
         }
-        // With the keyboard on E-STOP, Space presses E-STOP and does nothing else.
-        let on_e_stop = ctx.data(|d| d.get_temp::<bool>(e_stop_has_keyboard_id())).unwrap_or(false);
-        if pressed(Key::Space) && !on_e_stop {
-            // Otherwise Space is the transport's key and nothing else's. A button that Tab left the
-            // keyboard on is not pressed as well: it gives the keyboard up before it can take the key.
-            if !s.rig.keyboard {
-                ctx.memory_mut(|m| {
-                    if let Some(id) = m.focused() {
-                        m.surrender_focus(id);
-                    }
-                });
-            }
-            let g = &s.status.guidance;
-            // Space runs the transport. Releasing the E-Stop latch takes a click on its own button.
-            // A key does what its button would: nothing, while the button is off.
-            if let Some(action) = g.primary.filter(|a| !matches!(a, Action::Estop | Action::ResetEstop)) {
-                if s.offers(action) {
-                    s.act(action);
-                }
-            }
+        if pressed(Key::Space) {
+            transport_key(&ctx, s);
         }
         if pressed(Key::Home) && s.offers(Action::Cue) {
             s.act(Action::Cue);

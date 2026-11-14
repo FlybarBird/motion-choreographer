@@ -704,24 +704,12 @@ fn inspect_song(ui: &mut Ui, s: &mut Session) {
         }
     }
 
-    section(ui, "Project");
-    let editable = s.can_edit().is_ok();
-    egui::Grid::new("project_grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
-        ui.label("Frame rate");
-        ui.add_enabled_ui(editable, |ui| {
-            egui::ComboBox::from_id_salt("rate").selected_text(s.project.rate.label()).show_ui(ui, |ui| {
-                for rate in ptz_core::FrameRate::ALL {
-                    if ui.selectable_label(s.project.rate == rate, rate.label()).clicked() && rate != s.project.rate {
-                        let mut p = s.project.clone();
-                        p.rate = rate;
-                        s.link.send(Cmd::PutProject(Box::new(p)));
-                    }
-                }
-            });
-        });
-        ui.end_row();
-    });
-    crate::settings_ui::project(ui, s);
+    section(ui, "The whole show");
+    note(ui, "Cameras, rigs, lenses, the stage, audio output and timecode inputs are in Show settings.");
+    ui.add_space(4.0);
+    if icon_button(ui, true, icon::GEAR_SIX, "Open Show settings", Look::Quiet, egui::vec2(0.0, 26.0)).clicked() {
+        s.settings = Some(crate::settings_ui::Page::default());
+    }
 }
 
 pub fn inspector(ui: &mut Ui, s: &mut Session) {

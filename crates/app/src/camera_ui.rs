@@ -76,35 +76,58 @@ pub fn bar(ui: &mut Ui, s: &mut Session) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 5.0;
         ui.label(RichText::new("Cameras").color(MUTED).small());
-        egui::ScrollArea::horizontal().auto_shrink([false, true]).show(ui, |ui| {
-            for (i, camera) in s.project.cameras.iter().enumerate() {
-                let on = i == selected;
-                let (word, ink) = state(s.status.camera(&camera.id), output);
-                let color = camera_color(i);
-                let text =
-                    RichText::new(format!("{} {}", i + 1, camera.name)).size(12.5).color(if on { BASE } else { OFF_WHITE });
-                let button = egui::Button::new(text)
-                    .fill(if on { color } else { mix(PANEL, color, 0.16) })
-                    .stroke(Stroke::new(if on { 1.5 } else { 1.0 }, if on { OFF_WHITE } else { mix(LINE, color, 0.5) }))
-                    .min_size(vec2(0.0, 24.0));
-                let r = ui.add(button).on_hover_text(detail(s, i));
-                if r.clicked() {
-                    choose = Some(camera.id.clone());
-                }
-                // The state sits under the chip's right corner, out of the name's way.
-                let dot = r.rect.right_top() + vec2(-5.0, 5.0);
-                ui.painter().circle_filled(dot, 3.5, ink);
-                ui.painter().circle_stroke(dot, 3.5, Stroke::new(1.0, if on { BASE } else { PANEL }));
-                if matches!(word, "held" | "fault" | "stopping" | "no answer" | "reading") {
-                    ui.label(RichText::new(word).color(ink).small().strong());
-                }
+        // Show settings keeps the right end; the cameras scroll in what is left.
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let open = s.settings.is_some();
+            // It says what a click does, and its words are not those of the heading it opens.
+            let (glyph, words, look, tip) = if open {
+                (icon::X, "Close settings", Look::Solid(ACCENT), "Back to the timeline and monitors")
+            } else {
+                (
+                    icon::GEAR_SIX,
+                    crate::settings_ui::TITLE,
+                    Look::Quiet,
+                    "Cameras, rigs, lenses, the stage, audio output and timecode inputs",
+                )
+            };
+            if icon_button(ui, true, glyph, words, look, vec2(0.0, 24.0)).on_hover_text(tip).clicked() {
+                s.settings = if open { None } else { Some(crate::settings_ui::Page::default()) };
             }
-            if s.status.transport.record {
-                if let Some(i) = s.project.camera_index(&s.status.record.camera) {
-                    ui.add_space(6.0);
-                    ui.label(RichText::new(format!("Record writes camera {}", i + 1)).color(RED).small());
-                }
-            }
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                egui::ScrollArea::horizontal().auto_shrink([false, true]).show(ui, |ui| {
+                    for (i, camera) in s.project.cameras.iter().enumerate() {
+                        let on = i == selected;
+                        let (word, ink) = state(s.status.camera(&camera.id), output);
+                        let color = camera_color(i);
+                        let text = RichText::new(format!("{} {}", i + 1, camera.name)).size(12.5).color(if on {
+                            BASE
+                        } else {
+                            OFF_WHITE
+                        });
+                        let button = egui::Button::new(text)
+                            .fill(if on { color } else { mix(PANEL, color, 0.16) })
+                            .stroke(Stroke::new(if on { 1.5 } else { 1.0 }, if on { OFF_WHITE } else { mix(LINE, color, 0.5) }))
+                            .min_size(vec2(0.0, 24.0));
+                        let r = ui.add(button).on_hover_text(detail(s, i));
+                        if r.clicked() {
+                            choose = Some(camera.id.clone());
+                        }
+                        // The state sits under the chip's right corner, out of the name's way.
+                        let dot = r.rect.right_top() + vec2(-5.0, 5.0);
+                        ui.painter().circle_filled(dot, 3.5, ink);
+                        ui.painter().circle_stroke(dot, 3.5, Stroke::new(1.0, if on { BASE } else { PANEL }));
+                        if matches!(word, "held" | "fault" | "stopping" | "no answer" | "reading") {
+                            ui.label(RichText::new(word).color(ink).small().strong());
+                        }
+                    }
+                    if s.status.transport.record {
+                        if let Some(i) = s.project.camera_index(&s.status.record.camera) {
+                            ui.add_space(6.0);
+                            ui.label(RichText::new(format!("Record writes camera {}", i + 1)).color(RED).small());
+                        }
+                    }
+                });
+            });
         });
     });
     if let Some(id) = choose {

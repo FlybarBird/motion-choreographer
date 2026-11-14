@@ -4,6 +4,7 @@
 use crate::app::Shell;
 use crate::link::{Cmd, Event, Link};
 use crate::session::Session;
+use crate::settings_ui::Page;
 use crate::timeline::{self, Lane};
 use egui::{pos2, vec2, Pos2};
 use egui_kittest::Harness;
@@ -404,10 +405,10 @@ fn dragging_audio_from_the_media_tab_places_a_clip_and_its_waveform_shows_the_cl
 }
 
 #[test]
-fn the_transport_bar_names_the_output_or_says_why_it_is_silent() {
+fn the_audio_output_page_names_the_output_or_says_why_it_is_silent() {
     use egui_kittest::kittest::Queryable as _;
     let mut r = rig(Song::new("s", "Test Song", "01:00:00:00", 1500));
-    // The Inspector shows project settings when nothing is selected, including the output and routing.
+    r.settings(Page::Audio);
     r.harness.state_mut().session.status.audio.silent_reason =
         Some("There is no default audio output device. Running silent".into());
     r.harness.run_steps(2);
@@ -1030,8 +1031,7 @@ fn a_keep_out_rule_is_added_and_edited_in_the_project_settings_and_blocks_the_so
     };
     let _ = projects(&r);
 
-    r.harness.state_mut().show_tab(Tab::Inspector);
-    r.harness.run_steps(3);
+    r.settings(Page::KeepOut);
     r.press("Add a keep-out rule");
     let sent = projects(&r);
     let rule = &sent.last().expect("the project was sent").cameras[0].keep_out[0];
@@ -1055,8 +1055,7 @@ fn rig_settings_switch_to_hardware_and_take_a_height_from_the_leg_box() {
     let projects = |r: &Rig| -> Vec<Project> {
         r.cmds.try_iter().filter_map(|c| if let Cmd::PutProject(p) = c { Some(*p) } else { None }).collect()
     };
-    r.harness.state_mut().show_tab(Tab::Inspector);
-    r.harness.run_steps(3);
+    r.settings(Page::Rig);
     assert!(r.harness.query_by_label("FR7 address").is_none(), "the simulator has no addresses to set");
     {
         let s = &mut r.harness.state_mut().session;
@@ -1091,6 +1090,18 @@ fn rig_settings_switch_to_hardware_and_take_a_height_from_the_leg_box() {
 }
 
 impl Rig {
+    /// Open Show settings at a page.
+    pub fn settings(&mut self, page: Page) {
+        self.harness.state_mut().session.settings = Some(page);
+        self.harness.run_steps(3);
+    }
+
+    /// Close Show settings: back to the timeline and monitors.
+    pub fn panels(&mut self) {
+        self.harness.state_mut().session.settings = None;
+        self.harness.run_steps(3);
+    }
+
     fn blocking(&self) -> usize {
         let s = &self.harness.state().session;
         s.compiled.blocking_count(s.song.as_ref().unwrap())
@@ -1204,14 +1215,13 @@ fn each_camera_has_its_own_lane_and_a_move_dragged_to_another_lane_changes_camer
 }
 
 #[test]
-fn cameras_are_added_named_and_removed_in_the_inspector_up_to_twelve() {
+fn cameras_are_added_named_and_removed_in_show_settings_up_to_twelve() {
     use egui_kittest::kittest::Queryable as _;
     let mut r = rig(Song::new("s", "Test Song", "01:00:00:00", 1500));
     let projects = |r: &Rig| -> Vec<Project> {
         r.cmds.try_iter().filter_map(|c| if let Cmd::PutProject(p) = c { Some(*p) } else { None }).collect()
     };
-    r.harness.state_mut().show_tab(Tab::Inspector);
-    r.harness.run_steps(3);
+    r.settings(Page::Cameras);
     r.harness.get_by_label("1 of 12 cameras. Keys 1 to 9, 0, - and = select them.");
 
     r.press("Add a camera");
@@ -1291,8 +1301,6 @@ fn the_program_monitor_is_the_selected_cameras_view_through_its_lens() {
     project.cameras[1].mount.x = 3.0;
     project.cameras[1].mount.y = 6.0;
     let mut r = rig_with(project, presets, Song::new("s", "Test Song", "01:00:00:00", 1500));
-    r.harness.state_mut().show_tab(Tab::Inspector);
-    r.harness.run_steps(3);
 
     // Where the second camera's head lands in the first camera's picture, and how far away the picture says it is.
     let seen = |r: &Rig| {
@@ -1308,8 +1316,10 @@ fn the_program_monitor_is_the_selected_cameras_view_through_its_lens() {
     let marker = marker.expect("at 28 mm the second camera is in the picture");
     assert!((5.6..6.1).contains(&marker), "its head is drawn 6 m away, in front of the wall: {marker}");
     assert!((15.9..16.1).contains(&centre.unwrap()), "the centre of the picture rests on the back wall: {centre:?}");
+    r.settings(Page::Lens);
     r.harness.get_by_label("16.0 m away");
     r.harness.get_by_label("28 mm at zoom 0%");
+    r.panels();
 
     // A longer lens on the first camera narrows its picture: the second camera is no longer in it.
     {
@@ -1320,8 +1330,10 @@ fn the_program_monitor_is_the_selected_cameras_view_through_its_lens() {
     }
     r.harness.run_steps(3);
     assert_eq!(seen(&r).0, None, "at 70 mm the second camera is outside the picture");
+    r.settings(Page::Lens);
     r.harness.get_by_label("70 mm at zoom 0%");
     r.harness.get_by_label("16.0 m away");
+    r.panels();
 
     // The second camera keeps its own lens and its own place: from 6 m nearer, the wall is 10 m away.
     r.press("2 Centre");
@@ -1329,6 +1341,7 @@ fn the_program_monitor_is_the_selected_cameras_view_through_its_lens() {
     let frame = s.world.frame("program").unwrap();
     let centre = frame.depth_at(frame.width / 2, frame.height / 2).unwrap();
     assert!((9.9..10.1).contains(&centre), "{centre}");
+    r.settings(Page::Lens);
     r.harness.get_by_label("28 mm at zoom 0%");
     r.harness.get_by_label("10.0 m away");
 
@@ -1527,13 +1540,12 @@ fn hall_settings(revision: u64) -> ptz_core::camera::StageModel {
 }
 
 #[test]
-fn a_dropped_model_is_imported_shown_with_its_size_and_placed_from_the_inspector() {
+fn a_dropped_model_is_imported_shown_with_its_size_and_placed_from_show_settings() {
     use crate::stage::Import;
     use egui_kittest::kittest::Queryable as _;
     use std::path::PathBuf;
     let mut r = rig(Song::new("s", "Test Song", "01:00:00:00", 1500));
-    r.harness.state_mut().show_tab(Tab::Inspector);
-    r.harness.run_steps(3);
+    r.settings(Page::Stage);
     r.harness
         .get_by_label("The built-in stage is shown. Import the venue to see what each camera sees from where it will stand.");
     let _ = r.cmds.try_iter().count();
@@ -1549,7 +1561,7 @@ fn a_dropped_model_is_imported_shown_with_its_size_and_placed_from_the_inspector
     let uploads: Vec<&PathBuf> = cmds.iter().filter_map(|c| if let Cmd::Upload(p) = c { Some(p) } else { None }).collect();
     assert_eq!(uploads, vec![&PathBuf::from("/audio/walk-on.wav")]);
 
-    // While it is read and sent the Inspector says so.
+    // While it is read and sent the Stage model page says so.
     r.events.send(Event::StageImport(Import::Reading("hall.obj".into()))).unwrap();
     r.harness.run_steps(3);
     r.harness.get_by_label("Reading hall.obj");
@@ -1597,7 +1609,7 @@ fn a_dropped_model_is_imported_shown_with_its_size_and_placed_from_the_inspector
     r.events.send(Event::StageImport(Import::Failed { name: "broken.obj".into(), why: why.into() })).unwrap();
     r.harness.run_steps(3);
     let said = format!("broken.obj was not imported: {why}");
-    assert_eq!(r.harness.query_all_by_label(said.as_str()).count(), 2, "in the Inspector and as a notice");
+    assert_eq!(r.harness.query_all_by_label(said.as_str()).count(), 2, "on the Stage model page and as a notice");
     assert_eq!(r.harness.state().session.project, before);
     assert_eq!(r.harness.state().session.world.triangles(), 12);
 
@@ -1753,8 +1765,7 @@ fn a_move_whose_preset_was_stored_again_offers_to_update() {
 fn choosing_a_lens_from_the_list_sets_the_camera_lens_and_keeps_its_sensor() {
     use egui_kittest::kittest::Queryable as _;
     let mut r = rig(Song::new("s", "Test Song", "01:00:00:00", 1500));
-    r.harness.state_mut().show_tab(Tab::Inspector);
-    r.harness.run_steps(3);
+    r.settings(Page::Lens);
     let _ = r.projects();
     let lenses = ptz_core::lens::Lens::presets();
     let before = r.harness.state().session.project.cameras[0].lens.clone();
@@ -1789,3 +1800,4 @@ fn servers_this_station_reached_are_remembered_newest_first() {
 
 mod picture;
 mod safety;
+mod settings;
