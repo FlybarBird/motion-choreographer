@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 ptz-core = { workspace = true, features = ["client"] }
+ptz-scene = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 eframe = { workspace = true }
@@ -25,6 +26,7 @@ dirs = { workspace = true }
 
 [dev-dependencies]
 egui_kittest = { workspace = true }
+ptz-server = { path = "../server" }
 
 [lints]
 workspace = true

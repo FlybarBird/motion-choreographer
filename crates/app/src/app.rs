@@ -25,11 +25,24 @@ pub enum Tab {
     Timeline,
     Graph,
     Log,
+    Stage,
+    Multiview,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 9] =
-        [Tab::Presets, Tab::Media, Tab::Program, Tab::Reference, Tab::Inspector, Tab::Rig, Tab::Timeline, Tab::Graph, Tab::Log];
+    pub const ALL: [Tab; 11] = [
+        Tab::Presets,
+        Tab::Media,
+        Tab::Program,
+        Tab::Stage,
+        Tab::Multiview,
+        Tab::Reference,
+        Tab::Inspector,
+        Tab::Rig,
+        Tab::Timeline,
+        Tab::Graph,
+        Tab::Log,
+    ];
 
     pub fn title(self) -> &'static str {
         match self {
@@ -42,12 +55,14 @@ impl Tab {
             Tab::Timeline => "Timeline",
             Tab::Graph => "Graph editor",
             Tab::Log => "Log",
+            Tab::Stage => "Stage",
+            Tab::Multiview => "Multiview",
         }
     }
 }
 
 pub fn default_layout() -> DockState<Tab> {
-    let mut state = DockState::new(vec![Tab::Program, Tab::Reference]);
+    let mut state = DockState::new(vec![Tab::Program, Tab::Stage, Tab::Multiview, Tab::Reference]);
     let surface = state.main_surface_mut();
     let [top, _] = surface.split_below(NodeIndex::root(), 0.5, vec![Tab::Timeline, Tab::Graph, Tab::Log]);
     let [centre, _] = surface.split_left(top, 0.2, vec![Tab::Presets, Tab::Media]);
@@ -166,6 +181,8 @@ impl egui_dock::TabViewer for Viewer<'_> {
             Tab::Timeline => timeline_ui::show(ui, s),
             Tab::Graph => crate::graph::show(ui, s),
             Tab::Log => panels::log(ui, s),
+            Tab::Stage => crate::stage_ui::show(ui, s),
+            Tab::Multiview => crate::multiview::show(ui, s),
         }
     }
 
@@ -213,7 +230,7 @@ fn action_button(
 
 impl Shell {
     pub fn new(session: Session, layout: Option<DockState<Tab>>) -> Shell {
-        let dock = layout.filter(layout_is_complete).unwrap_or_else(default_layout);
+        let dock = layout.map(with_every_tab).unwrap_or_else(default_layout);
         Shell { session, dock, dialog: Dialog::None, layout_changed: false }
     }
 
@@ -259,6 +276,12 @@ impl Shell {
             self.layout_changed = true;
         }
 
+        if let Some(path) = self.session.stage_import_wanted.take() {
+            self.import_stage(path);
+        }
+        if self.session.world.is_busy(&self.session.project.stage) || self.session.stage_view.is_dragging_a_camera() {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(60));
+        }
         self.dialogs(ui.ctx());
         self.toasts(ui.ctx());
     }
@@ -597,8 +620,28 @@ impl Shell {
     fn dropped_files(&mut self, ui: &mut Ui) {
         let files: Vec<PathBuf> = ui.ctx().input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect());
         for path in files {
-            self.session.link.send(Cmd::Upload(path));
+            if crate::stage::is_model(&path) {
+                self.import_stage(path);
+            } else if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("mtl")) {
+                // A material file dropped with its model is read from beside the model, not uploaded as media.
+            } else {
+                self.session.link.send(Cmd::Upload(path));
+            }
         }
+    }
+
+    /// Start importing a stage model and bring the Stage view forward to watch it arrive.
+    pub fn import_stage(&mut self, path: PathBuf) {
+        if let Err(why) = self.session.can_edit() {
+            self.session.toast(
+                why.replace("to edit the song", "to import a stage model").replace("to edit", "to import a stage model"),
+                true,
+            );
+            return;
+        }
+        self.session.link.send(Cmd::ImportStage(path));
+        self.session.stage_view.fit_requested = true;
+        self.show_tab(Tab::Stage);
     }
 
     fn dialogs(&mut self, ctx: &egui::Context) {
@@ -898,8 +941,22 @@ impl Shell {
     }
 }
 
-fn layout_is_complete(state: &DockState<Tab>) -> bool {
-    Tab::ALL.iter().all(|t| state.find_tab(t).is_some())
+/// A layout saved by an earlier version lacks the tabs added since: they join the Program monitor's group,
+/// and the arrangement the operator made is kept.
+fn with_every_tab(mut state: DockState<Tab>) -> DockState<Tab> {
+    for tab in Tab::ALL {
+        if state.find_tab(&tab).is_some() {
+            continue;
+        }
+        let beside = state.find_tab(&Tab::Program).or_else(|| state.iter_all_tabs().next().map(|(path, _)| path));
+        let Some(path) = beside else { return default_layout() };
+        let Some(leaf) = state[path.surface][path.node].get_leaf_mut() else { return default_layout() };
+        // Appending brings the new tab to the front; the one the operator was looking at stays in front.
+        let active = leaf.active;
+        leaf.append_tab(tab);
+        leaf.active = active;
+    }
+    state
 }
 
 /// A start timecode for the next song: ten minutes after the latest one.

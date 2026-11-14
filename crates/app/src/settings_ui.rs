@@ -373,11 +373,12 @@ pub fn project(ui: &mut Ui, s: &mut Session) {
         s.link.send(Cmd::RefreshInputs);
     }
 
+    stage_model(ui, s, &mut project, editable);
     cameras(ui, s, &mut project, editable);
     let at = project.camera_index(&s.active_camera).unwrap_or(0);
     let camera = &mut project.cameras[at];
     lens(ui, s, camera, editable);
-    position(ui, camera, editable);
+    position(ui, s, camera, editable);
 
     section(ui, "Rig limits");
     ui.label(
@@ -631,12 +632,35 @@ fn lens(ui: &mut Ui, s: &Session, camera: &mut CameraConfig, editable: bool) {
             "Range",
             format!("{:.1}° at {:.0} mm to {:.1}° at {:.0} mm", l.hfov_deg(0.0), l.wide_mm, l.hfov_deg(1.0), l.tele_mm),
         );
+        // The distance the figures below are worked out for: what the centre of the picture rests on, or a typed one.
         let id = ui.make_persistent_id("lens_distance");
-        let mut distance = ui.data_mut(|d| d.get_temp::<f64>(id)).unwrap_or(10.0);
-        ui.label(RichText::new("At a distance of").color(MUTED).small());
-        ui.add(egui::DragValue::new(&mut distance).speed(0.1).range(0.3..=500.0).suffix(" m"));
+        let (mut typed, mut use_typed) = ui.data_mut(|d| d.get_temp::<(f64, bool)>(id)).unwrap_or((10.0, false));
+        let seen = s.world.centre_distance(camera, &pose).map(f64::from);
+        ui.label(RichText::new("Centre of frame").color(MUTED).small());
+        match seen {
+            Some(d) => ui.label(RichText::new(format!("{d:.1} m away")).monospace().small()),
+            None => ui.label(RichText::new("looks at nothing on the stage").color(AMBER).small()),
+        };
         ui.end_row();
-        ui.data_mut(|d| d.insert_temp(id, distance));
+        ui.label(RichText::new("At a distance of").color(MUTED).small());
+        ui.horizontal(|ui| {
+            if seen.is_some() {
+                ui.checkbox(&mut use_typed, "")
+                    .on_hover_text("Work the figures out for a typed distance instead of the centre of the frame");
+            }
+            let from_picture = seen.filter(|_| !use_typed);
+            let mut shown = from_picture.unwrap_or(typed);
+            let field = ui.add_enabled(
+                from_picture.is_none(),
+                egui::DragValue::new(&mut shown).speed(0.1).range(0.3..=500.0).suffix(" m").fixed_decimals(1),
+            );
+            if field.changed() {
+                typed = shown;
+            }
+        });
+        ui.end_row();
+        ui.data_mut(|d| d.insert_temp(id, (typed, use_typed)));
+        let distance = seen.filter(|_| !use_typed).unwrap_or(typed).max(0.3);
         let (w, h) = l.frame_at(pose.zoom, distance);
         line(ui, "The frame is", format!("{w:.2} m wide, {h:.2} m high"));
         let (near, far) = l.sharp_range_m(pose.zoom, distance);
@@ -652,8 +676,8 @@ fn lens(ui: &mut Ui, s: &Session, camera: &mut CameraConfig, editable: bool) {
 }
 
 /// Where the selected camera stands on the stage.
-fn position(ui: &mut Ui, camera: &mut CameraConfig, editable: bool) {
-    section(ui, "Position on the stage");
+fn position(ui: &mut Ui, s: &Session, camera: &mut CameraConfig, editable: bool) {
+    section(ui, &format!("Position on the stage: {}", camera.name));
     ui.add_enabled_ui(editable, |ui| {
         let m = &mut camera.mount;
         egui::Grid::new("mount_grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
@@ -674,6 +698,169 @@ fn position(ui: &mut Ui, camera: &mut CameraConfig, editable: bool) {
                 .on_hover_text("Height of the lens above the floor with the column fully down");
             ui.end_row();
         });
+        ui.horizontal_wrapped(|ui| {
+            // The middle of the venue when one is imported; the middle of the built-in deck otherwise.
+            let (middle, what) = match &s.project.stage.model {
+                Some(model) => {
+                    let (min, max) = model.bounds_m();
+                    ([(min[0] + max[0]) / 2.0, (min[1] + max[1]) / 2.0], "the middle of the model")
+                }
+                None => ([0.0, 12.5], "the middle of the built-in stage"),
+            };
+            if ui.button("Face the stage").on_hover_text(format!("Turn the heading so pan 0 points at {what}")).clicked() {
+                let to = crate::stage::heading_toward(m, [middle[0] as f32, middle[1] as f32, 0.0]);
+                m.heading_deg = (to * 10.0).round() / 10.0;
+            }
+            if ui
+                .button("Drop to the surface below")
+                .on_hover_text(
+                    "Set the floor height to the surface of the stage under the camera: a riser, a balcony, or the floor",
+                )
+                .clicked()
+            {
+                let from = [m.x as f32, m.y as f32, (m.z + (m.base_height_mm / 1000.0).max(0.5)) as f32];
+                if let Some(p) = s.world.ground(from, [0.0, 0.0, -1.0]) {
+                    m.z = (p[2] as f64 * 100.0).round() / 100.0;
+                }
+            }
+        });
     });
     ui.label(RichText::new("The Stage view places cameras by dragging.").color(MUTED).small());
+}
+
+/// The venue: an imported model, where it stands, and whether the built-in stage is drawn.
+fn stage_model(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::Project, editable: bool) {
+    use crate::stage::Import;
+    section(ui, "Stage");
+    let why = (!editable).then(|| match s.can_edit() {
+        Err(why) => why.replace("to edit the song", "to change the stage").replace("to edit", "to change the stage"),
+        Ok(()) => String::new(),
+    });
+    ui.horizontal(|ui| {
+        let import = ui
+            .add_enabled(editable, egui::Button::new("Import a model"))
+            .on_hover_text("A Wavefront .obj or an Autodesk .3ds file of the venue. It can also be dropped on the window")
+            .on_disabled_hover_text(why.clone().unwrap_or_default());
+        if import.clicked() {
+            let picked = rfd::FileDialog::new()
+                .set_title("Import a stage model")
+                .add_filter("Stage model", &["obj", "3ds", "OBJ", "3DS"])
+                .pick_file();
+            if let Some(path) = picked {
+                s.stage_import_wanted = Some(path);
+            }
+        }
+        ui.add_enabled_ui(editable, |ui| {
+            let id = ui.make_persistent_id("stage_path");
+            let mut path = ui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_default();
+            let field = ui.add(egui::TextEdit::singleline(&mut path).desired_width(150.0).hint_text("or a path, then Enter"));
+            if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !path.trim().is_empty() {
+                s.stage_import_wanted = Some(std::path::PathBuf::from(path.trim().trim_matches('"')));
+                path.clear();
+            }
+            ui.data_mut(|d| d.insert_temp(id, path));
+        });
+    });
+    match &s.world.import {
+        Some(Import::Reading(name)) => {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(RichText::new(format!("Reading {name}")).color(AMBER));
+            });
+        }
+        Some(Import::Uploading(name)) => {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(RichText::new(format!("Sending {name} to the server")).color(AMBER));
+            });
+        }
+        Some(Import::Failed { name, why }) => {
+            ui.label(RichText::new(format!("{name} was not imported: {why}")).color(AMBER));
+        }
+        Some(Import::Done(_)) | None => {}
+    }
+
+    let Some(model) = project.stage.model.as_mut() else {
+        ui.label(
+            RichText::new("The built-in stage is shown. Import the venue to see what each camera sees from where it will stand.")
+                .color(MUTED)
+                .small(),
+        );
+        return;
+    };
+    ui.label(RichText::new(format!("{}   {} triangles", model.name, model.triangles)).strong());
+    let size = model.size_m();
+    let (low, high) = model.bounds_m();
+    ui.label(RichText::new(format!("{:.1} m wide, {:.1} m deep, {:.1} m high", size[0], size[1], size[2])).monospace().small())
+        .on_hover_text("The size the model has with the unit below. If it is wrong, the unit is wrong");
+    ui.label(
+        RichText::new(format!(
+            "It spans x {:.1} to {:.1}, y {:.1} to {:.1}, z {:.1} to {:.1} m",
+            low[0], high[0], low[1], high[1], low[2], high[2]
+        ))
+        .color(MUTED)
+        .small(),
+    );
+    if s.world.waiting_for_model(&s.project.stage) {
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.label(RichText::new("Fetching the model from the server").color(AMBER).small());
+        });
+    }
+    ui.add_enabled_ui(editable, |ui| {
+        egui::Grid::new("stage_grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+            ui.label("One unit is");
+            egui::ComboBox::from_id_salt("stage_unit").selected_text(model.unit.label()).width(130.0).show_ui(ui, |ui| {
+                for unit in ptz_core::camera::Unit::ALL {
+                    ui.selectable_value(&mut model.unit, unit, unit.label());
+                }
+            });
+            ui.end_row();
+            ui.label("Up");
+            egui::ComboBox::from_id_salt("stage_up").selected_text(model.up.label()).width(130.0).show_ui(ui, |ui| {
+                for up in ptz_core::camera::UpAxis::ALL {
+                    ui.selectable_value(&mut model.up, up, up.label());
+                }
+            });
+            ui.end_row();
+            ui.label("Turned");
+            ui.add(egui::DragValue::new(&mut model.rotation_deg).speed(0.5).range(-360.0..=360.0).suffix("°"))
+                .on_hover_text("About the vertical, counter-clockwise seen from above");
+            ui.end_row();
+            ui.label("Moved");
+            ui.horizontal(|ui| {
+                for (k, axis) in ["x ", "y ", "z "].into_iter().enumerate() {
+                    ui.add(
+                        egui::DragValue::new(&mut model.offset[k])
+                            .speed(0.05)
+                            .range(-100000.0..=100000.0)
+                            .prefix(axis)
+                            .suffix(" m"),
+                    );
+                }
+            });
+            ui.end_row();
+        });
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("Sit on the floor").on_hover_text("Move the model so its lowest point is at floor height").clicked() {
+                model.sit_on_floor();
+            }
+            if ui.button("Centre").on_hover_text("Move the model so the middle of its footprint is at the origin").clicked() {
+                model.centre();
+            }
+        });
+    });
+    ui.add_enabled_ui(editable, |ui| {
+        ui.checkbox(&mut project.stage.show_builtin, "Show the built-in stage as well");
+        let confirm = ui.make_persistent_id("remove_stage_model");
+        let asked = ui.data(|d| d.get_temp::<bool>(confirm)).unwrap_or(false);
+        let label = if asked { "Remove it for every station" } else { "Remove the model" };
+        let remove = ui.button(label).on_hover_text("Take the model off the server. The built-in stage is shown again");
+        if remove.clicked() {
+            if asked {
+                s.link.send(Cmd::RemoveStageModel);
+            }
+            ui.data_mut(|d| d.insert_temp(confirm, !asked));
+        }
+    });
 }

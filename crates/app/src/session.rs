@@ -78,6 +78,13 @@ pub struct Session {
     pub axis_lanes: std::collections::BTreeSet<ptz_core::Axis>,
     pub graph: crate::graph::Graph,
     pub rig: crate::rig_ui::Controller,
+    /// The stage as it is drawn: the model, the scene made of it, and the pictures.
+    pub world: crate::stage::World,
+    pub stage_view: crate::stage_ui::View,
+    /// A model file chosen in the Inspector, for the window to import.
+    pub stage_import_wanted: Option<std::path::PathBuf>,
+    /// Where the Multiview drew each camera's tile last frame, for the UI tests.
+    pub probe_tiles: Vec<(String, egui::Rect)>,
     /// The camera's own picture of each preset that has one.
     pub preset_pictures: HashMap<String, PresetPicture>,
     /// "Sync from rig" was pressed on a real rig and waits for the operator to confirm the move.
@@ -150,6 +157,10 @@ impl Session {
             axis_lanes: Default::default(),
             graph: Default::default(),
             rig: Default::default(),
+            world: Default::default(),
+            stage_view: Default::default(),
+            stage_import_wanted: None,
+            probe_tiles: Vec::new(),
             preset_pictures: HashMap::new(),
             confirm_sync: false,
             probe_timeline: None,
@@ -246,6 +257,16 @@ impl Session {
         self.link.send(Cmd::PutProject(Box::new(project)));
     }
 
+    /// Drop pictures of presets and cameras that are no longer there.
+    fn prune_pictures(&mut self) {
+        let (presets, cameras) = (&self.presets, &self.project.cameras);
+        self.world.keep_pictures(|name| match name.split_once(':') {
+            Some(("preset", id)) => presets.iter().any(|p| p.id == id),
+            Some(("multi", id)) => cameras.iter().any(|c| c.id == id),
+            _ => true,
+        });
+    }
+
     pub fn toast(&mut self, text: impl Into<String>, warn: bool) {
         let text = text.into();
         self.toasts.retain(|t| t.text != text);
@@ -267,6 +288,9 @@ impl Session {
         }
         let now = Instant::now();
         self.toasts.retain(|t| t.until > now);
+        if let Some(revision) = self.world.sync(&self.project.stage) {
+            self.link.send(Cmd::FetchStageModel(revision));
+        }
     }
 
     pub fn on_event(&mut self, event: Event) {
@@ -329,6 +353,7 @@ impl Session {
                 // A sync can replace a picture under the same preset: ask again.
                 self.preset_pictures.clear();
                 self.presets = presets;
+                self.prune_pictures();
             }
             Event::SyncAccepted(presets) => {
                 if self.cam_status().hardware {
@@ -348,6 +373,7 @@ impl Session {
                 if let Some(song) = &self.song {
                     self.compiled = compile(song, &self.project);
                 }
+                self.prune_pictures();
             }
             Event::Media(media) => {
                 // A file that changed or went away loses its cached waveform.
@@ -369,6 +395,20 @@ impl Session {
             Event::Uploaded(info) => {
                 self.toast(format!("Imported {}", info.name), false);
                 self.link.send(Cmd::RefreshMedia);
+            }
+            Event::StageModel { revision, mesh } => self.world.set_model(revision, mesh),
+            Event::StageFetchFailed { revision, msg } => {
+                self.world.fetch_failed(revision);
+                self.toast(format!("The stage model could not be fetched: {msg}. Trying again"), true);
+            }
+            Event::StageImport(import) => {
+                use crate::stage::Import;
+                match &import {
+                    Import::Done(name) => self.toast(format!("Imported {name}"), false),
+                    Import::Failed { name, why } => self.toast(format!("{name} was not imported: {why}"), true),
+                    Import::Reading(_) | Import::Uploading(_) => {}
+                }
+                self.world.import = Some(import);
             }
             Event::Log(record) => {
                 self.log.push(record);
@@ -607,6 +647,11 @@ impl Session {
             }
             _ => (status.map(|c| c.pose).unwrap_or_else(Pose::home), source),
         }
+    }
+
+    /// Every camera's pose now, in project order.
+    pub fn poses(&self) -> Vec<Pose> {
+        self.project.cameras.iter().map(|c| self.camera_pose(&c.id).0).collect()
     }
 
     /// The pose the program monitor draws: the selected camera's.
