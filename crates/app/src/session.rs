@@ -120,7 +120,6 @@ fn idle_status() -> Status {
         lock: Default::default(),
         record: Default::default(),
         telemetry: Default::default(),
-        panel: None,
     }
 }
 
