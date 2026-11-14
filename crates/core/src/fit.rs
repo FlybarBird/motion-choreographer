@@ -90,8 +90,12 @@ fn stills(samples: &[f64], tolerance: f64) -> Vec<(usize, usize)> {
         }
         if b - a >= MIN_STILL {
             runs.push((a, b));
+            // Each still is made level at its own first sample. Two that shared a sample would be
+            // level with each other, and a slow creep, which is a chain of them, would go flat.
+            a = b + 1;
+        } else {
+            a = b.max(a + 1);
         }
-        a = b.max(a + 1);
     }
     runs
 }
@@ -239,5 +243,17 @@ mod tests {
         let keys = fit_keys(&samples, 0.01);
         assert!(max_error(&samples, &keys) <= 0.01 + 1e-9);
         assert!(keys.len() <= 300);
+    }
+
+    #[test]
+    fn a_slow_creep_is_not_flattened() {
+        // A slow push: 6 % of the zoom range over twelve minutes at 25 fps. Each frame moves far
+        // less than the noise floor, so the pass reads as one still section after another.
+        let samples: Vec<f64> = (0..18_000).map(|i| 0.2 + i as f64 * (0.06 / 18_000.0)).collect();
+        let keys = fit_keys(&samples, 0.002);
+        let e = max_error(&samples, &keys);
+        assert!(e <= 0.002 + 1e-9, "the fitted pass is {e} away from what was recorded, {} keys", keys.len());
+        assert!((keys.last().unwrap().value - samples[17_999]).abs() <= 0.002, "the push arrives where it was recorded");
+        assert!(keys.windows(2).all(|w| w[0].frame < w[1].frame));
     }
 }
