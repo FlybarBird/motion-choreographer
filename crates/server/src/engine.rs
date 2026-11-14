@@ -1145,7 +1145,8 @@ impl Show {
             self.poke();
         }
         if self.jog_deadline.is_some_and(|d| now > d) {
-            let _ = self.rig.jog(Jog::default());
+            // A lost connection halts on the spot; letting go of a control ramps down instead.
+            self.rig.stop();
             self.jog_deadline = None;
         }
         self.collect_loaded_audio();

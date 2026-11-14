@@ -94,6 +94,8 @@ fn a_jogged_pan_is_recorded_and_plays_back_on_the_frames_it_was_recorded_at() {
     assert_eq!(clip.start_frame, 0);
     assert!(clip.duration_frames >= 239);
     let pass_id = clip.recorded_pass.clone().expect("the clip names its raw samples");
+    let issues = api.status().unwrap().song.map(|s| s.issues);
+    assert_eq!(issues, Some(0), "a move the rig made by hand passes the feasibility check");
     let keys = clip.keys(Axis::Pan).len();
     assert!((2..=12).contains(&keys), "a still, a ramp and a still should be a few keys, not {keys}");
     let pass: serde_json::Value = read_json(&t.dir.join("songs").join(&song_id).join("passes").join(format!("{pass_id}.json")));
@@ -216,7 +218,7 @@ fn the_rig_stops_within_250_ms_of_the_last_jog_message() {
     api.jog(&Jog { pan: 1.0, ..Jog::default() }).unwrap();
     std::thread::sleep(Duration::from_millis(120));
     let moving = api.status().unwrap();
-    assert!(moving.rig_pose.pan > start + 1.0, "the rig moves while jog is fresh");
+    assert!(moving.rig_pose.pan > start + 0.2, "the rig moves while jog is fresh");
     assert_eq!(moving.pose_source, PoseSource::Rig);
 
     // No more jog messages: a dropped connection looks exactly like this.

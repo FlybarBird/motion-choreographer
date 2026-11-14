@@ -157,18 +157,28 @@ mod tests {
         assert!(frames >= 260);
         let curves = fit_pass(&samples, 1.0);
         // Still before and after, one ramp between: a handful of keys, not one per frame.
-        assert!(curves[&Axis::Pan].len() <= 8, "{} keys", curves[&Axis::Pan].len());
+        assert!(curves[&Axis::Pan].len() <= 10, "{} keys", curves[&Axis::Pan].len());
 
         let song = Song::new("s", "S", "01:00:00:00", 400);
         let (song, clip) = edit::punch_keys(&song, &project, cap.start_frame(), frames - 1, curves, Some("p".into())).unwrap();
         assert!(song.motion_clip(&clip).is_some_and(|c| c.recorded_pass.as_deref() == Some("p")));
+        // The simulator ramps up to speed and back down like a real head, so the move
+        // trails the script by half a ramp.
+        let ramp_s = 10.0 / (project.axes.get(Axis::Pan).max_accel * crate::rig::JOG_ACCEL);
+        let trail = 10.0 * ramp_s / 2.0;
         let per_frame = 10.0 / fps;
         for f in 0..frames {
             let scripted = ((f as f64).clamp(100.0, 200.0) - 100.0) * per_frame;
             let played = pose_at(&song, f).pan;
-            // The fit tolerance, plus the tick the jog took to arrive at each end.
-            assert!((played - scripted).abs() <= 0.05 + 10.0 * dt + 1e-9, "frame {f}: played {played}, scripted {scripted}");
+            assert!(played <= scripted + 0.05 + 1e-9, "frame {f}: played {played} is ahead of the script at {scripted}");
+            // The fit tolerance, the trail, plus the tick the jog took to arrive at each end.
+            assert!(played >= scripted - trail - 0.05 - 10.0 * dt - 1e-9, "frame {f}: played {played}, scripted {scripted}");
+            // Against what the rig actually did, the fit tolerance alone.
+            assert!((played - samples[&Axis::Pan][f as usize]).abs() <= 0.05 + 1e-9, "frame {f}");
         }
-        assert!((pose_at(&song, 150).pan - 20.0).abs() < 0.25);
+        // What the rig did by hand, the rig can do again.
+        let issues = ptz_core::compile::compile(&song, &project).issues;
+        assert!(issues.is_empty(), "{issues:?}");
+        assert!((pose_at(&song, 150).pan - (20.0 - trail)).abs() < 0.25);
     }
 }

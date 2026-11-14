@@ -89,11 +89,17 @@ pub struct Simulator {
     pose: Pose,
     mode: Mode,
     moving: bool,
+    /// Speed of each axis under hand control, in its own units per second.
+    jog_speed: [f64; 5],
 }
+
+/// Share of an axis's acceleration limit used to ramp a jog up and down. A real head ramps
+/// too, and a pass recorded from one that did not would fail its own feasibility check.
+pub const JOG_ACCEL: f64 = 0.5;
 
 impl Default for Simulator {
     fn default() -> Self {
-        Simulator { pose: Pose::home(), mode: Mode::Idle, moving: false }
+        Simulator { pose: Pose::home(), mode: Mode::Idle, moving: false, jog_speed: [0.0; 5] }
     }
 }
 
@@ -143,8 +149,18 @@ impl RigAdapter for Simulator {
             Mode::Jog(jog) => {
                 for a in Axis::ALL {
                     let lim = axes.get(a);
-                    let v = jog.get(a).clamp(-1.0, 1.0) * lim.max_speed;
-                    self.pose.set(a, (self.pose.get(a) + v * dt).clamp(lim.min, lim.max));
+                    let want = jog.get(a).clamp(-1.0, 1.0) * lim.max_speed;
+                    let ramp = lim.max_accel * JOG_ACCEL * dt;
+                    let speed = &mut self.jog_speed[a.index()];
+                    *speed += (want - *speed).clamp(-ramp, ramp);
+                    let next = self.pose.get(a) + *speed * dt;
+                    if next <= lim.min || next >= lim.max {
+                        *speed = 0.0;
+                    }
+                    self.pose.set(a, next.clamp(lim.min, lim.max));
+                }
+                if jog.is_zero() && self.jog_speed.iter().all(|v| *v == 0.0) {
+                    self.mode = Mode::Idle;
                 }
             }
         }
@@ -152,11 +168,13 @@ impl RigAdapter for Simulator {
     }
 
     fn drive(&mut self, target: &Pose, speed_scale: f64) {
+        self.jog_speed = [0.0; 5];
         self.mode = Mode::Drive { target: *target, scale: speed_scale };
     }
 
     fn stop(&mut self) {
         self.mode = Mode::Idle;
+        self.jog_speed = [0.0; 5];
         self.moving = false;
     }
 
@@ -169,18 +187,19 @@ impl RigAdapter for Simulator {
     }
 
     fn jog(&mut self, jog: Jog) -> Result<(), String> {
-        self.mode = if jog.is_zero() { Mode::Idle } else { Mode::Jog(jog) };
+        // Letting go ramps down to a stop; `stop` is the one that halts on the spot.
+        self.mode = Mode::Jog(jog);
         Ok(())
     }
 
     fn sync_virtual(&mut self, pose: &Pose, axes: &[Axis]) {
-        // An axis being driven by hand is left alone; the rest follow.
+        // An axis being driven by hand, or still slowing down, is left alone; the rest follow.
         let held = match self.mode {
             Mode::Jog(jog) => jog,
             _ => Jog::default(),
         };
         for a in axes {
-            if held.get(*a) == 0.0 {
+            if held.get(*a) == 0.0 && self.jog_speed[a.index()] == 0.0 {
                 self.pose.set(*a, pose.get(*a));
             }
         }
@@ -227,6 +246,40 @@ mod tests {
         assert_eq!(sim.pose().pan, 170.0, "a jogged rig is not overwritten by the timeline");
         sim.jog(Jog::default()).unwrap();
         sim.sync_virtual(&Pose::home(), &[Axis::Pan]);
+        assert_eq!(sim.pose().pan, 0.0);
+    }
+
+    #[test]
+    fn a_jog_ramps_up_and_down_inside_the_acceleration_limit() {
+        let axes = AxisTable::default();
+        let lim = axes.get(Axis::Pan);
+        let mut sim = Simulator::new();
+        let dt = 1.0 / 100.0;
+        let mut trace = vec![sim.pose().pan];
+        sim.jog(Jog { pan: 0.5, ..Jog::default() }).unwrap();
+        for _ in 0..100 {
+            sim.tick(dt, &axes);
+            trace.push(sim.pose().pan);
+        }
+        let cruise = (trace[100] - trace[99]) / dt;
+        assert!((cruise - 0.5 * lim.max_speed).abs() < 1e-6, "{cruise}");
+        sim.jog(Jog::default()).unwrap();
+        for _ in 0..100 {
+            sim.tick(dt, &axes);
+            trace.push(sim.pose().pan);
+        }
+        assert_eq!(trace[200], trace[199], "the rig has come to rest");
+        assert!(!sim.is_moving());
+        let worst = trace.windows(3).map(|w| ((w[2] - 2.0 * w[1] + w[0]) / (dt * dt)).abs()).fold(0.0, f64::max);
+        assert!(worst <= lim.max_accel * JOG_ACCEL + 1e-6, "{worst}");
+        // Slowing down is not overwritten by the timeline; a rig at rest is.
+        sim.jog(Jog { pan: 0.5, ..Jog::default() }).unwrap();
+        sim.tick(dt, &axes);
+        sim.jog(Jog::default()).unwrap();
+        sim.sync_virtual(&Pose::home(), &Axis::ALL);
+        assert!(sim.pose().pan > 1.0);
+        sim.stop();
+        sim.sync_virtual(&Pose::home(), &Axis::ALL);
         assert_eq!(sim.pose().pan, 0.0);
     }
 }
