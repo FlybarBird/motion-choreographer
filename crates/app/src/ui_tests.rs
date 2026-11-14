@@ -1356,6 +1356,14 @@ fn cameras_are_selected_moved_turned_placed_and_aimed_in_the_stage_view() {
     r.harness.run_steps(4);
     assert!(r.harness.state().session.world.frame("stage").is_some());
 
+    // The whole stage and every camera are in view to start with, and a camera's name is a handle on it.
+    let labels = r.harness.state().session.stage_view.labels.clone();
+    let view = r.harness.state().session.stage_view.probe.unwrap().rect;
+    assert_eq!(labels.len(), 3);
+    assert!(labels.iter().all(|label| view.contains_rect(*label)), "{labels:?} in {view:?}");
+    r.click(labels[2].center());
+    assert_eq!(r.harness.state().session.cam_id(), "cam3");
+
     // Select: a click on a camera's marker selects it.
     let at = r.stage_point([4.0, 0.0, 0.6]);
     r.click(at);
