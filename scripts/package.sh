@@ -32,7 +32,7 @@ APP_NAME="PTZ Programmer"
 APP_ID="com.ptzprogrammer.app"
 SERVER_ID="com.ptzprogrammer.server"
 MAC_SERVER_HOME="/usr/local/ptz-programmer"
-TOOLS=(ptz-server ptz-probe ptz-bringup)
+TOOLS=(ptz-server ptz-probe ptz-bringup ptz-panel)
 
 say() { printf '==> %s\n' "$*"; }
 fail() {
@@ -243,7 +243,7 @@ SCRIPT
     --identifier "$SERVER_ID" --version "$VERSION" --install-location "$MAC_SERVER_HOME" "$STAGE/pkgs/server.pkg"
 
   local app_choice="app|$APP_ID|$APP_NAME|The desktop app: timeline, monitors and transport.|required"
-  local server_text="ptz-server, ptz-probe and ptz-bringup, in $MAC_SERVER_HOME. Needed on the computer that runs the show. Clear it on a station that only connects to a server elsewhere."
+  local server_text="ptz-server, ptz-probe, ptz-bringup and ptz-panel (for a SKAARHOJ control panel), in $MAC_SERVER_HOME. Needed on the computer that runs the show. Clear it on a station that only connects to a server elsewhere."
   local server_choice="server|$SERVER_ID|Show server and tools|$server_text|optional"
 
   local app_out="$DIST/PTZ-Programmer-$VERSION-macos-$ARCH.pkg"

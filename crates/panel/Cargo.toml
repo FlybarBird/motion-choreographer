@@ -1,0 +1,28 @@
+[package]
+name = "ptz-panel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "PTZ Programmer control from a SKAARHOJ panel over the Raw Panel protocol"
+
+[lib]
+name = "ptz_panel"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ptz-panel"
+path = "src/main.rs"
+
+[dependencies]
+ptz-core = { workspace = true, features = ["client"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tungstenite = { workspace = true }
+
+[dev-dependencies]
+ptz-server = { path = "../server" }
+
+[lints]
+workspace = true

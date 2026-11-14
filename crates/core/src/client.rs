@@ -248,6 +248,11 @@ impl Api {
         self.post("/rig/jog", &JogRequest { camera: Some(camera.to_string()), jog: *jog })
     }
 
+    /// Report what a hardware panel controller is doing. Needs no lease.
+    pub fn put_panel(&self, state: &PanelState) -> ApiResult<PanelState> {
+        self.put("/panel", state)
+    }
+
     pub fn media(&self) -> ApiResult<Vec<MediaInfo>> {
         self.get("/media")
     }

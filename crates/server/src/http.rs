@@ -10,7 +10,7 @@ use axum::http::request::Parts;
 use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use ptz_core::api::*;
 use ptz_core::pose::{Preset, Project};
@@ -123,6 +123,10 @@ async fn post_lease(State(app): State<App>, Client(c): Client, Json(req): Json<L
     let mut s = lock(&app.show);
     s.take_lease(&c, &req)?;
     Ok(Json(s.status(&c)))
+}
+
+async fn put_panel(State(app): State<App>, Client(c): Client, Json(state): Json<PanelState>) -> Reply<PanelState> {
+    Ok(Json(lock(&app.show).set_panel(&c, state)?))
 }
 
 async fn delete_lease(State(app): State<App>, Client(c): Client) -> Reply<Status> {
@@ -563,6 +567,7 @@ pub fn router(app: App) -> Router {
         .route("/status", get(get_status))
         .route("/ws", get(ws))
         .route("/lease", post(post_lease).delete(delete_lease))
+        .route("/panel", put(put_panel))
         .route("/songs", get(list_songs).post(create_song))
         .route("/songs/{id}", delete(delete_song))
         .route("/songs/{id}/load", post(load_song))

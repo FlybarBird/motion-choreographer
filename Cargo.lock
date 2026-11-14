@@ -2791,6 +2791,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ptz-panel"
+version = "0.1.0"
+dependencies = [
+ "ptz-core",
+ "ptz-server",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tungstenite 0.30.0",
+]
+
+[[package]]
 name = "ptz-scene"
 version = "0.1.0"
 
@@ -2805,6 +2817,7 @@ dependencies = [
  "md-5",
  "midir",
  "ptz-core",
+ "ptz-panel",
  "ptz-scene",
  "rubato",
  "serde",

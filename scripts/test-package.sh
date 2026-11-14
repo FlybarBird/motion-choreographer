@@ -25,7 +25,7 @@ refuse() {
 # Stand-in release binaries, each printing its own name.
 RELEASE="$ROOT/target/package-test/release"
 mkdir -p "$RELEASE"
-for bin in ptz-app ptz-server ptz-probe ptz-bringup; do
+for bin in ptz-app ptz-server ptz-probe ptz-bringup ptz-panel; do
   printf '#!/bin/sh\necho %s\n' "$bin" >"$RELEASE/$bin"
   chmod +x "$RELEASE/$bin"
 done
@@ -50,8 +50,12 @@ sed -i.bak "s/^ARCH=\"$(uname -m)\"\$/ARCH=\"$ARCH\"/" "$WORK/app.run" "$WORK/se
 check test -x "$WORK/app.run"
 check test -x "$WORK/server.run"
 
-tools_in() { test -x "$1/bin/ptz-server" && test -x "$1/bin/ptz-probe" && test -x "$1/bin/ptz-bringup"; }
-no_tools_in() { test ! -e "$1/bin/ptz-server" && test ! -e "$1/bin/ptz-probe" && test ! -e "$1/bin/ptz-bringup"; }
+tools_in() {
+  test -x "$1/bin/ptz-server" && test -x "$1/bin/ptz-probe" && test -x "$1/bin/ptz-bringup" && test -x "$1/bin/ptz-panel"
+}
+no_tools_in() {
+  test ! -e "$1/bin/ptz-server" && test ! -e "$1/bin/ptz-probe" && test ! -e "$1/bin/ptz-bringup" && test ! -e "$1/bin/ptz-panel"
+}
 
 # The app alone: for a station that connects to a server elsewhere.
 P="$WORK/app only"
@@ -190,7 +194,7 @@ check grep -q '<false/>' "$WORK/relocatable.txt"
 # The server and tools go to their own folder, which a script puts on PATH.
 check grep -qx -- '/usr/local/ptz-programmer' "$CALLS/pkgbuild-server.args"
 check grep -qx -- 'com.ptzprogrammer.server' "$CALLS/pkgbuild-server.args"
-for bin in ptz-server ptz-probe ptz-bringup; do
+for bin in ptz-server ptz-probe ptz-bringup ptz-panel; do
   check test "$("$CALLS/pkgbuild-server.root/bin/$bin")" = "$bin"
 done
 check test ! -e "$CALLS/pkgbuild-server.root/bin/ptz-app"
@@ -200,7 +204,7 @@ check grep -q '/usr/local/ptz-programmer/bin. > /etc/paths.d/ptz-programmer' "$C
 check sh -n "$CALLS/pkgbuild-server.scripts/postinstall"
 
 # The app and each tool are signed, ad hoc unless an identity is given.
-check test "$(grep -c -- '--sign -' "$CALLS/codesign.args")" -eq 4
+check test "$(grep -c -- '--sign -' "$CALLS/codesign.args")" -eq 5
 
 # The app installer offers the server as a choice that can be cleared; the app itself cannot be.
 APP_DIST="$CALLS/productbuild-$APP_PKG.distribution.xml"
@@ -243,7 +247,7 @@ CALLS_DIR="$CALLS" PATH="$STUBS:$PATH" PTZ_INSTALLER_SIGN="Developer ID Installe
   package macos >"$WORK/macos-signed.log"
 check grep -qx 'Developer ID Installer: Example' "$CALLS/productbuild-$APP_PKG.args"
 check grep -qx 'Developer ID Installer: Example' "$CALLS/productbuild-$SERVER_PKG.args"
-check test "$(grep -c -- '--sign Developer ID Application: Example' "$CALLS/codesign.args")" -eq 4
+check test "$(grep -c -- '--sign Developer ID Application: Example' "$CALLS/codesign.args")" -eq 5
 
 # Off a Mac, without the stand-ins, it says where to run it instead of failing half-way.
 if ! command -v pkgbuild >/dev/null 2>&1; then

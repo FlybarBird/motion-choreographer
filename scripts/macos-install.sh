@@ -6,7 +6,7 @@
 #
 # Installs:
 #   ~/Applications/PTZ Programmer.app          the desktop app
-#   ~/.local/bin/ptz-server, ptz-probe, ptz-bringup   links into the bundle
+#   ~/.local/bin/ptz-server, ptz-probe, ptz-bringup, ptz-panel   links into the bundle
 #
 # Environment (all optional):
 #   PTZ_TARGET       Rust target triple       (default: this Mac's, aarch64- or x86_64-apple-darwin)
@@ -28,7 +28,7 @@ APP_DEST="${PTZ_APP_DEST:-$HOME/Applications}"
 BIN_DEST="${PTZ_BIN_DEST:-$HOME/.local/bin}"
 APP_NAME="PTZ Programmer"
 BUNDLE_ID="com.ptzprogrammer.app"
-TOOLS=(ptz-server ptz-probe ptz-bringup)
+TOOLS=(ptz-server ptz-probe ptz-bringup ptz-panel)
 
 say() { printf '==> %s\n' "$*"; }
 fail() {
@@ -171,6 +171,7 @@ cat <<NEXT
 Next:
   ptz-server                 start the show server (data in ~/PTZProgrammer, simulator rig)
   ptz-probe                  check every transport action against that server
+  ptz-panel --panel ADDRESS  run the show from a SKAARHOJ panel at that address
   open "$INSTALLED"
                              or use "Start a server on this computer" in the app's connect screen
 NEXT
