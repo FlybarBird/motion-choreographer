@@ -43,14 +43,17 @@ pub struct Session {
     scrub: Option<(i64, Instant)>,
     pub toasts: Vec<Toast>,
     pub log: Vec<LogRecord>,
-    pub peaks: HashMap<String, Vec<f32>>,
-    pub peaks_requested: std::collections::HashSet<String>,
+    /// Waveform overview per media id, at the level last asked for.
+    pub peaks: HashMap<String, PeakLevel>,
+    /// The level asked for per media id, so each is requested once.
+    pub peaks_requested: HashMap<String, u32>,
     pub frames: HashMap<(String, i64), Option<egui::TextureHandle>>,
     pub frame_jpegs: Vec<(String, i64, Vec<u8>)>,
     pub record_axes: Vec<ptz_core::Axis>,
     /// Where things were drawn last frame, for the UI tests.
     pub probe_timeline: Option<egui::Rect>,
     pub probe_presets: Vec<(String, egui::Rect)>,
+    pub probe_media: Vec<(String, egui::Rect)>,
     /// The last coalescing edit, so a dragged value is one undo step.
     last_edit: Option<(String, Instant)>,
     /// The server refused the last edit: its copy replaces the local one without an undo step.
@@ -114,6 +117,7 @@ impl Session {
             record_axes: vec![ptz_core::Axis::Pan, ptz_core::Axis::Tilt],
             probe_timeline: None,
             probe_presets: Vec::new(),
+            probe_media: Vec::new(),
             last_edit: None,
             drop_local: false,
         };
@@ -240,9 +244,15 @@ impl Session {
                     self.compiled = compile(song, &self.project);
                 }
             }
-            Event::Media(media) => self.media = media,
-            Event::Peaks { media, peaks } => {
-                self.peaks.insert(media, peaks);
+            Event::Media(media) => {
+                // A file that changed or went away loses its cached waveform.
+                let same = |id: &String| media.iter().find(|m| &m.id == id) == self.media.iter().find(|m| &m.id == id);
+                self.peaks.retain(|id, _| same(id));
+                self.peaks_requested.retain(|id, _| same(id));
+                self.media = media;
+            }
+            Event::Peaks { media, level } => {
+                self.peaks.insert(media, level);
             }
             Event::Frame { media, frame, jpeg } => self.frame_jpegs.push((media, frame, jpeg)),
             Event::PresetThumb { .. } => {}

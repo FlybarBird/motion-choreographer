@@ -16,17 +16,29 @@ use std::time::{Duration, Instant};
 
 #[derive(Debug)]
 pub enum Cmd {
-    PutWorking { seq: u64, song: Song },
+    PutWorking {
+        seq: u64,
+        song: Song,
+    },
     Fetch(String),
     Act(Action, TransportRequest),
-    TakeLease { name: String, force: bool },
+    TakeLease {
+        name: String,
+        force: bool,
+    },
     ReleaseLease,
-    NewSong { name: String, start_tc: Option<String> },
+    NewSong {
+        name: String,
+        start_tc: Option<String>,
+    },
     LoadSong(String),
     Save(String),
     Revert(String),
     Commit(String),
-    CopySong { id: String, name: String },
+    CopySong {
+        id: String,
+        name: String,
+    },
     DeleteSong(String),
     PutProject(Box<Project>),
     StorePreset(StorePreset),
@@ -34,10 +46,24 @@ pub enum Cmd {
     SyncPresets,
     Jog(Jog),
     Upload(PathBuf),
-    SetMediaTc { id: String, start_tc: String },
-    Refit { clip: String, scale: f64 },
-    FetchPeaks(String),
-    FetchFrame { media: String, frame: i64 },
+    SetMediaTc {
+        id: String,
+        start_tc: String,
+    },
+    Refit {
+        clip: String,
+        scale: f64,
+    },
+    FetchPeaks {
+        media: String,
+        /// Samples per pixel at the current zoom.
+        spp: u32,
+    },
+    DeleteMedia(String),
+    FetchFrame {
+        media: String,
+        frame: i64,
+    },
     FetchPresetThumb(String),
     RefreshSongs,
     RefreshPresets,
@@ -78,7 +104,7 @@ pub enum Event {
     Media(Vec<MediaInfo>),
     Peaks {
         media: String,
-        peaks: Vec<f32>,
+        level: PeakLevel,
     },
     Frame {
         media: String,
@@ -187,6 +213,7 @@ fn coalesce(batch: Vec<Cmd>) -> Vec<Cmd> {
     for cmd in batch {
         let replaces_last = match (out.last(), &cmd) {
             (Some(Cmd::Jog(_)), Cmd::Jog(_)) => true,
+            (Some(Cmd::PutProject(_)), Cmd::PutProject(_)) => true,
             (Some(Cmd::Act(Action::Seek, _)), Cmd::Act(Action::Seek, _)) => true,
             (Some(Cmd::PutWorking { song: a, .. }), Cmd::PutWorking { song: b, .. }) => a.id == b.id,
             _ => false,
@@ -339,15 +366,8 @@ impl Worker {
             Cmd::Upload(path) => {
                 let name = path.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "media".into());
                 self.emit(Event::Info(format!("Uploading {name}")));
-                let encoded: String = name
-                    .bytes()
-                    .map(|b| match b {
-                        b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' => (b as char).to_string(),
-                        other => format!("%{other:02X}"),
-                    })
-                    .collect();
                 match std::fs::File::open(&path) {
-                    Ok(file) => match self.api.upload::<MediaInfo>(&format!("/media?name={encoded}"), file) {
+                    Ok(file) => match self.api.upload_media(&name, file) {
                         Ok(info) => self.emit(Event::Uploaded(info)),
                         Err(e) => self.refused(&format!("Import {name}"), e),
                     },
@@ -369,11 +389,15 @@ impl Worker {
                     Err(e) => self.refused("Refit", e),
                 }
             }
-            Cmd::FetchPeaks(media) => {
-                if let Ok(peaks) = self.api.get::<Vec<f32>>(&format!("/media/{media}/peaks")) {
-                    self.emit(Event::Peaks { media, peaks });
+            Cmd::FetchPeaks { media, spp } => {
+                if let Ok(level) = self.api.peaks(&media, spp) {
+                    self.emit(Event::Peaks { media, level });
                 }
             }
+            Cmd::DeleteMedia(id) => match self.api.delete_media(&id) {
+                Ok(m) => self.emit(Event::Media(m)),
+                Err(e) => self.refused("Delete media", e),
+            },
             Cmd::FetchFrame { media, frame } => {
                 if let Ok(jpeg) = self.api.get_bytes(&format!("/media/{media}/frames/{frame}.jpg")) {
                     self.emit(Event::Frame { media, frame, jpeg });
@@ -400,7 +424,7 @@ impl Worker {
                 }
             }
             Cmd::RefreshMedia => {
-                if let Ok(m) = self.api.get::<Vec<MediaInfo>>("/media") {
+                if let Ok(m) = self.api.media() {
                     self.emit(Event::Media(m));
                 }
             }

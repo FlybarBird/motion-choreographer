@@ -127,6 +127,15 @@ pub struct Shell {
     pub layout_changed: bool,
 }
 
+impl Shell {
+    /// Bring a tab to the front of its group.
+    pub fn show_tab(&mut self, tab: Tab) {
+        if let Some(path) = self.dock.find_tab(&tab) {
+            let _ = self.dock.set_active_tab(path);
+        }
+    }
+}
+
 struct Viewer<'a> {
     session: &'a mut Session,
 }
@@ -432,6 +441,8 @@ impl Shell {
                         s.act(Action::Estop);
                     }
                 }
+                ui.separator();
+                crate::media_ui::meters(ui, s);
                 ui.separator();
 
                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
