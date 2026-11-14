@@ -164,6 +164,20 @@ mod tests {
     }
 
     #[test]
+    fn numbers_read_back_as_they_were_hashed() {
+        let dir = temp("floats");
+        let mut log = RunLog::open(&dir);
+        let mut x = 0.123_456_789_012_345_67_f64;
+        for _ in 0..400 {
+            x = (x * 997.0 + 0.1).fract() * 1e-3;
+            log.append("pose", json!({ "pan": x * 1e5, "error": -x, "tiny": x * 1e-12, "big": x * 1e15 }));
+        }
+        drop(log);
+        assert_eq!(verify(&dir), Ok(400));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_modified_or_deleted_line_is_detected() {
         let dir = temp("tamper");
         let mut log = RunLog::open(&dir);
