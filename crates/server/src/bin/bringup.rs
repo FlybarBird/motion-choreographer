@@ -17,6 +17,7 @@ Usage:
   ptz-bringup --fr7 <host[:port]> --autopod <host[:port]> [options]
   ptz-bringup --apply <report.json> [--server http://127.0.0.1:8787] [--access-key <key>]
   ptz-bringup fakes [--fr7 127.0.0.1:52381] [--fr7-http 127.0.0.1:8088] [--autopod 127.0.0.1:8089]
+                    [--picture <file.jpg>]
 
 Checklist options:
   --fr7 <host[:port]>      The FR7's address. VISCA over IP is UDP port 52381.
@@ -40,7 +41,8 @@ own stop: this tool is what measures how long a stop takes.
 project and releases the lease. Top speeds are only ever lowered.
 
 `fakes` runs stand-ins for both devices on this machine, to try the software
-against. The fake FR7's web login is admin / fr7-password.
+against. The fake FR7's web login is admin / fr7-password. --picture gives it
+a JPEG to serve as every preset's picture.
 ";
 
 fn fail(msg: &str) -> ! {
@@ -126,17 +128,22 @@ fn apply(path: &Path, server: &str, key: Option<&str>) {
 fn fakes(mut args: impl Iterator<Item = String>) {
     let (mut visca_at, mut http_at, mut pod_at) =
         (format!("127.0.0.1:{}", visca::PORT), "127.0.0.1:8088".to_string(), "127.0.0.1:8089".to_string());
+    let mut picture = None::<PathBuf>;
     while let Some(arg) = args.next() {
         let mut value = |name: &str| args.next().unwrap_or_else(|| fail(&format!("{name} needs a value")));
         match arg.as_str() {
             "--fr7" => visca_at = value("--fr7"),
             "--fr7-http" => http_at = value("--fr7-http"),
             "--autopod" => pod_at = value("--autopod"),
+            "--picture" => picture = Some(PathBuf::from(value("--picture"))),
             other => fail(&format!("unknown option {other} for fakes")),
         }
     }
     let fr7 =
         FakeFr7::start_on(&visca_at, &http_at).unwrap_or_else(|e| fail(&format!("fake FR7 on {visca_at} and {http_at}: {e}")));
+    if let Some(path) = picture {
+        fr7.set_picture(std::fs::read(&path).unwrap_or_else(|e| fail(&format!("{}: {e}", path.display()))));
+    }
     let pod = FakeAutoPod::start_on(&pod_at).unwrap_or_else(|e| fail(&format!("fake AutoPod on {pod_at}: {e}")));
     println!(
         "Fake FR7:     VISCA over IP on {} (UDP), web interface on {} (login {} / {})",
