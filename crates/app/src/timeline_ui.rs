@@ -36,7 +36,7 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
     toolbar(ui, s, &song);
 
     let avail = ui.available_size();
-    let height = avail.y.max(Layout::content_height(&s.timeline.view));
+    let height = avail.y.max(Layout::content_height(&song, &s.project, &s.timeline.view));
     let (resp, painter) = ui.allocate_painter(vec2(avail.x, height), Sense::click_and_drag());
     let rect = resp.rect;
     s.probe_timeline = Some(rect);
@@ -63,7 +63,7 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
     request_peaks(s, &song);
 
     let playhead = s.playhead();
-    let base = timeline::layout(&song, &s.timeline.view, rect);
+    let base = timeline::layout(&song, &s.project, &s.timeline.view, rect);
     request_filmstrip(s, ui.ctx(), &song, &base);
     let m = mods(ui);
     let editable = s.can_edit();
@@ -78,7 +78,7 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
             if let Some(p) = origin {
                 let target = timeline::hit(&base, p);
                 let edits =
-                    !matches!(target, Hit::Ruler { .. } | Hit::Empty { .. } | Hit::Twirl | Hit::Header { .. } | Hit::Outside);
+                    !matches!(target, Hit::Ruler { .. } | Hit::Empty { .. } | Hit::Twirl(_) | Hit::Header { .. } | Hit::Outside);
                 if edits && editable.is_err() {
                     outcomes.push(Outcome::Refused(editable.clone().unwrap_err()));
                 } else {
@@ -104,11 +104,31 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
     if resp.clicked() || resp.drag_started() {
         resp.request_focus();
     }
+    // Touching a camera's lane, or one of its moves, selects that camera.
+    if resp.clicked() || resp.drag_started_by(egui::PointerButton::Primary) {
+        let origin = ui.input(|i| i.pointer.press_origin()).or(pointer);
+        let camera = origin.and_then(|p| match timeline::hit(&base, p) {
+            Hit::Header { lane } | Hit::Empty { lane: Some(lane), .. } => {
+                lane.camera().and_then(|i| s.project.cameras.get(i)).map(|c| c.id.clone())
+            }
+            Hit::ClipBody { id } | Hit::ClipStart { id } | Hit::ClipEnd { id } | Hit::Key { clip: id, .. } => {
+                song.motion_clip(&id).map(|c| c.camera.clone())
+            }
+            _ => None,
+        });
+        if let Some(camera) = camera {
+            let before = s.cam_id().to_string();
+            s.select_camera(&camera);
+            if s.cam_id() != before {
+                s.axis_lanes.clear();
+            }
+        }
+    }
     // Axis lane headers: the dot record-enables the axis, the name selects the lane for K.
     if resp.clicked() {
         if let Some(p) = pointer {
-            if let Hit::Header { lane: Lane::Axis(axis) } = timeline::hit(&base, p) {
-                if record_dot(&base, axis).is_some_and(|c| (c - p).length() <= 11.0) {
+            if let Hit::Header { lane: Lane::Axis(camera, axis) } = timeline::hit(&base, p) {
+                if record_dot(&base, camera, axis).is_some_and(|c| (c - p).length() <= 11.0) {
                     s.toggle_record_axis(axis);
                 } else if !s.axis_lanes.remove(&axis) {
                     s.axis_lanes.insert(axis);
@@ -190,7 +210,7 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
         let icon = match h {
             Hit::ClipStart { .. } | Hit::ClipEnd { .. } => Some(egui::CursorIcon::ResizeHorizontal),
             Hit::ClipBody { .. } | Hit::Marker { .. } | Hit::Key { .. } => Some(egui::CursorIcon::Grab),
-            Hit::Twirl => Some(egui::CursorIcon::PointingHand),
+            Hit::Twirl(_) => Some(egui::CursorIcon::PointingHand),
             _ => None,
         };
         if let Some(icon) = icon {
@@ -202,7 +222,7 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
 
     // Paint the preview while a drag is in progress, else the song itself.
     let shown: &Song = s.timeline.preview.as_ref().unwrap_or(&song);
-    let l = if s.timeline.preview.is_some() { timeline::layout(shown, &s.timeline.view, rect) } else { base.clone() };
+    let l = if s.timeline.preview.is_some() { timeline::layout(shown, &s.project, &s.timeline.view, rect) } else { base.clone() };
     paint(&painter, &l, shown, s, playhead);
 
     // Refused drag: where it would have gone, in the warning colour.
@@ -294,17 +314,15 @@ fn toolbar(ui: &mut Ui, s: &mut Session, song: &Song) {
             .small(),
         );
         if song.motion.is_empty() && song.media.is_empty() {
-            ui.label(
-                egui::RichText::new("Drag a preset from the Presets tab onto the Camera move lane to start.").color(BLUE).small(),
-            );
+            ui.label(egui::RichText::new("Drag a preset from the Presets tab onto the timeline to start.").color(BLUE).small());
         }
     });
     ui.add_space(2.0);
 }
 
-/// Centre of an axis lane's record-enable dot.
-pub fn record_dot(l: &Layout, axis: Axis) -> Option<Pos2> {
-    l.lane_rect(Lane::Axis(axis)).map(|r| pos2(l.body.left() - 14.0, r.center().y))
+/// Centre of the record-enable dot on one of a camera's axis lanes.
+pub fn record_dot(l: &Layout, camera: usize, axis: Axis) -> Option<Pos2> {
+    l.lane_rect(Lane::Axis(camera, axis)).map(|r| pos2(l.body.left() - 14.0, r.center().y))
 }
 
 pub fn add_marker(s: &mut Session) {
@@ -618,7 +636,7 @@ fn paint_clip(painter: &Painter, l: &Layout, c: &ClipBox, song: &Song, s: &Sessi
     let warn = !issues.is_empty();
 
     if c.kind == ClipKind::AxisPart {
-        let Lane::Axis(axis) = c.lane else { return };
+        let Lane::Axis(_, axis) = c.lane else { return };
         let color = axis_color(axis);
         let bar = c.rect.shrink2(vec2(0.0, 4.0));
         p.rect_filled(bar, 3.0, with_alpha(color, if selected { 70 } else { 38 }));
@@ -799,7 +817,7 @@ fn paint(painter: &Painter, l: &Layout, song: &Song, s: &Session, playhead: f64)
     // Lanes.
     for (i, lane) in l.lanes.iter().enumerate() {
         let fill = match lane.lane {
-            Lane::Axis(_) => PANEL_DARK,
+            Lane::Axis(..) => PANEL_DARK,
             _ if i % 2 == 0 => LANE,
             _ => LANE_ALT,
         };
@@ -861,24 +879,61 @@ fn paint(painter: &Painter, l: &Layout, song: &Song, s: &Session, playhead: f64)
     for lane in &l.lanes {
         let y = lane.rect.center().y;
         match lane.lane {
-            Lane::Motion => {
-                let c = l.twirl.center();
-                let pts = if s.timeline.view.motion_open {
+            Lane::Motion(camera) => {
+                let many = s.project.cameras.len() > 1;
+                let active = camera == s.cam_index();
+                if many && active {
+                    let r = Rect::from_min_max(lane.rect.left_top(), pos2(l.body.left(), lane.rect.bottom()));
+                    painter.rect_filled(r, 0.0, with_alpha(BLUE, 46));
+                    painter.rect_filled(Rect::from_min_size(r.left_top(), vec2(3.0, r.height())), 0.0, camera_color(camera));
+                }
+                let c = l.twirl(camera).map(|t| t.center()).unwrap_or(pos2(l.rect.left() + 13.0, y));
+                let pts = if s.timeline.view.is_open(camera) {
                     vec![pos2(c.x - 5.0, c.y - 3.0), pos2(c.x + 5.0, c.y - 3.0), pos2(c.x, c.y + 4.0)]
                 } else {
                     vec![pos2(c.x - 3.0, c.y - 5.0), pos2(c.x + 4.0, c.y), pos2(c.x - 3.0, c.y + 5.0)]
                 };
                 painter.add(egui::Shape::convex_polygon(pts, OFF_WHITE, Stroke::NONE));
+                if many {
+                    // The camera's number in its colour, then its name.
+                    let chip = Rect::from_center_size(pos2(l.rect.left() + 35.0, y), vec2(18.0, 16.0));
+                    painter.rect_filled(chip, 3.0, camera_color(camera));
+                    painter.text(
+                        chip.center(),
+                        Align2::CENTER_CENTER,
+                        format!("{}", camera + 1),
+                        FontId::proportional(11.0),
+                        NAVY,
+                    );
+                    let name = s.project.cameras.get(camera).map(|c| c.name.as_str()).unwrap_or("");
+                    let text = painter.layout_no_wrap(name.to_string(), FontId::proportional(12.0), OFF_WHITE);
+                    let clip = Rect::from_min_max(
+                        pos2(chip.right() + 5.0, lane.rect.top()),
+                        pos2(l.body.left() - 4.0, lane.rect.bottom()),
+                    );
+                    painter.with_clip_rect(clip).galley(pos2(clip.left(), y - text.size().y / 2.0), text, OFF_WHITE);
+                } else {
+                    painter.text(
+                        pos2(l.rect.left() + 26.0, y),
+                        Align2::LEFT_CENTER,
+                        lane.lane.label(),
+                        FontId::proportional(12.0),
+                        OFF_WHITE,
+                    );
+                }
+            }
+            Lane::Missing => {
                 painter.text(
-                    pos2(l.rect.left() + 26.0, y),
+                    pos2(l.rect.left() + 10.0, y),
                     Align2::LEFT_CENTER,
                     lane.lane.label(),
                     FontId::proportional(12.0),
-                    OFF_WHITE,
+                    AMBER,
                 );
             }
-            Lane::Axis(axis) => {
-                let chosen = s.axis_lanes.contains(&axis);
+            Lane::Axis(camera, axis) => {
+                let mine = camera == s.cam_index();
+                let chosen = mine && s.axis_lanes.contains(&axis);
                 if chosen {
                     let r = Rect::from_min_max(
                         pos2(l.rect.left() + 22.0, lane.rect.top() + 3.0),
@@ -890,8 +945,9 @@ fn paint(painter: &Painter, l: &Layout, song: &Song, s: &Session, playhead: f64)
                 let ink = if chosen { OFF_WHITE } else { MUTED };
                 painter.text(pos2(l.rect.left() + 42.0, y), Align2::LEFT_CENTER, axis.label(), FontId::proportional(11.5), ink);
                 // Record-enable: a ring when off, filled when Record will write this axis, lit during a pass.
-                if let Some(c) = record_dot(l, axis) {
-                    if s.record_axes_shown().contains(&axis) {
+                let records = s.project.camera_index(s.record_camera_shown()) == Some(camera);
+                if let Some(c) = record_dot(l, camera, axis) {
+                    if records && s.record_axes_shown().contains(&axis) {
                         let live = s.status.transport.record;
                         painter.circle_filled(c, 5.5, if live { RED } else { mix(RED, CHARCOAL, 0.35) });
                         if s.status.record.active {

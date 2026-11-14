@@ -4,6 +4,7 @@
 #![allow(dead_code)]
 
 mod app;
+mod camera_ui;
 mod frames;
 mod graph;
 mod link;

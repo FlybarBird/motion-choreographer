@@ -1082,7 +1082,7 @@ mod tests {
         let mut g = Graph::default();
         let c = song.motion_clip(clip).unwrap();
         g.fit_values(song, project, (c.start_frame, c.end_frame()), &[]);
-        let view = View { px_per_frame: 2.0, scroll: 50.0, motion_open: false };
+        let view = View { px_per_frame: 2.0, scroll: 50.0, open: 0 };
         let plot = Plot::new(Rect::from_min_size(pos2(0.0, 0.0), vec2(900.0, 320.0)), &view, g.ranges);
         (g, plot)
     }

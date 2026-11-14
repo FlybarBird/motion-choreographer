@@ -354,6 +354,16 @@ fn live_state(ui: &mut Ui, s: &Session) {
 pub fn show(ui: &mut Ui, s: &mut Session) {
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         egui::Frame::new().inner_margin(egui::Margin::symmetric(10, 8)).show(ui, |ui| {
+            if s.project.cameras.len() > 1 {
+                let i = s.cam_index();
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!(" {} ", i + 1)).strong().color(NAVY).background_color(camera_color(i)));
+                    ui.label(RichText::new(&s.cam().name).strong());
+                    ui.label(
+                        RichText::new("The controller, the readout and the stored pose are this camera's.").color(MUTED).small(),
+                    );
+                });
+            }
             if s.cam_status().adapters.is_empty() {
                 note(ui, "The server has not reported a rig.");
             }

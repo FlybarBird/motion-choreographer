@@ -228,6 +228,9 @@ impl Shell {
         egui::Panel::top("transport_bar")
             .frame(egui::Frame::new().fill(PANEL_DARK).inner_margin(egui::Margin::symmetric(10, 7)))
             .show(ui, |ui| self.transport(ui));
+        egui::Panel::top("camera_bar")
+            .frame(egui::Frame::new().fill(CHARCOAL).inner_margin(egui::Margin::symmetric(10, 4)))
+            .show(ui, |ui| crate::camera_ui::bar(ui, &mut self.session));
         if let Some(lost) = self.session.lost.clone() {
             egui::Panel::top("lost_banner")
                 .frame(egui::Frame::new().fill(RED).inner_margin(egui::Margin::symmetric(10, 5)))
@@ -546,6 +549,7 @@ impl Shell {
         if with_cmd(Key::D) {
             timeline_ui::duplicate_selection(s);
         }
+        crate::camera_ui::shortcuts(&ctx, s);
         if pressed(Key::Escape) {
             s.timeline.cancel();
         }
