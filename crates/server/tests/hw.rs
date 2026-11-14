@@ -770,3 +770,29 @@ fn stop_reaches_the_column_while_the_leg_box_is_slow_to_answer() {
         assert!(!pod.is_moving());
     }
 }
+
+#[test]
+fn a_preset_sync_stopped_while_the_camera_is_slow_to_list_its_presets_recalls_nothing() {
+    let fr7 = FakeFr7::start();
+    let slow = SlowAnswers::start(fr7.http);
+    let mut cfg = rig_config(Some(&fr7), None);
+    cfg.fr7_http_port = slow.addr.port();
+    let mut rig = HardwareRig::start(&cfg, &AxisTable::default());
+    wait_until("the camera answers", || rig.problem().is_none());
+    fr7.settle_after_connect();
+
+    // The web interface takes its time over the preset list. The sync is stopped meanwhile.
+    slow.hold(Duration::from_millis(500));
+    rig.begin_preset_sync().unwrap();
+    std::thread::sleep(Duration::from_millis(150));
+    rig.stop();
+    assert_eq!(rig.take_preset_sync(), Some(Err("The preset sync was stopped".to_string())));
+
+    // The list arrives after the stop. No preset is recalled on the strength of it.
+    std::thread::sleep(Duration::from_millis(2000));
+    let stops = [visca::pan_tilt_stop(), visca::zoom_stop(), visca::focus_stop()];
+    let moved: Vec<Vec<u8>> = fr7.commands().into_iter().filter(|c| !stops.contains(c)).collect();
+    assert!(moved.is_empty(), "sent after the stop: {moved:02X?}");
+    assert!(!fr7.is_moving());
+    assert_eq!(rig.take_preset_sync(), None);
+}

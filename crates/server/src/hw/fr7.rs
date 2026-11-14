@@ -759,6 +759,15 @@ impl Worker {
                     return Ok(());
                 }
             };
+            // The list can be seconds in coming. A sync that was stopped meanwhile moves nothing.
+            let stopped = {
+                let mut s = self.lock();
+                s.obey_line();
+                s.mode != Mode::Sync
+            };
+            if stopped {
+                return Ok(());
+            }
             self.sync = Some(SyncJob { list, index: 0, recalled_at: None, still: 0, out: Vec::new() });
         }
         let link = self.link.as_mut().expect("connected");
