@@ -509,6 +509,27 @@ pub fn demo_songs(rate: FrameRate) -> Vec<Song> {
     vec![walk_in, opening, awards]
 }
 
+/// Audio output / sync snapshot for headless Mac verification (`GET /api/v1/status`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AudioOutputStatus {
+    /// Device name, or `"silent"`.
+    pub device: String,
+    /// Present when silent / failed to open (or informational).
+    pub reason: Option<String>,
+    /// Program (clip) sample rate, or output rate when no clip loaded.
+    pub sample_rate: u32,
+    /// Loaded clip duration in milliseconds, if any.
+    pub duration_ms: Option<u64>,
+    /// Current audio engine position in milliseconds.
+    pub position_ms: u64,
+    /// Transport / show-clock position in milliseconds.
+    pub transport_position_ms: u64,
+    /// `position_ms - transport_position_ms`.
+    pub drift_ms: i64,
+    /// Mirrors `transport.hardware_live` for a one-shot curl check.
+    pub hardware_live: bool,
+}
+
 /// API / websocket envelope pieces shared by client & server.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ShowStatus {
@@ -518,6 +539,7 @@ pub struct ShowStatus {
     pub settings: ProjectSettings,
     pub active_song_id: Option<String>,
     pub live: LiveState,
+    pub audio_output: AudioOutputStatus,
     pub server_time_ms: u64,
 }
 

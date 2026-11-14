@@ -131,19 +131,23 @@ pub fn waveform_peaks(audio: &DecodedAudio, buckets: usize) -> Waveform {
 pub fn render_output_frame(
     program_mono: f32,
     ltc_sample: f32,
-    left_is_program: bool,
-    right_is_ltc: bool,
+    left: crate::AudioChannelRoute,
+    right: crate::AudioChannelRoute,
     ltc_enabled: bool,
 ) -> (f32, f32) {
-    let l = if left_is_program { program_mono } else { 0.0 };
-    let r = if right_is_ltc && ltc_enabled {
-        ltc_sample
-    } else if right_is_ltc {
-        0.0
-    } else {
-        0.0
+    use crate::AudioChannelRoute;
+    let map = |route: AudioChannelRoute| match route {
+        AudioChannelRoute::Silent => 0.0,
+        AudioChannelRoute::Program => program_mono,
+        AudioChannelRoute::LtcGenerator => {
+            if ltc_enabled {
+                ltc_sample
+            } else {
+                0.0
+            }
+        }
     };
-    (l, r)
+    (map(left), map(right))
 }
 
 #[cfg(test)]

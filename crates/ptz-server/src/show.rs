@@ -93,22 +93,35 @@ impl ShowEngine {
         let rate = settings.frame_rate;
         let pose = self.current_pose(playhead);
         let song_id = transport.song_id.clone();
+        let song_seconds = rate.frames_to_seconds(playhead);
         let smpte = if let Some(id) = &song_id {
             self.songs
                 .lock()
                 .get(id)
-                .map(|s| {
-                    s.smpte_start
-                        .offset(playhead)
-                        .display()
-                })
+                .map(|s| s.smpte_start.offset(playhead).display())
                 .unwrap_or_else(|| ptz_core::Timecode::from_seconds(0.0, rate).display())
         } else {
             ptz_core::Timecode::zero(rate).display()
         };
+        let audio_pos = self.audio.cursor_seconds();
+        let duration_ms = self
+            .audio
+            .duration_secs()
+            .map(|s| (s * 1000.0).round() as u64)
+            .or_else(|| {
+                song_id.as_ref().and_then(|id| {
+                    self.songs.lock().get(id).and_then(|s| {
+                        s.audio
+                            .as_ref()
+                            .map(|a| (a.duration_secs * 1000.0).round() as u64)
+                    })
+                })
+            });
+        let position_ms = (audio_pos * 1000.0).round() as u64;
+        let transport_position_ms = (song_seconds * 1000.0).round() as u64;
         ShowStatus {
             api_version: API_VERSION.to_string(),
-            transport,
+            transport: transport.clone(),
             guidance,
             settings,
             active_song_id: song_id,
@@ -116,13 +129,33 @@ impl ShowEngine {
                 pose,
                 playhead_frames: playhead,
                 playhead_tc: smpte,
-                song_seconds: rate.frames_to_seconds(playhead),
+                song_seconds,
+            },
+            audio_output: ptz_core::AudioOutputStatus {
+                device: self.audio.device_name(),
+                reason: self.audio.silent_reason(),
+                sample_rate: self.audio.program_sample_rate(),
+                duration_ms,
+                position_ms,
+                transport_position_ms,
+                drift_ms: position_ms as i64 - transport_position_ms as i64,
+                hardware_live: transport.hardware_live,
             },
             server_time_ms: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map(|d| d.as_millis() as u64)
                 .unwrap_or(0),
         }
+    }
+
+    /// Seek the audio engine to the show-clock / transport playhead.
+    fn sync_audio_to_frames(&self, frames: i64) {
+        let secs = self
+            .settings
+            .lock()
+            .frame_rate
+            .frames_to_seconds(frames);
+        self.audio.seek_seconds(secs);
     }
 
     pub fn current_pose(&self, frame: i64) -> RigPose {
@@ -343,38 +376,33 @@ impl ShowEngine {
             TransportAction::Preview => {
                 self.clock.seek_frames(next.playhead_frames);
                 self.clock.start();
-                self.audio.seek_seconds(
-                    self.settings
-                        .lock()
-                        .frame_rate
-                        .frames_to_seconds(next.playhead_frames),
-                );
+                self.sync_audio_to_frames(next.playhead_frames);
                 self.audio.play();
                 info!("Preview started (hardware_live=false)");
             }
             TransportAction::Play => {
+                // Covers live start and resume-from-pause.
                 self.clock.seek_frames(next.playhead_frames);
                 self.clock.start();
-                self.audio.seek_seconds(
-                    self.settings
-                        .lock()
-                        .frame_rate
-                        .frames_to_seconds(next.playhead_frames),
-                );
+                self.sync_audio_to_frames(next.playhead_frames);
                 self.audio.play();
                 info!("Live Play started (hardware_live=true)");
             }
             TransportAction::Stop => {
                 self.clock.pause();
                 self.audio.pause();
+                // Keep audio cursor aligned with the paused show clock.
+                self.sync_audio_to_frames(next.playhead_frames);
             }
             TransportAction::Cue => {
                 self.clock.stop_and_cue();
+                self.sync_audio_to_frames(0);
                 self.audio.cue();
             }
             TransportAction::Estop => {
                 self.clock.pause();
                 self.audio.pause();
+                self.sync_audio_to_frames(next.playhead_frames);
                 let fr7 = self.fr7.clone();
                 let ap = self.autopod.clone();
                 tokio::spawn(async move {
@@ -437,15 +465,16 @@ impl ShowEngine {
             return;
         }
         let rate = self.settings.lock().frame_rate;
-        // Keep silent audio engine roughly in sync when no cpal device is present.
-        self.audio.silent_advance(1.0 / 30.0);
-
-        // Prefer audio cursor for A/V sync when a program clip is loaded & playing.
-        let frame = if self.audio_loaded() && self.audio.is_playing() {
-            rate.seconds_to_frames(self.audio.cursor_seconds())
-        } else {
-            self.clock.song_frames()
-        };
+        // Show clock is authoritative; audio follows (hard on silent, soft on device).
+        let frame = self.clock.song_frames();
+        let clock_secs = rate.frames_to_seconds(frame);
+        if self.audio.is_playing() {
+            if self.audio.is_silent() {
+                self.audio.follow_clock_seconds(clock_secs);
+            } else {
+                let _ = self.audio.resync_if_drift(clock_secs, 0.04);
+            }
+        }
 
         transport.playhead_frames = frame;
         *self.transport.lock() = transport.clone();
@@ -471,13 +500,6 @@ impl ShowEngine {
             return;
         }
         self.publish_status();
-    }
-
-    fn audio_loaded(&self) -> bool {
-        let song_id = self.transport.lock().song_id.clone();
-        song_id
-            .and_then(|id| self.songs.lock().get(&id).and_then(|s| s.audio.clone()))
-            .is_some()
     }
 
     pub fn data_dir(&self) -> &Path {

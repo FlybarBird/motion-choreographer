@@ -110,6 +110,47 @@ async fn ui_guidance_matches_server_acceptance() {
 }
 
 #[tokio::test]
+async fn status_reports_audio_output_fields() {
+    let (addr, engine) = boot().await;
+    let song = engine.list_songs()[0].clone();
+    engine.select_song(&song.id).unwrap();
+
+    let wav = fixture_wav_path();
+    let data = std::fs::read(&wav).expect("fixture wav");
+    let form = reqwest::multipart::Form::new().part(
+        "file",
+        reqwest::multipart::Part::bytes(data)
+            .file_name("test-click-12_4s.wav")
+            .mime_str("audio/wav")
+            .unwrap(),
+    );
+    let url = format!("http://{addr}/api/v1/songs/{}/audio", song.id);
+    let resp = reqwest::Client::new()
+        .post(&url)
+        .multipart(form)
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+
+    let status: ptz_core::ShowStatus = reqwest::Client::new()
+        .get(format!("http://{addr}/api/v1/status"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let a = &status.audio_output;
+    assert!(!a.device.is_empty(), "device name or silent");
+    assert!(a.sample_rate >= 8000);
+    let dur = a.duration_ms.expect("duration_ms");
+    assert!((dur as i64 - 12400).abs() < 80, "duration_ms={dur}");
+    assert_eq!(a.hardware_live, status.transport.hardware_live);
+    assert_eq!(a.drift_ms, a.position_ms as i64 - a.transport_position_ms as i64);
+}
+
+#[tokio::test]
 async fn audio_upload_sets_duration_and_waveform() {
     let (addr, engine) = boot().await;
     let song = engine.list_songs()[0].clone();

@@ -94,4 +94,7 @@ echo "  Server: $SERVER_INSTALL/start-ptz-server.sh"
 echo
 echo "Launch server first, then open PTZ Director."
 echo "Default backend URL: http://127.0.0.1:8787"
-EOF
+echo
+echo "Headless audio check (no GUI):"
+echo "  curl -s http://127.0.0.1:8787/api/v1/status | python3 -m json.tool | less"
+echo "  Look at audio_output.device (not 'silent' on Mac), duration_ms, drift_ms, hardware_live."

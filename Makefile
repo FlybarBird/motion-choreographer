@@ -8,6 +8,8 @@ fixtures: $(FIXTURE_WAV)
 $(FIXTURE_WAV):
 	python3 scripts/generate-test-wav.py
 
+# Tests may force silent audio on Linux VMs without /dev/snd.
+# Do NOT export PTZ_SILENT_AUDIO for run-server / shipped binaries — macOS must use cpal.
 check: fixtures
 	$(CARGO) fmt --all -- --check || $(CARGO) fmt --all
 	$(CARGO) clippy --workspace --all-targets -- -D warnings || \
@@ -22,6 +24,7 @@ test: fixtures
 build: fixtures
 	$(CARGO) build --workspace --release
 
+# Intentionally does not set PTZ_SILENT_AUDIO (macOS needs real cpal output).
 run-server:
 	$(CARGO) run -p ptz-server -- --listen 127.0.0.1:8787
 

@@ -4,8 +4,9 @@
 //! - Live path is deliberate: Commit → Prepare → Arm → Play
 //! - Preview is one-click and never drives hardware
 //! - Stop pauses; Play resumes; Cue re-cues to start
+//! - Disarm exits prepared/armed/live_paused back to idle (hardware still)
 //! - E-Stop is always available
-//! - UI button enablement is derived from the same rules the server enforces
+//! - Guidance never names an action that is disabled in the current phase
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -50,18 +51,52 @@ pub enum TransportMode {
     Live,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TransportAction {
     SaveCommit,
     Prepare,
     Arm,
+    Disarm,
     Play,
     Preview,
     Stop,
     Cue,
     Estop,
     ClearEstop,
+}
+
+impl TransportAction {
+    /// Operator-facing label used in hints / blocked reasons.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::SaveCommit => "Save/Commit",
+            Self::Prepare => "Prepare",
+            Self::Arm => "Arm",
+            Self::Disarm => "Disarm",
+            Self::Play => "Play",
+            Self::Preview => "Preview",
+            Self::Stop => "Stop",
+            Self::Cue => "Cue",
+            Self::Estop => "E-Stop",
+            Self::ClearEstop => "Clear E-Stop",
+        }
+    }
+
+    pub fn all() -> &'static [TransportAction] {
+        &[
+            Self::SaveCommit,
+            Self::Prepare,
+            Self::Arm,
+            Self::Disarm,
+            Self::Play,
+            Self::Preview,
+            Self::Stop,
+            Self::Cue,
+            Self::Estop,
+            Self::ClearEstop,
+        ]
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,6 +122,14 @@ impl TransportSnapshot {
             hardware_live: false,
         }
     }
+
+    fn idle_or_editing_phase(&self) -> TransportPhase {
+        if self.committed && !self.dirty {
+            TransportPhase::Idle
+        } else {
+            TransportPhase::Editing
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -94,12 +137,30 @@ pub struct TransportButtons {
     pub save_commit: bool,
     pub prepare: bool,
     pub arm: bool,
+    pub disarm: bool,
     pub play: bool,
     pub preview: bool,
     pub stop: bool,
     pub cue: bool,
     pub estop: bool,
     pub clear_estop: bool,
+}
+
+impl TransportButtons {
+    pub fn enabled(&self, action: TransportAction) -> bool {
+        match action {
+            TransportAction::SaveCommit => self.save_commit,
+            TransportAction::Prepare => self.prepare,
+            TransportAction::Arm => self.arm,
+            TransportAction::Disarm => self.disarm,
+            TransportAction::Play => self.play,
+            TransportAction::Preview => self.preview,
+            TransportAction::Stop => self.stop,
+            TransportAction::Cue => self.cue,
+            TransportAction::Estop => self.estop,
+            TransportAction::ClearEstop => self.clear_estop,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -111,6 +172,7 @@ pub struct TransportGuidance {
     pub preview_blocked_reason: Option<String>,
     pub prepare_blocked_reason: Option<String>,
     pub arm_blocked_reason: Option<String>,
+    pub disarm_blocked_reason: Option<String>,
 }
 
 /// Pure policy: both server rejection and UI enablement call this.
@@ -122,6 +184,7 @@ impl TransportPolicy {
             save_commit: snap.dirty || !snap.committed,
             prepare: false,
             arm: false,
+            disarm: false,
             play: false,
             preview: false,
             stop: false,
@@ -134,22 +197,26 @@ impl TransportPolicy {
         let mut preview_blocked = None;
         let mut prepare_blocked = None;
         let mut arm_blocked = None;
+        let mut disarm_blocked = None;
+
+        let can_prepare_live = snap.committed && !snap.dirty && snap.song_id.is_some();
 
         match snap.phase {
             TransportPhase::Estopped => {
+                buttons.cue = false;
+                buttons.save_commit = false;
                 play_blocked = Some("E-Stop latched — Clear E-Stop first".into());
                 preview_blocked = Some("E-Stop latched — Clear E-Stop first".into());
                 prepare_blocked = Some("E-Stop latched — Clear E-Stop first".into());
                 arm_blocked = Some("E-Stop latched — Clear E-Stop first".into());
+                disarm_blocked = Some("E-Stop latched — Clear E-Stop first".into());
             }
             TransportPhase::Editing => {
                 buttons.preview = snap.song_id.is_some();
-                buttons.prepare = false;
-                buttons.arm = false;
-                buttons.play = false;
                 play_blocked = Some("Unsaved changes — Save/Commit first".into());
                 prepare_blocked = Some("Unsaved changes — Save/Commit first".into());
-                arm_blocked = Some("Not prepared — Prepare first".into());
+                arm_blocked = Some("Unsaved changes — Save/Commit first".into());
+                disarm_blocked = Some("Not on live path".into());
                 if snap.song_id.is_none() {
                     preview_blocked = Some("No song selected".into());
                     buttons.preview = false;
@@ -157,84 +224,92 @@ impl TransportPolicy {
             }
             TransportPhase::Idle => {
                 buttons.preview = snap.song_id.is_some();
-                buttons.prepare = snap.committed && snap.song_id.is_some() && !snap.dirty;
-                buttons.play = false;
-                buttons.arm = false;
-                if !snap.committed || snap.dirty {
-                    play_blocked = Some("Unsaved changes — Save/Commit first".into());
-                    prepare_blocked = Some("Unsaved changes — Save/Commit first".into());
+                buttons.prepare = can_prepare_live;
+                if !can_prepare_live {
+                    if snap.song_id.is_none() {
+                        prepare_blocked = Some("No song selected".into());
+                        play_blocked = Some("No song selected".into());
+                        arm_blocked = Some("No song selected".into());
+                        preview_blocked = Some("No song selected".into());
+                        buttons.preview = false;
+                    } else {
+                        prepare_blocked = Some("Unsaved changes — Save/Commit first".into());
+                        play_blocked = Some("Unsaved changes — Save/Commit first".into());
+                        arm_blocked = Some("Unsaved changes — Save/Commit first".into());
+                    }
                 } else {
                     play_blocked = Some("Not prepared — Prepare first".into());
                     arm_blocked = Some("Not prepared — Prepare first".into());
                 }
-                if snap.song_id.is_none() {
-                    preview_blocked = Some("No song selected".into());
-                    buttons.preview = false;
-                    prepare_blocked = Some("No song selected".into());
-                    buttons.prepare = false;
-                }
+                disarm_blocked = Some("Not on live path".into());
             }
             TransportPhase::Prepared => {
                 buttons.preview = true;
-                buttons.prepare = false;
                 buttons.arm = true;
-                buttons.play = false;
+                buttons.disarm = true;
                 play_blocked = Some("Not armed — Arm first".into());
+                prepare_blocked = Some("Already prepared — Arm or Disarm".into());
+                arm_blocked = None;
             }
             TransportPhase::Armed => {
-                buttons.preview = false; // deliberate: leave live path for preview
-                buttons.arm = false;
                 buttons.play = true;
+                buttons.disarm = true;
+                buttons.arm = false;
                 buttons.prepare = false;
-                preview_blocked = Some("Armed for live — Disarm/Stop path or E-Stop to preview".into());
+                // Only name enabled actions (Disarm / Play) — never Preview here.
+                preview_blocked = Some("Armed for live — Disarm first".into());
+                prepare_blocked = Some("Already armed — Play or Disarm".into());
+                arm_blocked = Some("Already armed — Play or Disarm".into());
             }
             TransportPhase::LivePlaying => {
                 buttons.stop = true;
-                buttons.play = false;
-                buttons.preview = false;
-                play_blocked = Some("Already playing".into());
+                buttons.cue = true;
+                play_blocked = Some("Already playing — Stop pauses".into());
+                preview_blocked = Some("Live playing — Stop first".into());
+                prepare_blocked = Some("Live playing — Stop first".into());
+                arm_blocked = Some("Live playing — Stop first".into());
+                disarm_blocked = Some("Live playing — Stop first".into());
             }
             TransportPhase::LivePaused => {
                 buttons.play = true; // resume live
-                buttons.stop = false;
-                buttons.preview = false;
+                buttons.disarm = true; // end live → idle, hardware still
                 buttons.cue = true;
+                preview_blocked = Some("Live paused — Disarm first".into());
+                prepare_blocked = Some("Live paused — Disarm first".into());
+                arm_blocked = Some("Live paused — Play to resume, or Disarm to exit".into());
             }
             TransportPhase::PreviewPlaying => {
                 buttons.stop = true;
-                buttons.play = false;
-                buttons.preview = false;
-                play_blocked = Some("In preview — Stop first for live path".into());
+                buttons.cue = true; // cue → idle (exit preview)
+                // Only name Stop / Cue / Save/Commit — not Prepare (disabled until Stop).
+                play_blocked = Some("In preview — Stop first".into());
+                prepare_blocked = if can_prepare_live {
+                    Some("In preview — Stop first".into())
+                } else if buttons.save_commit {
+                    Some("Unsaved changes — Save/Commit first".into())
+                } else {
+                    Some("In preview — Stop first".into())
+                };
+                arm_blocked = Some("In preview — Stop first".into());
+                disarm_blocked = Some("Not on live path — Stop or Cue".into());
             }
             TransportPhase::PreviewPaused => {
                 buttons.preview = true; // resume preview
-                buttons.play = false;
-                buttons.cue = true;
-                if snap.committed && !snap.dirty {
+                buttons.cue = true; // cue → idle
+                buttons.prepare = can_prepare_live; // enter live path without E-Stop
+                if can_prepare_live {
                     play_blocked = Some("Not prepared — Prepare first".into());
+                    arm_blocked = Some("Not prepared — Prepare first".into());
                 } else {
                     play_blocked = Some("Unsaved changes — Save/Commit first".into());
+                    prepare_blocked = Some("Unsaved changes — Save/Commit first".into());
+                    arm_blocked = Some("Unsaved changes — Save/Commit first".into());
                 }
+                disarm_blocked = Some("Not on live path".into());
             }
         }
 
-        let next_hint = if snap.phase == TransportPhase::Estopped {
-            "E-Stop latched. Clear E-Stop when safe.".to_string()
-        } else if buttons.play {
-            "Ready: Play (live)".to_string()
-        } else if buttons.arm {
-            "Next: Arm for live hardware".to_string()
-        } else if buttons.prepare {
-            "Next: Prepare for live".to_string()
-        } else if buttons.save_commit && (snap.dirty || !snap.committed) {
-            "Next: Save/Commit before live Play".to_string()
-        } else if buttons.preview {
-            "Preview available (no hardware). Live path: Prepare → Arm → Play.".to_string()
-        } else if buttons.stop {
-            "Playing — Stop pauses; Cue re-cues to start.".to_string()
-        } else {
-            "Select a song to begin.".to_string()
-        };
+        let next_hint = build_next_hint(snap, &buttons);
 
         TransportGuidance {
             buttons,
@@ -243,23 +318,13 @@ impl TransportPolicy {
             preview_blocked_reason: preview_blocked,
             prepare_blocked_reason: prepare_blocked,
             arm_blocked_reason: arm_blocked,
+            disarm_blocked_reason: disarm_blocked,
         }
     }
 
     pub fn can(snap: &TransportSnapshot, action: TransportAction) -> Result<(), TransportError> {
         let g = Self::guidance(snap);
-        let ok = match action {
-            TransportAction::SaveCommit => g.buttons.save_commit,
-            TransportAction::Prepare => g.buttons.prepare,
-            TransportAction::Arm => g.buttons.arm,
-            TransportAction::Play => g.buttons.play,
-            TransportAction::Preview => g.buttons.preview,
-            TransportAction::Stop => g.buttons.stop,
-            TransportAction::Cue => g.buttons.cue,
-            TransportAction::Estop => g.buttons.estop,
-            TransportAction::ClearEstop => g.buttons.clear_estop,
-        };
-        if ok {
+        if g.buttons.enabled(action) {
             Ok(())
         } else {
             let reason = match action {
@@ -267,9 +332,10 @@ impl TransportPolicy {
                 TransportAction::Preview => g.preview_blocked_reason,
                 TransportAction::Prepare => g.prepare_blocked_reason,
                 TransportAction::Arm => g.arm_blocked_reason,
+                TransportAction::Disarm => g.disarm_blocked_reason,
                 _ => None,
             }
-            .unwrap_or_else(|| format!("{action:?} not available in {:?}", snap.phase));
+            .unwrap_or_else(|| format!("{} not available in {:?}", action.label(), snap.phase));
             Err(TransportError::Rejected(reason))
         }
     }
@@ -288,7 +354,13 @@ impl TransportPolicy {
                 if next.phase == TransportPhase::Editing {
                     next.phase = TransportPhase::Idle;
                 }
-                next.mode = TransportMode::Idle;
+                // Stay in preview_paused if that is where we committed from.
+                if !matches!(
+                    next.phase,
+                    TransportPhase::PreviewPlaying | TransportPhase::PreviewPaused
+                ) {
+                    next.mode = TransportMode::Idle;
+                }
                 next.hardware_live = false;
             }
             TransportAction::Prepare => {
@@ -299,6 +371,12 @@ impl TransportPolicy {
             TransportAction::Arm => {
                 next.phase = TransportPhase::Armed;
                 next.mode = TransportMode::Live;
+                next.hardware_live = false;
+            }
+            TransportAction::Disarm => {
+                // Exit live path; hardware stays still.
+                next.phase = next.idle_or_editing_phase();
+                next.mode = TransportMode::Idle;
                 next.hardware_live = false;
             }
             TransportAction::Play => {
@@ -329,8 +407,10 @@ impl TransportPolicy {
                         next.phase = TransportPhase::LivePaused;
                         next.hardware_live = false;
                     }
+                    // Cue exits preview back to idle/editing so the operator is not stuck.
                     TransportPhase::PreviewPlaying | TransportPhase::PreviewPaused => {
-                        next.phase = TransportPhase::PreviewPaused;
+                        next.phase = next.idle_or_editing_phase();
+                        next.mode = TransportMode::Idle;
                         next.hardware_live = false;
                     }
                     TransportPhase::Armed | TransportPhase::Prepared => {
@@ -338,11 +418,7 @@ impl TransportPolicy {
                     }
                     TransportPhase::Estopped => {}
                     _ => {
-                        next.phase = if next.committed && !next.dirty {
-                            TransportPhase::Idle
-                        } else {
-                            TransportPhase::Editing
-                        };
+                        next.phase = next.idle_or_editing_phase();
                         next.mode = TransportMode::Idle;
                         next.hardware_live = false;
                     }
@@ -354,11 +430,7 @@ impl TransportPolicy {
                 next.hardware_live = false;
             }
             TransportAction::ClearEstop => {
-                next.phase = if next.committed && !next.dirty {
-                    TransportPhase::Idle
-                } else {
-                    TransportPhase::Editing
-                };
+                next.phase = next.idle_or_editing_phase();
                 next.mode = TransportMode::Idle;
                 next.hardware_live = false;
             }
@@ -380,14 +452,74 @@ impl TransportPolicy {
             next.phase = TransportPhase::Editing;
             next.mode = TransportMode::Idle;
             next.hardware_live = false;
-        } else if matches!(
-            next.phase,
-            TransportPhase::PreviewPlaying | TransportPhase::PreviewPaused
-        ) {
-            // keep preview; but committed flag cleared for live path
         }
         next
     }
+}
+
+fn build_next_hint(snap: &TransportSnapshot, buttons: &TransportButtons) -> String {
+    if buttons.clear_estop {
+        return "E-Stop latched. Clear E-Stop when safe.".into();
+    }
+    if buttons.play && matches!(snap.phase, TransportPhase::Armed) {
+        return "Ready: Play (live). Disarm cancels the live path.".into();
+    }
+    if buttons.play && matches!(snap.phase, TransportPhase::LivePaused) {
+        return "Live paused — Play resumes, or Disarm to exit live path.".into();
+    }
+    if buttons.arm {
+        return "Next: Arm for live hardware (or Disarm to cancel).".into();
+    }
+    if buttons.prepare {
+        return "Next: Prepare for live (or Preview / Cue).".into();
+    }
+    if buttons.save_commit && (snap.dirty || !snap.committed) {
+        return "Next: Save/Commit before Prepare / live Play.".into();
+    }
+    if buttons.preview && buttons.prepare {
+        return "Preview available. Or Prepare → Arm → Play for live.".into();
+    }
+    if buttons.preview {
+        return "Preview available (no hardware). Save/Commit before live path.".into();
+    }
+    if buttons.stop {
+        return "Playing — Stop pauses; Cue re-cues.".into();
+    }
+    if buttons.disarm {
+        return "Next: Disarm to leave the live path.".into();
+    }
+    if snap.song_id.is_none() {
+        return "Select a song to begin.".into();
+    }
+    "Ready.".into()
+}
+
+/// Labels that may appear in hints / blocked reasons; used by the no-dead-end test.
+pub fn guidance_action_labels() -> &'static [(&'static str, TransportAction)] {
+    // Longer phrases first so "Clear E-Stop" wins over "E-Stop".
+    &[
+        ("Clear E-Stop", TransportAction::ClearEstop),
+        ("Save/Commit", TransportAction::SaveCommit),
+        ("Prepare", TransportAction::Prepare),
+        ("Disarm", TransportAction::Disarm),
+        ("Preview", TransportAction::Preview),
+        ("Arm", TransportAction::Arm),
+        ("Play", TransportAction::Play),
+        ("Stop", TransportAction::Stop),
+        ("Cue", TransportAction::Cue),
+        ("E-Stop", TransportAction::Estop),
+    ]
+}
+
+/// Extract transport actions named in a guidance string.
+pub fn actions_named_in_text(text: &str) -> Vec<TransportAction> {
+    let mut found = Vec::new();
+    for (label, action) in guidance_action_labels() {
+        if text.contains(label) && !found.contains(action) {
+            found.push(*action);
+        }
+    }
+    found
 }
 
 #[cfg(test)]
@@ -418,14 +550,39 @@ mod tests {
         }
     }
 
+    fn snap_for_phase(phase: TransportPhase) -> TransportSnapshot {
+        let dirty = phase == TransportPhase::Editing;
+        TransportSnapshot {
+            phase,
+            mode: match phase {
+                TransportPhase::PreviewPlaying | TransportPhase::PreviewPaused => {
+                    TransportMode::Preview
+                }
+                TransportPhase::Prepared
+                | TransportPhase::Armed
+                | TransportPhase::LivePlaying
+                | TransportPhase::LivePaused => TransportMode::Live,
+                _ => TransportMode::Idle,
+            },
+            dirty,
+            committed: !dirty,
+            playhead_frames: 10,
+            song_id: Some("s".into()),
+            hardware_live: phase == TransportPhase::LivePlaying,
+        }
+    }
+
     #[test]
     fn play_rejected_while_editing() {
         let snap = editing();
         let g = TransportPolicy::guidance(&snap);
         assert!(!g.buttons.play);
-        assert!(g.play_blocked_reason.as_deref().unwrap().contains("Save/Commit"));
+        assert!(g
+            .play_blocked_reason
+            .as_deref()
+            .unwrap()
+            .contains("Save/Commit"));
         assert!(TransportPolicy::can(&snap, TransportAction::Play).is_err());
-        // Preview still available
         assert!(g.buttons.preview);
         assert!(TransportPolicy::can(&snap, TransportAction::Preview).is_ok());
     }
@@ -442,6 +599,66 @@ mod tests {
         snap = TransportPolicy::apply(&snap, TransportAction::Play).unwrap();
         assert!(snap.hardware_live);
         assert_eq!(snap.phase, TransportPhase::LivePlaying);
+    }
+
+    #[test]
+    fn preview_paused_can_prepare_for_live() {
+        let mut snap = committed_idle();
+        snap = TransportPolicy::apply(&snap, TransportAction::Preview).unwrap();
+        snap = TransportPolicy::apply(&snap, TransportAction::Stop).unwrap();
+        assert_eq!(snap.phase, TransportPhase::PreviewPaused);
+        let g = TransportPolicy::guidance(&snap);
+        assert!(g.buttons.prepare, "Prepare must be enabled from PreviewPaused");
+        assert!(g.buttons.preview);
+        assert!(g.buttons.cue);
+        snap = TransportPolicy::apply(&snap, TransportAction::Prepare).unwrap();
+        assert_eq!(snap.phase, TransportPhase::Prepared);
+        assert!(!snap.hardware_live);
+    }
+
+    #[test]
+    fn preview_paused_cue_returns_to_idle() {
+        let mut snap = committed_idle();
+        snap = TransportPolicy::apply(&snap, TransportAction::Preview).unwrap();
+        snap = TransportPolicy::apply(&snap, TransportAction::Stop).unwrap();
+        snap.playhead_frames = 99;
+        snap = TransportPolicy::apply(&snap, TransportAction::Cue).unwrap();
+        assert_eq!(snap.playhead_frames, 0);
+        assert_eq!(snap.phase, TransportPhase::Idle);
+        assert_eq!(snap.mode, TransportMode::Idle);
+    }
+
+    #[test]
+    fn disarm_from_armed_to_idle() {
+        let mut snap = committed_idle();
+        snap = TransportPolicy::apply(&snap, TransportAction::Prepare).unwrap();
+        snap = TransportPolicy::apply(&snap, TransportAction::Arm).unwrap();
+        let g = TransportPolicy::guidance(&snap);
+        assert!(g.buttons.disarm);
+        assert!(
+            g.preview_blocked_reason
+                .as_deref()
+                .unwrap()
+                .contains("Disarm")
+        );
+        snap = TransportPolicy::apply(&snap, TransportAction::Disarm).unwrap();
+        assert_eq!(snap.phase, TransportPhase::Idle);
+        assert!(!snap.hardware_live);
+        assert!(TransportPolicy::guidance(&snap).buttons.preview);
+    }
+
+    #[test]
+    fn disarm_from_live_paused_to_idle() {
+        let mut snap = committed_idle();
+        snap = TransportPolicy::apply(&snap, TransportAction::Prepare).unwrap();
+        snap = TransportPolicy::apply(&snap, TransportAction::Arm).unwrap();
+        snap = TransportPolicy::apply(&snap, TransportAction::Play).unwrap();
+        snap = TransportPolicy::apply(&snap, TransportAction::Stop).unwrap();
+        assert_eq!(snap.phase, TransportPhase::LivePaused);
+        assert!(TransportPolicy::guidance(&snap).buttons.disarm);
+        snap = TransportPolicy::apply(&snap, TransportAction::Disarm).unwrap();
+        assert_eq!(snap.phase, TransportPhase::Idle);
+        assert!(!snap.hardware_live);
     }
 
     #[test]
@@ -490,7 +707,6 @@ mod tests {
 
     #[test]
     fn every_transition_matrix_smoke() {
-        // Exhaustive can()/apply() for a representative set of phases.
         let phases = [
             TransportPhase::Editing,
             TransportPhase::Idle,
@@ -502,41 +718,12 @@ mod tests {
             TransportPhase::PreviewPaused,
             TransportPhase::Estopped,
         ];
-        let actions = [
-            TransportAction::SaveCommit,
-            TransportAction::Prepare,
-            TransportAction::Arm,
-            TransportAction::Play,
-            TransportAction::Preview,
-            TransportAction::Stop,
-            TransportAction::Cue,
-            TransportAction::Estop,
-            TransportAction::ClearEstop,
-        ];
         for phase in phases {
-            let snap = TransportSnapshot {
-                phase,
-                mode: TransportMode::Idle,
-                dirty: phase == TransportPhase::Editing,
-                committed: phase != TransportPhase::Editing,
-                playhead_frames: 10,
-                song_id: Some("s".into()),
-                hardware_live: phase == TransportPhase::LivePlaying,
-            };
+            let snap = snap_for_phase(phase);
             let g = TransportPolicy::guidance(&snap);
-            for action in actions {
-                let allowed = match action {
-                    TransportAction::SaveCommit => g.buttons.save_commit,
-                    TransportAction::Prepare => g.buttons.prepare,
-                    TransportAction::Arm => g.buttons.arm,
-                    TransportAction::Play => g.buttons.play,
-                    TransportAction::Preview => g.buttons.preview,
-                    TransportAction::Stop => g.buttons.stop,
-                    TransportAction::Cue => g.buttons.cue,
-                    TransportAction::Estop => g.buttons.estop,
-                    TransportAction::ClearEstop => g.buttons.clear_estop,
-                };
-                let result = TransportPolicy::apply(&snap, action);
+            for action in TransportAction::all() {
+                let allowed = g.buttons.enabled(*action);
+                let result = TransportPolicy::apply(&snap, *action);
                 assert_eq!(
                     result.is_ok(),
                     allowed,
@@ -548,34 +735,87 @@ mod tests {
 
     #[test]
     fn ui_buttons_match_server_acceptance() {
-        // The UI-model contract: for every phase, button.enabled iff can(action).ok()
         let snaps = [
             editing(),
             committed_idle(),
             TransportPolicy::apply(&committed_idle(), TransportAction::Prepare).unwrap(),
             {
-                let s = TransportPolicy::apply(&committed_idle(), TransportAction::Prepare).unwrap();
+                let s =
+                    TransportPolicy::apply(&committed_idle(), TransportAction::Prepare).unwrap();
                 TransportPolicy::apply(&s, TransportAction::Arm).unwrap()
+            },
+            {
+                let mut s =
+                    TransportPolicy::apply(&committed_idle(), TransportAction::Preview).unwrap();
+                s = TransportPolicy::apply(&s, TransportAction::Stop).unwrap();
+                s
+            },
+            {
+                let mut s =
+                    TransportPolicy::apply(&committed_idle(), TransportAction::Prepare).unwrap();
+                s = TransportPolicy::apply(&s, TransportAction::Arm).unwrap();
+                s = TransportPolicy::apply(&s, TransportAction::Play).unwrap();
+                TransportPolicy::apply(&s, TransportAction::Stop).unwrap()
             },
         ];
         for snap in snaps {
             let g = TransportPolicy::guidance(&snap);
-            assert_eq!(
-                g.buttons.play,
-                TransportPolicy::can(&snap, TransportAction::Play).is_ok()
-            );
-            assert_eq!(
-                g.buttons.preview,
-                TransportPolicy::can(&snap, TransportAction::Preview).is_ok()
-            );
-            assert_eq!(
-                g.buttons.prepare,
-                TransportPolicy::can(&snap, TransportAction::Prepare).is_ok()
-            );
-            assert_eq!(
-                g.buttons.arm,
-                TransportPolicy::can(&snap, TransportAction::Arm).is_ok()
-            );
+            for action in TransportAction::all() {
+                assert_eq!(
+                    g.buttons.enabled(*action),
+                    TransportPolicy::can(&snap, *action).is_ok(),
+                    "UI/server mismatch for {action:?} in {:?}",
+                    snap.phase
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn guidance_never_names_disabled_actions() {
+        // For every phase: any action named in next_hint or *_blocked_reason
+        // must itself be enabled in that phase (no dead-end guidance).
+        let phases = [
+            TransportPhase::Editing,
+            TransportPhase::Idle,
+            TransportPhase::Prepared,
+            TransportPhase::Armed,
+            TransportPhase::LivePlaying,
+            TransportPhase::LivePaused,
+            TransportPhase::PreviewPlaying,
+            TransportPhase::PreviewPaused,
+            TransportPhase::Estopped,
+        ];
+        for phase in phases {
+            let snap = snap_for_phase(phase);
+            let g = TransportPolicy::guidance(&snap);
+            let mut texts = vec![g.next_hint.clone()];
+            for opt in [
+                &g.play_blocked_reason,
+                &g.preview_blocked_reason,
+                &g.prepare_blocked_reason,
+                &g.arm_blocked_reason,
+                &g.disarm_blocked_reason,
+            ] {
+                if let Some(t) = opt {
+                    texts.push(t.clone());
+                }
+            }
+            for text in texts {
+                for action in actions_named_in_text(&text) {
+                    assert!(
+                        g.buttons.enabled(action),
+                        "phase={phase:?}: guidance names {:?} but it is disabled. text={text:?} hint buttons prepare={} disarm={} play={} preview={} stop={} save={}",
+                        action,
+                        g.buttons.prepare,
+                        g.buttons.disarm,
+                        g.buttons.play,
+                        g.buttons.preview,
+                        g.buttons.stop,
+                        g.buttons.save_commit,
+                    );
+                }
+            }
         }
     }
 

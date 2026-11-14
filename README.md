@@ -48,6 +48,15 @@ Audio routing demo: program mono → left, LTC generator → right (LTC gen init
 
 Playback is **server-side** via the machine’s default cpal output. For local Mac dev, run the server on the same Mac as the speakers. If the server is remote, audio emerges on the **server host**, not the operator laptop — use a local server for rehearsal audio, or route the server host into the show PA.
 
+On macOS the server always tries Core Audio via cpal (the Linux `/dev/snd` heuristic is not used). Headless check without the GUI:
+
+```bash
+curl -s http://127.0.0.1:8787/api/v1/status | python3 -c \
+  'import sys,json; a=json.load(sys.stdin)["audio_output"]; print(a)'
+```
+
+Expect `device` to be a real output name (not `silent`), plus `duration_ms`, `sample_rate`, `position_ms`, `transport_position_ms`, `drift_ms`, and `hardware_live`.
+
 ## macOS install (Apple Silicon)
 
 On the Mac:
