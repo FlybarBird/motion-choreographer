@@ -337,7 +337,19 @@ impl Show {
         if cfg.seed && storage.is_fresh() {
             crate::seed::seed(&storage)?;
         }
-        let mut project = usable(storage.load_project());
+        // The project file holds every rig's limits and keep-out rules. A server that came up
+        // on the defaults in its place would drive the rigs without them, and say nothing.
+        let untrusted = |why: String| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "project.json cannot be used: {why}. It holds the rigs' limits and keep-out rules, so the server \
+                     does not start without it. Put back a good copy from a backup, or correct the file by hand"
+                ),
+            )
+        };
+        let mut project = usable(storage.read_project().map_err(untrusted)?.unwrap_or_default());
+        project.validate().map_err(untrusted)?;
         if project.stage.model.is_some() && !storage.stage_model_path().is_file() {
             eprintln!("warning: the stage model file is missing; the built-in stage is shown instead");
             project.stage = ptz_core::camera::Stage::default();

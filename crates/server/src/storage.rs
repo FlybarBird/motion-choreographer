@@ -119,6 +119,17 @@ impl Storage {
         read_json(&self.root.join("project.json")).unwrap_or_default()
     }
 
+    /// The project as it is on disk: nothing when there is no file yet, and the reason when
+    /// there is one that cannot be read.
+    pub fn read_project(&self) -> Result<Option<Project>, String> {
+        let bytes = match fs::read(self.root.join("project.json")) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.to_string()),
+        };
+        serde_json::from_slice(&bytes).map(Some).map_err(|e| e.to_string())
+    }
+
     pub fn save_project(&self, project: &Project) -> std::io::Result<()> {
         write_json(&self.root.join("project.json"), project)
     }

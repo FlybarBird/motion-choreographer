@@ -712,6 +712,11 @@ The server's data folder (`~/PTZProgrammer` unless `--data` says otherwise):
 | `stage/model.ptzmesh` | The imported stage model |
 | `log/<date>.jsonl` | The run log |
 
+If `project.json` is damaged, or holds limits that cannot be used, the server
+does not start, and says why. The file holds each rig's limits and keep-out
+rules; the server never puts the defaults in their place by itself. Put back a
+good copy from a backup, or correct the file by hand.
+
 Every file is written to a temporary name and then renamed, so a crash or a
 power cut never leaves a half-written song.
 
