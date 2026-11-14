@@ -73,6 +73,35 @@ Edges snap to the playhead, markers and other clips; hold Shift to turn snapping
 off. Cmd-Z and Shift-Cmd-Z undo and redo. `M` adds a marker, `\` fits the song
 to the window, Home cues to the start, the arrow keys step one frame.
 
+## Audio
+
+Drop a WAV, AIFF or MP3 file on the window, or use **Import** in the **Media**
+tab, then drag it onto the **Audio** lane. Drag the clip to move it and either
+edge to trim it; the waveform shows what is left. The first seeded song,
+Walk-In, carries a 12.4 second file with one click at 2.5 seconds: rehearse it
+and the click is heard as the playhead crosses it.
+
+The server plays the audio, not the app, so the sound comes out of the machine
+the server runs on. While a song plays free-run, the playhead is the count of
+samples the sound card has played, so picture and sound cannot drift apart.
+
+Each output channel is routed in the Inspector (with nothing selected) to one of:
+
+- **Program**: the mono mix of every unmuted clip.
+- **LTC timecode**: the song's timecode, generated while it plays.
+- **Silent**.
+
+The default is Program on the left and Silent on the right. The transport bar
+shows a meter for each channel and the output device. If no device can be
+opened the server runs silent on the system clock and the bar says why.
+
+```sh
+ptz-server --list-audio            # device names
+ptz-server --audio-device "USB"    # use the output whose name contains this
+ptz-server --no-audio              # never open a device
+ptz-server --selftest-audio        # one second of tone on the left, then the right
+```
+
 ## Transport
 
 The transport bar always shows one main button, which is the next sensible step
@@ -105,6 +134,7 @@ It refuses to run unless the rig is the simulator and the show is idle.
 | `scripts/macos-install.sh` | The Mac installer. |
 
 Data folder (`~/PTZProgrammer` by default): `project.json`, `presets.json`,
-`songs/<id>/working.json`, `draft.json` and `rev/NNNN.json`, `media/`, `log/`.
+`songs/<id>/working.json`, `draft.json` and `rev/NNNN.json`, `media/<id>/`
+(the original file, the decoded audio, the waveform overview), `log/`.
 Every file is written to a temporary name and renamed, so a crash never leaves a
 half-written song.
