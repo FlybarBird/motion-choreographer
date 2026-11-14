@@ -154,6 +154,63 @@ rig stood still is two keys. The raw samples are kept beside the song
 (`songs/<id>/passes/`), and **Fewer keys** / **More keys** in the Inspector fit
 them again looser or tighter. Record works in Rehearse only.
 
+## Lock and timecode
+
+Free-run, the song plays on the sound card's clock. **Lock** makes it follow
+timecode instead. The Lock button lists what it can follow:
+
+- **LTC input**: timecode as audio on one channel of an input device.
+- **MTC input**: MIDI timecode, quarter-frame and full-frame messages.
+- **Art-Net timecode**: `ArtTimeCode` packets on UDP port 6454.
+- **A file on the timeline**: any audio or video clip in the song.
+
+With an input locked the main button reads **Play to code**. The transport waits
+for code, takes four good frames to sync, then follows. If code drops out it
+carries on for eight frames (**Freewheel** in the project settings) and then
+waits again; if code jumps, it jumps with it. Code from before the song's first
+frame or after its last holds the playhead at that end. Code at a different
+frame rate from the project is refused, and the bar says which rate arrived.
+Audio is sought to the code and pulled back in with a short crossfade whenever
+it is more than a frame out.
+
+The inputs are chosen in the Inspector with nothing selected, under **Timecode
+inputs**: the LTC device and channel, the MIDI port, the Art-Net address to
+listen on. They are devices on the server machine.
+
+### Files that carry timecode
+
+On import the server looks for the file's start timecode: the `bext` chunk of a
+broadcast WAV, or the timecode track of a QuickTime or MP4 file. If there is
+none, the Inspector takes a typed start, or **Read LTC from channel** decodes it
+from one channel of the file itself. The media card shows `starts 01:00:10:00`
+once a file has one.
+
+A stamped file dropped on the timeline lands on its own timecode wherever the
+pointer is; the ghost says so. Hold Alt to place it by hand instead. If its
+timecode is outside the song, a dialog offers to move the song start to it. With
+the clip selected the Inspector says whether it sits on its code and offers
+**Move to its timecode**.
+
+**Lock to this file** in the Inspector, or the file's entry in the Lock menu,
+ties the transport to that clip: Play starts at the clip's first frame and stops
+at its last, and Cue and the ruler still work inside it. A move recorded while
+locked replays against the same code. An unstamped file locks by its position on
+the timeline. Moving the clip off its code releases the lock and says why.
+
+The third seeded song, Awards Bed, carries a stamped broadcast WAV sitting on
+its code at `02:00:10:00`.
+
+### Reference video
+
+Video files go on the **Reference video** lane. Import makes a small JPEG of
+every frame at the project rate, so the lane shows a filmstrip and the
+**Reference monitor** tab shows the frame under the playhead. The sound of the
+file is imported with it and shown under the filmstrip.
+
+Video needs `ffmpeg` and `ffprobe` on the server machine (`brew install ffmpeg`).
+Without them a video import is refused with that instruction; audio is not
+affected.
+
 ## Transport
 
 The transport bar always shows one main button, which is the next sensible step
@@ -187,6 +244,7 @@ It refuses to run unless the rig is the simulator and the show is idle.
 
 Data folder (`~/PTZProgrammer` by default): `project.json`, `presets.json`,
 `songs/<id>/working.json`, `draft.json`, `rev/NNNN.json` and `passes/`, `media/<id>/`
-(the original file, the decoded audio, the waveform overview), `log/`.
+(the original file, the decoded audio, the waveform overview, the frame
+pictures of a video), `log/`.
 Every file is written to a temporary name and renamed, so a crash never leaves a
 half-written song.
