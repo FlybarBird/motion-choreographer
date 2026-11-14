@@ -390,8 +390,10 @@ fn toolbar(ui: &mut Ui, s: &mut Session) {
         }
         ui.separator();
         for angle in Angle::ALL {
-            if ui.selectable_label(s.stage_view.angle == angle, angle.label()).clicked() {
+            if ui.selectable_label(s.stage_view.angle == angle, angle.label()).clicked() && s.stage_view.angle != angle {
                 s.stage_view.angle = angle;
+                // Each angle needs its own distance to show the whole stage.
+                s.stage_view.fit_requested = true;
             }
         }
         if ui.button("Fit").on_hover_text("Show the whole stage and every camera").clicked() {
