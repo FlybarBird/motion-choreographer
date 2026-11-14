@@ -12,7 +12,20 @@ use autopod::{AutoPod, PodConfig};
 use fr7::{Fr7, Fr7Config};
 use ptz_core::api::AdapterStatus;
 use ptz_core::pose::{Axis, AxisTable, Pose, Preset, RigConfig, RigKind};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
+
+static STOPS_ONLY: AtomicBool = AtomicBool::new(false);
+
+/// From here on, this process sends the devices questions and stops and nothing that could
+/// move them. For a tool that is being ended in the middle of a move. There is no way back.
+pub fn stops_only() {
+    STOPS_ONLY.store(true, Ordering::SeqCst);
+}
+
+pub(crate) fn only_stops_now() -> bool {
+    STOPS_ONLY.load(Ordering::SeqCst)
+}
 
 /// Each device is read and commanded twenty times a second.
 pub const PERIOD: Duration = Duration::from_millis(50);

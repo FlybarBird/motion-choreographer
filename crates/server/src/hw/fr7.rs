@@ -151,6 +151,9 @@ impl Link {
             let packet = Packet::new(kind, seq, payload).to_bytes();
             let began = Instant::now();
             for _ in 0..=self.retries {
+                if kind == visca::TYPE_COMMAND && super::only_stops_now() && !is_stop(payload) {
+                    return Err("this tool is being ended, and sends the FR7 nothing but stops".into());
+                }
                 self.socket.send(&packet).map_err(|e| format!("could not send to {}: {e}", self.cfg.visca))?;
                 let deadline = Instant::now() + self.timeout;
                 while let Some(p) = self.receive(deadline) {
@@ -264,6 +267,10 @@ impl Link {
     pub fn recall(&mut self, number: u32) -> Result<(), String> {
         self.command(&visca::preset_recall(number))
     }
+}
+
+fn is_stop(payload: &[u8]) -> bool {
+    payload == visca::pan_tilt_stop() || payload == visca::zoom_stop() || payload == visca::focus_stop()
 }
 
 /// Tell the camera to stop every axis without waiting to be answered: for a camera that may

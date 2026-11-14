@@ -1226,6 +1226,27 @@ pub fn run(opts: &Options, op: &mut dyn Operator) -> Report {
     run.report
 }
 
+/// Stop every device a run was given, for a run that is being ended where it stands: Ctrl-C,
+/// a closed terminal, `kill`. Nothing but stops goes to the devices from this process afterwards,
+/// and the stops are repeated in case a command that was already on its way lands after the first.
+pub fn halt(opts: &Options) {
+    crate::hw::stops_only();
+    for _ in 0..4 {
+        if let Some(cfg) = &opts.fr7 {
+            match fr7::Link::connect(cfg) {
+                Ok(mut link) => {
+                    let _ = link.stop_all();
+                }
+                Err(_) => fr7::stop_unheard(cfg),
+            }
+        }
+        if let Some(host) = &opts.autopod {
+            let _ = autopod::Link::new(host).stop();
+        }
+        std::thread::sleep(Duration::from_millis(150));
+    }
+}
+
 impl Run<'_> {
     fn stop_everything(&mut self) {
         if let Some(cfg) = &self.cfg {

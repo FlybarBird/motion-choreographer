@@ -278,3 +278,61 @@ fn a_rig_that_is_not_there_or_not_ready_is_reported_and_nothing_else_is_tried() 
     let report = bringup::run(&opts, &mut Unattended { echo: false });
     assert!(report.settings.max_speed_elevation.is_some_and(|v| v > 30.0 && v < POD_TOP_MM_S), "{:?}", report.settings);
 }
+
+/// Run one moving step of `ptz-bringup --yes` against a stand-in, press Ctrl-C as soon as the
+/// stand-in moves, and say how the tool ended and whether the stand-in is still moving afterwards.
+fn interrupt(args: &[String], moving: &dyn Fn() -> bool) -> (bool, Option<i32>) {
+    let report = std::env::temp_dir().join(format!("bringup-interrupted-{}-{}.json", std::process::id(), args.len()));
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_ptz-bringup"))
+        .args(args)
+        .args(["--yes", "--quick", "--report", report.to_str().unwrap()])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("ptz-bringup binary");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !moving() {
+        let running = child.try_wait().unwrap().is_none();
+        assert!(running && std::time::Instant::now() < deadline, "the step never moved the rig");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert!(std::process::Command::new("kill").args(["-INT", &child.id().to_string()]).status().unwrap().success());
+    let status = child.wait().unwrap();
+    // Anything the tool left running shows within this.
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    let written = report.exists();
+    let _ = std::fs::remove_file(&report);
+    assert!(!written, "an interrupted run writes no report");
+    (moving(), status.code())
+}
+
+#[cfg(unix)]
+#[test]
+fn ctrl_c_in_the_middle_of_the_autopod_step_stops_the_column() {
+    let pod = FakeAutoPod::start();
+    pod.place(200.0);
+    let args = ["--autopod".to_string(), pod.addr.to_string(), "--only".into(), "autopod".into()];
+    let (still_moving, code) = interrupt(&args, &|| pod.is_moving());
+    assert!(!still_moving, "after Ctrl-C the column is still running, now at {:.0} mm", pod.height_mm());
+    assert_eq!(code, Some(130));
+    assert_eq!(pod.orders().last().map(String::as_str), Some(ptz_server::hw::autopod::STOP));
+}
+
+#[cfg(unix)]
+#[test]
+fn ctrl_c_in_the_middle_of_the_speeds_step_stops_the_head() {
+    let fr7 = FakeFr7::start();
+    let args = [
+        "--fr7".to_string(),
+        fr7.visca.to_string(),
+        "--fr7-http".into(),
+        fr7.http.port().to_string(),
+        "--only".into(),
+        "speeds".into(),
+    ];
+    let (still_moving, code) = interrupt(&args, &|| fr7.is_moving());
+    assert!(!still_moving, "after Ctrl-C the head is still turning, now at pan {:.1}", fr7.pose().0);
+    assert_eq!(code, Some(130));
+}

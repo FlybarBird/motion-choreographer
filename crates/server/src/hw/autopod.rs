@@ -216,6 +216,10 @@ impl Link {
 
     pub fn send(&mut self, cmd: &str) -> Result<String, String> {
         self.last_refused = false;
+        let question = [POSITION_QUERY, CALIBRATION_QUERY, MODEL_QUERY, FIRMWARE_QUERY, POWER_QUERY].contains(&cmd);
+        if super::only_stops_now() && cmd != STOP && !question {
+            return Err("this tool is being ended, and sends the AutoPod+ nothing but stops".into());
+        }
         let began = Instant::now();
         let gone = |why: String| format!("the AutoPod+ is not answering at {}: {why}", self.host);
         let raw = self.fetch(cmd).map_err(|e| gone(e.to_string()))?;

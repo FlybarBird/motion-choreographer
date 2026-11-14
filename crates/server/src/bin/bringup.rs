@@ -36,7 +36,8 @@ Checklist options:
 
 Every step that moves the rig says what it will do and asks first. It moves
 from wherever the rig stands and brings it back. Keep a hand on the camera's
-own stop: this tool is what measures how long a stop takes.
+own stop: this tool is what measures how long a stop takes. Ctrl-C stops the
+rig where it stands and ends the run without a report.
 
 --apply takes the edit lease, writes the report's values into one camera of
 the server's project and releases the lease. --camera names it by its number
@@ -217,6 +218,43 @@ fn fakes(mut args: impl Iterator<Item = String>) {
     }
 }
 
+/// Resolves on Ctrl-C and on the signals a closing terminal and `kill` send.
+async fn interrupted() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        if let (Ok(mut term), Ok(mut hup)) = (signal(SignalKind::terminate()), signal(SignalKind::hangup())) {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = term.recv() => {}
+                _ = hup.recv() => {}
+            }
+            return;
+        }
+    }
+    let _ = tokio::signal::ctrl_c().await;
+}
+
+/// A step that is interrupted has a speed command standing on the head or the column, and
+/// nothing left to take it back. The rig is stopped before the tool goes.
+fn stop_the_rig_when_interrupted(opts: &Options) {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap_or_else(|e| fail(&format!("could not watch for Ctrl-C, so nothing was moved: {e}")));
+    // Listening starts here, before anything moves.
+    let watch = runtime.spawn(interrupted());
+    let opts = opts.clone();
+    std::thread::spawn(move || {
+        if runtime.block_on(watch).is_err() {
+            return;
+        }
+        eprintln!("\nInterrupted. Stopping the rig where it stands; it is not brought back to where it started.");
+        bringup::halt(&opts);
+        std::process::exit(130);
+    });
+}
+
 fn main() {
     let mut args = std::env::args().skip(1).peekable();
     if args.peek().map(String::as_str) == Some("fakes") {
@@ -291,6 +329,7 @@ fn main() {
     });
     let opts = Options { fr7, autopod: autopod.map(|h| with_port(h.trim(), 80)), steps, quick, start };
 
+    stop_the_rig_when_interrupted(&opts);
     println!("PTZ Programmer bring-up. The show server must not be driving this rig while this runs.");
     let report = if yes { bringup::run(&opts, &mut Unattended { echo: true }) } else { bringup::run(&opts, &mut Console) };
     print!("{}", report.summary());
