@@ -6,7 +6,7 @@ use crate::audio::{AudioEngine, LtcOut, Mix, PlayClip};
 use crate::lock::{self, CodeSource, Kind};
 use crate::media::{self, Ingested};
 use crate::record::{self, Capture, RecordedPass};
-use crate::rig::{RigAdapter, Simulator};
+use crate::rig::{DevicePreset, Drive, Ride, RigAdapter};
 use crate::runlog::RunLog;
 use crate::storage::{self, Storage};
 use ptz_core::api::*;
@@ -15,11 +15,11 @@ use ptz_core::codes::CodeRate;
 use ptz_core::compile::{compile, Compiled};
 use ptz_core::edit;
 use ptz_core::pose::{Axis, Pose, Preset, Project};
-use ptz_core::song::Song;
+use ptz_core::song::{ClipBody, Song};
 use ptz_core::time::{frame_to_sample, FrameRate, Timecode};
 use ptz_core::transport::{self, Action, Context, Event, Output, Run, TimeMode, TransportState};
 use serde_json::json;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -128,6 +128,8 @@ struct External {
     chase: Chase,
     /// Readings in a row whose rate family is not the project's.
     mismatched: u32,
+    /// The chase state last written to the run log.
+    logged: ChaseState,
 }
 
 /// Readings of the wrong rate family before Lock is given up. One could be a damaged frame.
@@ -178,6 +180,12 @@ pub struct Show {
     lease: Option<Lease>,
     lease_ttl: Duration,
     rig: Box<dyn RigAdapter>,
+    live: Live,
+    /// E-Stop was pressed at this moment and the rig has not yet read as standing still.
+    halting: Option<Instant>,
+    /// Which adapters answered when last looked at, to log each connect and disconnect.
+    adapters_were: Vec<(String, bool)>,
+    ticks: u64,
     jog_deadline: Option<Instant>,
     /// Axes that Record writes.
     record_axes: Vec<Axis>,
@@ -196,6 +204,50 @@ pub struct Show {
 }
 
 pub type Shared = Arc<Mutex<Show>>;
+
+/// What the live loop remembers between ticks.
+#[derive(Default)]
+struct Live {
+    /// Where the rig has been told to be: the timeline pose, held to each axis's top speed.
+    commanded: Option<Pose>,
+    /// Recent commanded poses, to compare a reading with what was asked when it was taken.
+    history: VecDeque<(Instant, Pose)>,
+    /// Since when the rig has been outside tolerance.
+    over_since: Option<Instant>,
+    /// The pose being positioned to, and when the rig should have reached it.
+    positioning: Option<(Pose, Instant)>,
+    /// Rig position minus commanded position.
+    error: Pose,
+    /// Why output was last cut, until the operator arms or plays again.
+    fault: Option<String>,
+    pose_logged: Option<Instant>,
+}
+
+impl Live {
+    fn clear(&mut self) {
+        let fault = self.fault.take();
+        *self = Live { fault, ..Live::default() };
+    }
+
+    /// The commanded pose at `t`, by straight lines between the ticks either side.
+    fn commanded_at(&self, t: Instant) -> Option<Pose> {
+        let i = self.history.partition_point(|(at, _)| *at <= t);
+        match (i.checked_sub(1).and_then(|j| self.history.get(j)), self.history.get(i)) {
+            (Some((t0, a)), Some((t1, b))) => {
+                let span = t1.duration_since(*t0).as_secs_f64();
+                let share = if span > 0.0 { t.duration_since(*t0).as_secs_f64() / span } else { 1.0 };
+                Some(lerp_pose(a, b, share))
+            }
+            (Some((_, only)), None) | (None, Some((_, only))) => Some(*only),
+            (None, None) => None,
+        }
+    }
+}
+
+/// How long positioning may take beyond the time the travel needs.
+const POSITIONING_GRACE: Duration = Duration::from_secs(3);
+/// E-Stop's stop is sent again if the rig still reads as moving after this long.
+const HALT_AGAIN: Duration = Duration::from_secs(2);
 
 /// What an import needs to do its work without holding the show.
 #[derive(Clone, Debug)]
@@ -243,6 +295,7 @@ impl Show {
         let media = media::load_all(&storage.media_root(), project.rate);
         let audio = AudioEngine::start(cfg.audio.clone());
         let (loaded_tx, loaded_rx) = mpsc::channel();
+        let rig = crate::hw::build(&project);
         let mut show = Show {
             storage,
             project,
@@ -263,7 +316,11 @@ impl Show {
             frame_f: 0.0,
             lease: None,
             lease_ttl: cfg.lease_ttl,
-            rig: Box::new(Simulator::new()),
+            rig,
+            live: Live::default(),
+            halting: None,
+            adapters_were: Vec::new(),
+            ticks: 0,
             jog_deadline: None,
             record_axes: vec![Axis::Pan, Axis::Tilt],
             capture: None,
@@ -519,7 +576,34 @@ impl Show {
             return Err(Fail::bad("The song id does not match the address"));
         }
         put.song.validate(self.rate()).map_err(|e| Fail::invalid(e.to_string()))?;
-        self.replace_working(id, put.song, "edit")
+        // Accepting an overrun is a decision someone made: it goes in the run log.
+        let mut decisions = Vec::new();
+        for clip in &put.song.motion {
+            let was = entry.song.motion_clip(&clip.id).and_then(|c| c.accepted.as_ref());
+            match (&clip.accepted, was) {
+                (Some(now), was) if was != Some(now) => {
+                    let issues: Vec<String> = compile(&put.song, &self.project)
+                        .issues
+                        .iter()
+                        .filter(|i| i.clip_id() == Some(clip.id.as_str()))
+                        .map(|i| i.message())
+                        .collect();
+                    decisions.push((
+                        "issue_accepted",
+                        json!({ "song": id, "clip": clip.id, "by": now.by, "at": now.at, "issues": issues }),
+                    ));
+                }
+                (None, Some(was)) => {
+                    decisions.push(("acceptance_withdrawn", json!({ "song": id, "clip": clip.id, "was_by": was.by })));
+                }
+                _ => {}
+            }
+        }
+        let out = self.replace_working(id, put.song, "edit")?;
+        for (kind, data) in decisions {
+            self.log(kind, data);
+        }
+        Ok(out)
     }
 
     pub fn save_song(&mut self, client: &str, id: &str) -> Res<WorkingSong> {
@@ -619,9 +703,27 @@ impl Show {
                 )));
             }
         }
+        let rig_changed = project.rig != self.project.rig;
+        if rig_changed {
+            self.require_parked("changing the rig")?;
+            if self.rig.preset_sync_progress().is_some() {
+                return Err(Fail::refused("Wait for the preset sync to finish before changing the rig"));
+            }
+        }
         self.storage.save_project(&project).map_err(Fail::io)?;
         let rate_changed = project.rate != self.project.rate;
         self.project = project.clone();
+        if rig_changed {
+            // The old adapters stop their devices as they are dropped.
+            self.rig.stop();
+            self.rig = crate::hw::build(&project);
+            self.manual = false;
+            self.adapters_were.clear();
+            self.log(
+                "rig_changed",
+                json!({ "kind": project.rig.kind, "fr7": project.rig.fr7_host, "autopod": project.rig.autopod_host }),
+            );
+        }
         for e in self.songs.values_mut() {
             e.compiled = compile(&e.song, &project);
         }
@@ -655,7 +757,8 @@ impl Show {
         if name.is_empty() {
             return Err(Fail::bad("Give the preset a name"));
         }
-        let pose = req.pose.unwrap_or_else(|| self.monitor_pose().0);
+        // With no pose given, hardware stores where the rig stands; nothing moves.
+        let pose = req.pose.unwrap_or_else(|| if self.rig.is_simulator() { self.monitor_pose().0 } else { self.rig.pose() });
         let preset =
             Preset { id: self.unique_preset_id(name), name: name.to_string(), pose, camera_number: None, has_thumbnail: false };
         self.presets.push(preset.clone());
@@ -676,25 +779,63 @@ impl Show {
         Ok(())
     }
 
-    /// Pull presets from the rig. Device presets are matched by camera number.
+    /// Pull presets from the rig. The simulator hands them over; a camera has to
+    /// recall each one to learn its pose, which moves it, so that runs in the
+    /// background and the presets arrive when it ends.
     pub fn sync_presets(&mut self, client: &str) -> Res<Vec<Preset>> {
         self.require_lease(client)?;
-        let from_rig = self.rig.presets().map_err(Fail::refused)?;
-        for mut p in from_rig {
-            if let Some(existing) =
-                self.presets.iter_mut().find(|e| e.camera_number.is_some() && e.camera_number == p.camera_number)
-            {
-                existing.pose = p.pose;
-                existing.name = p.name;
-            } else {
-                p.id = self.unique_preset_id(&p.name);
-                self.presets.push(p);
+        if self.rig.is_simulator() {
+            let from_rig = self.rig.presets().map_err(Fail::refused)?;
+            let found = from_rig.into_iter().map(|preset| DevicePreset { preset, thumbnail: None }).collect();
+            self.merge_presets(found).map_err(Fail::io)?;
+            return Ok(self.presets.clone());
+        }
+        if self.transport.estop {
+            return Err(Fail::refused("Reset E-Stop to continue"));
+        }
+        self.require_parked("reading presets from the camera, which moves it")?;
+        self.rig.begin_preset_sync().map_err(Fail::refused)?;
+        self.log("presets_sync_started", json!({ "by": self.who(client) }));
+        self.poke();
+        Ok(self.presets.clone())
+    }
+
+    /// Device presets are matched by camera number; the rest are added.
+    fn merge_presets(&mut self, found: Vec<DevicePreset>) -> std::io::Result<()> {
+        for DevicePreset { preset: mut p, thumbnail } in found {
+            let id = match self.presets.iter_mut().find(|e| e.camera_number.is_some() && e.camera_number == p.camera_number) {
+                Some(existing) => {
+                    existing.pose = p.pose;
+                    existing.name = p.name;
+                    existing.has_thumbnail = thumbnail.is_some();
+                    existing.id.clone()
+                }
+                None => {
+                    p.id = self.unique_preset_id(&p.name);
+                    p.has_thumbnail = thumbnail.is_some();
+                    self.presets.push(p.clone());
+                    p.id
+                }
+            };
+            if let (Some(jpeg), Some(path)) = (thumbnail, self.storage.preset_thumbnail_path(&id)) {
+                if let Some(dir) = path.parent() {
+                    std::fs::create_dir_all(dir)?;
+                }
+                storage::write_atomic(&path, &jpeg)?;
             }
         }
-        self.storage.save_presets(&self.presets).map_err(Fail::io)?;
+        self.storage.save_presets(&self.presets)?;
         self.log("presets_synced", json!({ "count": self.presets.len() }));
         self.push(WsMsg::PresetsChanged);
-        Ok(self.presets.clone())
+        Ok(())
+    }
+
+    pub fn preset_thumbnail(&self, id: &str) -> Res<PathBuf> {
+        let known = self.presets.iter().any(|p| p.id == id && p.has_thumbnail);
+        self.storage
+            .preset_thumbnail_path(id)
+            .filter(|p| known && p.is_file())
+            .ok_or_else(|| Fail::not_found("That preset has no picture"))
     }
 
     // ---- media and audio ----
@@ -956,7 +1097,13 @@ impl Show {
     ) -> Res<()> {
         self.clock.reset();
         let ctx = self.context(client);
-        transport::check(&self.transport, &ctx, action).map_err(|b| Fail::refused(b.text))?;
+        if let Err(blocked) = transport::check(&self.transport, &ctx, action) {
+            self.log("refused", json!({ "action": action.key(), "by": self.who(client), "reason": blocked.text }));
+            return Err(Fail::refused(blocked.text));
+        }
+        if action == Action::Arm && self.rig.preset_sync_progress().is_some() {
+            return Err(Fail::refused("Wait for the preset sync to finish before arming"));
+        }
         let rate = self.rate();
         let length = self.length() as f64;
         let before = self.transport;
@@ -982,12 +1129,8 @@ impl Show {
                 }
                 self.manual = false;
             }
-            Action::Stop => {
-                self.audio.stop();
-                if before.hardware_live() {
-                    self.rig.stop();
-                }
-            }
+            // While armed the rig keeps following the timeline, which now stands still.
+            Action::Stop => self.audio.stop(),
             Action::Cue => {
                 self.audio.stop();
                 self.audio.seek(0.0, rate);
@@ -1019,7 +1162,7 @@ impl Show {
                         },
                     };
                     let chase = Chase::new(rate, self.project.freewheel_frames, input.interval_frames());
-                    self.external = Some(External { kind, source: input, chase, mismatched: 0 });
+                    self.external = Some(External { kind, source: input, chase, mismatched: 0, logged: ChaseState::NoCode });
                 } else {
                     return Err(Fail::bad("Lock needs a source: ltc, mtc, artnet or file:<clip id>"));
                 }
@@ -1033,8 +1176,16 @@ impl Show {
                     self.audio.play(self.frame_f, rate);
                 }
             }
-            Action::Arm => {}
-            Action::Disarm => self.rig.stop(),
+            Action::Arm => {
+                self.live.clear();
+                self.live.fault = None;
+                self.live.commanded = Some(self.rig.pose());
+                self.log_arm(client);
+            }
+            Action::Disarm => {
+                self.rig.stop();
+                self.live.clear();
+            }
             Action::RecordOn => {
                 let axes = match &req.axes {
                     Some(given) => Axis::ALL.into_iter().filter(|a| given.contains(a)).collect(),
@@ -1049,8 +1200,12 @@ impl Show {
             Action::Estop => {
                 self.audio.stop();
                 self.rig.stop();
-                let _ = self.rig.jog(Jog::default());
+                if self.rig.is_simulator() {
+                    let _ = self.rig.jog(Jog::default());
+                }
                 self.jog_deadline = None;
+                self.live.clear();
+                self.halting = Some(Instant::now());
             }
             Action::ResetEstop => {}
         }
@@ -1061,6 +1216,9 @@ impl Show {
         }
         self.transport = after;
         self.lock_problem = None;
+        if matches!(action, Action::Arm | Action::Play | Action::ResetEstop) {
+            self.live.fault = None;
+        }
         let frame = self.frame_f.floor() as i64;
         self.log("transport", json!({ "action": action.key(), "by": self.who(client), "frame": frame, "state": self.transport }));
         self.sync_capture();
@@ -1083,6 +1241,7 @@ impl Show {
             Event::Fault => {
                 self.audio.stop();
                 self.rig.stop();
+                self.live.clear();
             }
             _ => {}
         }
@@ -1090,6 +1249,196 @@ impl Show {
         self.log("event", json!({ "event": format!("{event:?}"), "frame": self.frame_f.floor() as i64, "state": after }));
         self.sync_capture();
         self.poke();
+    }
+
+    // ---- live ----
+
+    /// What is being armed: the song, its committed revision and every overrun someone accepted.
+    fn log_arm(&mut self, client: &str) {
+        let Some(e) = self.entry() else { return };
+        let number = e.revision();
+        let sha = number.and_then(|n| self.storage.revisions(&e.song.id).into_iter().find(|r| r.number == n)).map(|r| r.sha256);
+        let accepted: Vec<serde_json::Value> = e
+            .song
+            .motion
+            .iter()
+            .filter_map(|c| c.accepted.as_ref().map(|a| json!({ "clip": c.id, "by": a.by, "at": a.at })))
+            .collect();
+        let data = json!({
+            "song": e.song.id,
+            "revision": number,
+            "sha256": sha,
+            "accepted": accepted,
+            "by": self.who(client),
+            "rig": self.rig.status().iter().map(|a| a.name.clone()).collect::<Vec<_>>(),
+            "from": self.rig.pose(),
+        });
+        self.log("arm", data);
+    }
+
+    /// Hold the rig, cut output and say why.
+    fn fault(&mut self, why: String) {
+        let data = json!({
+            "reason": why,
+            "frame": self.frame_f.floor() as i64,
+            "pose": self.rig.pose(),
+            "error": self.live.error,
+        });
+        self.log("fault", data);
+        self.live.fault = Some(why);
+        self.event(Event::Fault);
+    }
+
+    /// The plain preset move under the playhead, when the project wants the head to run those itself.
+    fn ride(&self) -> Option<Ride> {
+        if !self.project.rig.fr7_absolute_moves || self.transport.run != Run::Playing || self.transport.output != Output::Armed {
+            return None;
+        }
+        let e = self.entry()?;
+        let f = self.frame_f;
+        let clip = e.song.motion.iter().find(|c| {
+            matches!(c.body, ClipBody::PresetMove { .. })
+                && (c.has_axis(Axis::Pan) || c.has_axis(Axis::Tilt))
+                && f >= c.start_frame as f64
+                && f < (c.start_frame + c.duration_frames) as f64
+        })?;
+        let end = clip.start_frame + clip.duration_frames;
+        let pose = e.compiled.poses.get(end.max(0) as usize)?;
+        Some(Ride { pan: pose.pan, tilt: pose.tilt, seconds: self.rate().frames_to_seconds(end as f64 - f) })
+    }
+
+    /// One turn of the live loop: check the target, send it, compare the rig with it.
+    fn tick_live(&mut self, now: Instant, dt: f64, target: Pose) {
+        if let Some(problem) = self.rig.problem() {
+            self.fault(problem);
+            return;
+        }
+        let positioning = self.transport.output == Output::Positioning;
+        let scale = if positioning { self.project.rig.positioning_speed.clamp(0.01, 1.0) } else { 1.0 };
+        let axes = self.project.axes;
+        let before = self.live.commanded.unwrap_or_else(|| self.rig.pose());
+        // The rig is told to be where the timeline is, no faster than each axis can go. A move
+        // someone accepted as too fast therefore lags by design instead of tripping a fault.
+        let next = Pose::from_fn(|a| {
+            let step = axes.get(a).max_speed * scale * dt;
+            before.get(a) + (target.get(a) - before.get(a)).clamp(-step, step)
+        });
+        if let Some(why) = axes.out_of_range(&next) {
+            self.fault(format!("Limit reached: {why}. The rig is held"));
+            return;
+        }
+        if let Some(rule) = self.project.keep_out.iter().find(|r| r.violated(&next)) {
+            self.fault(format!("Keep-out rule broken: {}. The rig is held", rule.describe()));
+            return;
+        }
+        let velocity = if dt > 1e-6 { Pose::from_fn(|a| (next.get(a) - before.get(a)) / dt) } else { Pose::default() };
+        let ride = self.ride();
+        self.rig.drive(&Drive { target: next, velocity, scale, ride });
+        self.live.commanded = Some(next);
+        self.live.history.push_back((now, next));
+        while self.live.history.front().is_some_and(|(at, _)| now.duration_since(*at) > Duration::from_secs(1)) {
+            self.live.history.pop_front();
+        }
+
+        let reading = self.rig.reading();
+        // Each axis against what was asked of it at the moment it was read.
+        let error = Pose::from_fn(|a| {
+            let asked = self.live.commanded_at(reading.at[a.index()]).unwrap_or(next);
+            reading.pose.get(a) - asked.get(a)
+        });
+        self.live.error = error;
+        let tol = self.project.rig.tolerance;
+        if positioning {
+            self.live.over_since = None;
+            let there = Axis::ALL.iter().all(|a| (reading.pose.get(*a) - target.get(*a)).abs() <= tol.get(*a) * 0.25);
+            if there {
+                self.live.positioning = None;
+                self.event(Event::RigArrived);
+                return;
+            }
+            let moved = self.live.positioning.is_none_or(|(to, _)| to != target && self.transport.run == Run::Stopped);
+            if moved {
+                let travel = Axis::ALL
+                    .iter()
+                    .map(|a| (target.get(*a) - reading.pose.get(*a)).abs() / (axes.get(*a).max_speed * scale).max(1e-9))
+                    .fold(0.0, f64::max);
+                self.live.positioning = Some((target, now + Duration::from_secs_f64(travel * 1.5) + POSITIONING_GRACE));
+            } else if self.live.positioning.is_some_and(|(_, deadline)| now > deadline) {
+                self.fault("The rig did not reach the pose at the playhead. Output is cut".into());
+            }
+            return;
+        }
+        self.live.positioning = None;
+        // While the head runs a move by its own ramp, pan and tilt are not expected to match the curve.
+        let checked = |a: &Axis| ride.is_none() || !matches!(a, Axis::Pan | Axis::Tilt);
+        let worst = Axis::ALL
+            .into_iter()
+            .filter(checked)
+            .map(|a| (a, error.get(a).abs() / tol.get(a).max(1e-9)))
+            .filter(|(_, share)| *share > 1.0)
+            .max_by(|a, b| a.1.total_cmp(&b.1));
+        match worst {
+            Some((axis, _)) => {
+                let since = *self.live.over_since.get_or_insert(now);
+                if now.duration_since(since) > Duration::from_millis(self.project.rig.tracking_window_ms) {
+                    self.fault(format!(
+                        "Tracking fault: {} is {} from the timeline. The rig is held",
+                        axis.label().to_lowercase(),
+                        axis.format(error.get(axis).abs())
+                    ));
+                    return;
+                }
+            }
+            None => self.live.over_since = None,
+        }
+        if self.live.pose_logged.is_none_or(|at| now.duration_since(at) >= Duration::from_secs(1)) {
+            self.live.pose_logged = Some(now);
+            let record =
+                self.log.append("pose", json!({ "frame": self.frame_f.floor() as i64, "pose": reading.pose, "error": error }));
+            self.push(WsMsg::Log { record });
+        }
+    }
+
+    /// Things the rig does on its own time: halting after E-Stop, connecting, finishing a preset sync.
+    fn tick_rig(&mut self, now: Instant) {
+        if let Some(since) = self.halting {
+            if !self.rig.is_moving() {
+                self.halting = None;
+                let ms = now.duration_since(since).as_millis() as u64;
+                self.log("estop_halted", json!({ "after_ms": ms, "pose": self.rig.pose() }));
+                self.poke();
+            } else if now.duration_since(since) > HALT_AGAIN {
+                self.rig.stop();
+                self.halting = Some(now);
+                self.log("estop_still_moving", json!({ "pose": self.rig.pose() }));
+            }
+        }
+        if self.ticks % 15 == 0 {
+            let seen: Vec<(String, bool, String)> =
+                self.rig.status().into_iter().map(|a| (a.name, a.connected, a.detail)).collect();
+            for (name, connected, detail) in &seen {
+                let was = self.adapters_were.iter().find(|(n, _)| n == name).map(|(_, c)| *c);
+                if was != Some(*connected) {
+                    self.log("adapter", json!({ "name": name, "connected": connected, "detail": detail }));
+                    self.poke();
+                }
+            }
+            self.adapters_were = seen.into_iter().map(|(name, connected, _)| (name, connected)).collect();
+        }
+        if let Some(result) = self.rig.take_preset_sync() {
+            match result {
+                Ok(found) => {
+                    if let Err(e) = self.merge_presets(found) {
+                        self.log("presets_sync_failed", json!({ "reason": e.to_string() }));
+                    }
+                }
+                Err(why) => {
+                    self.live.fault = Some(format!("Preset sync: {why}"));
+                    self.log("presets_sync_failed", json!({ "reason": why }));
+                }
+            }
+            self.poke();
+        }
     }
 
     // ---- lock ----
@@ -1180,6 +1529,14 @@ impl Show {
         }
         let jumped = ext.chase.take_jump();
         let code = ext.chase.code_at(t);
+        let state = ext.chase.state();
+        if state != ext.logged {
+            ext.logged = state;
+            let data = json!({ "source": ext.kind.id(), "state": state, "jumped": jumped });
+            self.log("chase", data);
+            self.poke();
+        }
+        let Some(ext) = &mut self.external else { return };
         if let Some(why) = ext.source.problem() {
             if self.lock_problem.as_deref() != Some(why.as_str()) {
                 self.log("lock_input", json!({ "source": self.lock_source, "problem": why }));
@@ -1485,15 +1842,8 @@ impl Show {
             }
 
             let target = self.timeline_pose();
-            if self.transport.output == Output::Positioning {
-                self.rig.drive(&target, self.project.rig.positioning_speed);
-                let tol = self.project.rig.tolerance;
-                let pose = self.rig.pose();
-                if Axis::ALL.iter().all(|a| (pose.get(*a) - target.get(*a)).abs() <= tol.get(*a) * 0.25) {
-                    self.event(Event::RigArrived);
-                }
-            } else if self.transport.output == Output::Armed {
-                self.rig.drive(&target, 1.0);
+            if self.transport.hardware_live() {
+                self.tick_live(now, dt, target);
             } else if self.rig.is_simulator() {
                 if self.capture.is_some() {
                     let playing: Vec<Axis> = Axis::ALL.into_iter().filter(|a| !self.record_axes.contains(a)).collect();
@@ -1504,6 +1854,8 @@ impl Show {
             }
         }
         self.rig.tick(dt, &self.project.axes);
+        self.ticks += 1;
+        self.tick_rig(now);
         if self.capture.is_some() {
             // The pose just read belongs to where the transport was `query_delay_s` ago.
             let stamp = self.frame_f - self.rate().seconds_to_frames(self.rig.query_delay_s());
@@ -1564,7 +1916,13 @@ impl Show {
                 active: self.capture.is_some(),
                 frames: self.capture.as_ref().map(|c| c.frames() as i64).unwrap_or(0),
             },
-            telemetry: Telemetry::default(),
+            telemetry: Telemetry {
+                error: self.live.error,
+                fault: self.live.fault.clone(),
+                halting: self.halting.is_some(),
+                preset_sync: self.rig.preset_sync_progress(),
+                hardware: !self.rig.is_simulator(),
+            },
         }
     }
 }
