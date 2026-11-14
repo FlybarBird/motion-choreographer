@@ -309,6 +309,47 @@ fn controller(ui: &mut Ui, s: &mut Session) {
     }
 }
 
+/// What the live loop is doing: how far each axis is from the timeline, and why output was cut.
+fn live_state(ui: &mut Ui, s: &Session) {
+    let tel = &s.status.telemetry;
+    if let Some(fault) = &tel.fault {
+        ui.label(RichText::new(fault).color(RED).strong());
+    }
+    if tel.halting {
+        ui.label(RichText::new("Stopping: stop is being repeated until the rig stands still").color(RED));
+    }
+    if let Some(progress) = &tel.preset_sync {
+        ui.label(RichText::new(progress).color(AMBER));
+    }
+    if !s.status.hardware_live {
+        return;
+    }
+    section(ui, "Tracking");
+    let tol = s.project.rig.tolerance;
+    egui::Grid::new("rig_tracking").num_columns(3).spacing([12.0, 5.0]).show(ui, |ui| {
+        for axis in Axis::ALL {
+            let error = tel.error.get(axis);
+            let share = (error.abs() / tol.get(axis).max(1e-9)) as f32;
+            let ink = if share > 1.0 {
+                RED
+            } else if share > 0.6 {
+                AMBER
+            } else {
+                GREEN
+            };
+            ui.label(RichText::new(axis.label()).color(axis_color(axis)));
+            ui.label(RichText::new(format!("{error:+.2}")).monospace().color(ink))
+                .on_hover_text(format!("Rig minus timeline. A fault is raised beyond {}", axis.format(tol.get(axis))));
+            let (bar, _) = ui.allocate_exact_size(vec2(90.0, 6.0), Sense::hover());
+            let p = ui.painter();
+            p.rect_filled(bar, 3.0, PANEL_DARK);
+            let fill = Rect::from_min_size(bar.min, vec2(bar.width() * share.min(1.0), bar.height()));
+            p.rect_filled(fill, 3.0, ink);
+            ui.end_row();
+        }
+    });
+}
+
 pub fn show(ui: &mut Ui, s: &mut Session) {
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         egui::Frame::new().inner_margin(egui::Margin::symmetric(10, 8)).show(ui, |ui| {
@@ -317,14 +358,25 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
             }
             for a in &s.status.adapters {
                 ui.horizontal(|ui| {
-                    let (dot, word) = if a.connected { (GREEN, "connected") } else { (RED, "not connected") };
+                    let (dot, word) = match (a.connected, a.calibrated) {
+                        (false, _) => (RED, "not answering".to_string()),
+                        (true, Some(false)) => (AMBER, "not calibrated".to_string()),
+                        (true, _) => match a.round_trip_ms {
+                            Some(ms) => (GREEN, format!("answers in {ms:.1} ms")),
+                            None => (GREEN, "connected".to_string()),
+                        },
+                    };
                     ui.label(RichText::new("●").color(dot));
                     ui.label(RichText::new(&a.name).strong());
                     ui.label(RichText::new(word).color(MUTED));
                 })
                 .response
                 .on_hover_text(&a.detail);
+                if !a.connected && !a.detail.is_empty() {
+                    ui.label(RichText::new(&a.detail).color(AMBER).small());
+                }
             }
+            live_state(ui, s);
 
             section(ui, "Move by hand");
             controller(ui, s);

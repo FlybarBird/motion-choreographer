@@ -27,6 +27,12 @@ pub struct StampedDrop {
     pub at_frame: i64,
 }
 
+pub enum PresetPicture {
+    Asked,
+    Decoded(egui::ColorImage),
+    Shown(egui::TextureHandle),
+}
+
 pub struct Session {
     pub link: Link,
     pub station: String,
@@ -69,6 +75,10 @@ pub struct Session {
     pub axis_lanes: std::collections::BTreeSet<ptz_core::Axis>,
     pub graph: crate::graph::Graph,
     pub rig: crate::rig_ui::Controller,
+    /// The camera's own picture of each preset that has one.
+    pub preset_pictures: HashMap<String, PresetPicture>,
+    /// "Sync from rig" was pressed on a real rig and waits for the operator to confirm the move.
+    pub confirm_sync: bool,
     /// Where things were drawn last frame, for the UI tests.
     pub probe_timeline: Option<egui::Rect>,
     pub probe_presets: Vec<(String, egui::Rect)>,
@@ -139,6 +149,8 @@ impl Session {
             axis_lanes: Default::default(),
             graph: Default::default(),
             rig: Default::default(),
+            preset_pictures: HashMap::new(),
+            confirm_sync: false,
             probe_timeline: None,
             probe_presets: Vec::new(),
             probe_media: Vec::new(),
@@ -261,7 +273,20 @@ impl Session {
                 self.toast(format!("The edit was not accepted: {msg}"), true);
             }
             Event::Songs(songs) => self.songs = songs,
-            Event::Presets(presets) => self.presets = presets,
+            Event::Presets(presets) => {
+                // A sync can replace a picture under the same preset: ask again.
+                self.preset_pictures.clear();
+                self.presets = presets;
+            }
+            Event::SyncAccepted(presets) => {
+                if self.status.telemetry.hardware {
+                    self.toast("Reading presets from the camera. It moves to each one in turn".to_string(), false);
+                } else {
+                    self.toast(format!("Synced {} presets from the rig", presets.len()), false);
+                    self.preset_pictures.clear();
+                    self.presets = presets;
+                }
+            }
             Event::Project(project) => {
                 self.project = *project;
                 if let Some(song) = &self.song {
@@ -281,7 +306,9 @@ impl Session {
             }
             Event::Frame { key, image } => self.frames.store(key, image),
             Event::Inputs(choices) => self.inputs = Some(choices),
-            Event::PresetThumb { .. } => {}
+            Event::PresetThumb { id, image } => {
+                self.preset_pictures.insert(id, PresetPicture::Decoded(image));
+            }
             Event::Committed(info) => self.toast(format!("Committed revision {}", info.number), false),
             Event::Uploaded(info) => {
                 self.toast(format!("Imported {}", info.name), false);
