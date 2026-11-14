@@ -7,7 +7,7 @@
 use super::cgi::{self, Cgi};
 use super::visca::{self, Packet, Reply, Turn};
 use super::{with_port, Loop, PERIOD};
-use crate::rig::{DevicePreset, Drive, Ride};
+use crate::rig::{DevicePreset, Drive, EstopLine, Ride};
 use ptz_core::api::AdapterStatus;
 use ptz_core::pose::{AxisTable, Pose, Preset, RigConfig};
 use std::net::UdpSocket;
@@ -328,6 +328,23 @@ enum Mode {
     Sync,
 }
 
+impl State {
+    fn stop(&mut self) {
+        if self.mode == Mode::Sync {
+            self.sync_result = Some(Err("The preset sync was stopped".into()));
+            self.sync_progress = None;
+        }
+        self.mode = Mode::Stop;
+    }
+
+    /// A pressed E-Stop line stops whatever the head is doing.
+    fn obey_line(&mut self) {
+        if self.line.is_pressed() && matches!(self.mode, Mode::Drive(_) | Mode::Sync) {
+            self.stop();
+        }
+    }
+}
+
 struct State {
     head: Head,
     read_at: ReadTimes,
@@ -342,6 +359,7 @@ struct State {
     axes: AxisTable,
     sync_progress: Option<String>,
     sync_result: Option<Result<Vec<DevicePreset>, String>>,
+    line: EstopLine,
     quit: bool,
 }
 
@@ -373,6 +391,7 @@ impl Fr7 {
             axes,
             sync_progress: None,
             sync_result: None,
+            line: EstopLine::default(),
             quit: false,
         }));
         let (shared, worker_cfg) = (state.clone(), cfg.clone());
@@ -425,10 +444,15 @@ impl Fr7 {
         self.lock().axes = *axes;
     }
 
+    /// Stop when this E-Stop line is pressed, without waiting to be told by the show.
+    pub fn on_line(&self, line: &EstopLine) {
+        self.lock().line = line.clone();
+    }
+
     pub fn drive(&self, cmd: &Drive) {
         let mut s = self.lock();
-        // A preset sync owns the head until it ends or is stopped.
-        if s.mode != Mode::Sync {
+        // A preset sync owns the head until it ends or is stopped. A pressed E-Stop owns it outright.
+        if s.mode != Mode::Sync && !s.line.is_pressed() {
             s.mode = Mode::Drive(*cmd);
             s.told_at = Instant::now();
             s.starved = false;
@@ -436,12 +460,7 @@ impl Fr7 {
     }
 
     pub fn stop(&self) {
-        let mut s = self.lock();
-        if s.mode == Mode::Sync {
-            s.sync_result = Some(Err("The preset sync was stopped".into()));
-            s.sync_progress = None;
-        }
-        s.mode = Mode::Stop;
+        self.lock().stop();
     }
 
     pub fn begin_sync(&self) -> Result<(), String> {
@@ -590,7 +609,11 @@ impl Worker {
         let link = self.link.as_mut().expect("connected above");
         // A stop goes out before anything is asked of the camera, so it never waits on a
         // reading and is not lost with one.
-        let stop_first = fresh || self.state.lock().unwrap_or_else(|e| e.into_inner()).mode == Mode::Stop;
+        let stop_first = {
+            let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            s.obey_line();
+            fresh || s.mode == Mode::Stop
+        };
         if stop_first {
             link.stop_all()?;
         }
@@ -640,6 +663,7 @@ impl Worker {
                 s.mode = Mode::Stop;
                 s.starved = true;
             }
+            s.obey_line();
             (s.mode, s.axes)
         };
         if mode != self.was {

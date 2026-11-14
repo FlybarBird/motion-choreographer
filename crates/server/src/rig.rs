@@ -4,7 +4,30 @@
 
 use ptz_core::api::{AdapterStatus, Jog};
 use ptz_core::pose::{Axis, AxisTable, Pose, Preset};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
+
+/// The E-Stop's own way to the rigs of one show. Pressing it needs nothing the show might be
+/// busy with: every hardware adapter on the line stops its device on its next cycle and takes
+/// no targets until the show has dealt with the E-Stop and lets the line go.
+#[derive(Clone, Default)]
+pub struct EstopLine(Arc<AtomicBool>);
+
+impl EstopLine {
+    pub fn press(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+
+    /// For the show, once it has stopped every rig itself and latched the E-Stop.
+    pub fn release(&self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+
+    pub fn is_pressed(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+}
 
 /// A plain pan and tilt move the head may run by itself: where it ends and how long it has.
 #[derive(Clone, Copy, PartialEq, Debug)]

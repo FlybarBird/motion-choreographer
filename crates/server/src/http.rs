@@ -2,6 +2,7 @@
 
 use crate::engine::{halt_for_exit, spawn_tick, Config, Fail, MediaTicket, Push, Shared, Show, StageUpload, Stamp};
 use crate::media::{self, Ingested};
+use crate::rig::EstopLine;
 use crate::video;
 use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -17,7 +18,7 @@ use ptz_core::pose::{Preset, Project};
 use ptz_core::transport::Action;
 use serde::Deserialize;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::time::{Duration, Instant};
 use tokio::sync::broadcast::error::RecvError;
 
@@ -25,10 +26,23 @@ use tokio::sync::broadcast::error::RecvError;
 pub struct App {
     pub show: Shared,
     pub access_key: Option<Arc<String>>,
+    pub estop_line: EstopLine,
 }
 
+/// The show, when it is free. A request that has to wait for it gives up its place among the
+/// few threads that read requests, so the next request, which may be an E-Stop, is still read.
 pub fn lock(show: &Shared) -> MutexGuard<'_, Show> {
-    show.lock().unwrap_or_else(|e| e.into_inner())
+    match show.try_lock() {
+        Ok(free) => free,
+        Err(TryLockError::Poisoned(e)) => e.into_inner(),
+        Err(TryLockError::WouldBlock) => {
+            let wait = || show.lock().unwrap_or_else(|e| e.into_inner());
+            match tokio::runtime::Handle::try_current().map(|h| h.runtime_flavor()) {
+                Ok(tokio::runtime::RuntimeFlavor::MultiThread) => tokio::task::block_in_place(wait),
+                _ => wait(),
+            }
+        }
+    }
 }
 
 impl IntoResponse for Fail {
@@ -101,6 +115,11 @@ async fn gate(State(app): State<App>, req: Request, next: Next) -> Response {
         if given.as_deref() != Some(key.as_str()) {
             return Fail { code: 401, msg: "The access key is missing or wrong".into() }.into_response();
         }
+    }
+    // An E-Stop goes to the rigs before anything that waits for the show, this station's
+    // sign of life included. The show latches it and writes it down when it gets there.
+    if req.method() == axum::http::Method::POST && req.uri().path().ends_with("/estop") {
+        app.estop_line.press();
     }
     if let Some(client) = request_value(req.headers(), query.as_deref(), HEADER_CLIENT, "client") {
         lock(&app.show).touch(&client);
@@ -198,6 +217,7 @@ async fn transport(State(app): State<App>, Client(c): Client, Path(action): Path
 }
 
 async fn estop(State(app): State<App>, Client(c): Client) -> Reply<Status> {
+    app.estop_line.press();
     let mut s = lock(&app.show);
     s.act(&c, Action::Estop, &TransportRequest::default())?;
     Ok(Json(s.status(&c)))
@@ -676,7 +696,8 @@ pub fn start(cfg: &Config, bind: &str, access_key: Option<String>) -> Result<Run
     let (show, _rx) = Show::open(cfg).map_err(|e| format!("Could not open {}: {e}", cfg.data.display()))?;
     let show: Shared = Arc::new(Mutex::new(show));
     spawn_tick(&show);
-    let app = App { show: show.clone(), access_key: access_key.filter(|k| !k.is_empty()).map(Arc::new) };
+    let estop_line = lock(&show).estop_line();
+    let app = App { show: show.clone(), access_key: access_key.filter(|k| !k.is_empty()).map(Arc::new), estop_line };
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
     let halting = show.clone();
     let thread = std::thread::Builder::new()

@@ -7,7 +7,7 @@
 //! still measured by the bring-up tool.
 
 use super::{with_port, Loop, PERIOD};
-use crate::rig::Drive;
+use crate::rig::{Drive, EstopLine};
 use ptz_core::api::AdapterStatus;
 use ptz_core::pose::{AxisLimits, CalPoint, RigConfig};
 use std::io::{Read, Write};
@@ -297,7 +297,17 @@ struct State {
     told_at: Instant,
     starved: bool,
     limits: AxisLimits,
+    line: EstopLine,
     quit: bool,
+}
+
+impl State {
+    /// A pressed E-Stop line stops the column, whatever the show last asked of it.
+    fn obey_line(&mut self) {
+        if self.line.is_pressed() && matches!(self.mode, Mode::Drive(_)) {
+            self.mode = Mode::Stop;
+        }
+    }
 }
 
 pub struct AutoPod {
@@ -327,6 +337,7 @@ impl AutoPod {
             told_at: now,
             starved: false,
             limits,
+            line: EstopLine::default(),
             quit: false,
         }));
         let (shared, worker_cfg) = (state.clone(), cfg.clone());
@@ -395,8 +406,16 @@ impl AutoPod {
         self.lock().limits = *limits;
     }
 
+    /// Stop when this E-Stop line is pressed, without waiting to be told by the show.
+    pub fn on_line(&self, line: &EstopLine) {
+        self.lock().line = line.clone();
+    }
+
     pub fn drive(&self, cmd: &Drive) {
         let mut s = self.lock();
+        if s.line.is_pressed() {
+            return;
+        }
         s.mode = Mode::Drive(*cmd);
         s.told_at = Instant::now();
         s.starved = false;
@@ -432,7 +451,8 @@ fn run(cfg: PodConfig, state: Arc<Mutex<State>>) {
         // and is not lost with one. A column that has not been heard from may still be on the
         // last speed it was given, by this server or by one that died while live.
         let stop_first = {
-            let s = lock();
+            let mut s = lock();
+            s.obey_line();
             s.mode == Mode::Stop || (!s.connected && s.mode == Mode::Idle)
         };
         let stop = if stop_first { link.stop() } else { Ok(()) };
@@ -478,6 +498,7 @@ fn run(cfg: PodConfig, state: Arc<Mutex<State>>) {
                     s.mode = Mode::Stop;
                     s.starved = true;
                 }
+                s.obey_line();
                 (s.mode, s.limits, moved)
             };
             if mode != was {

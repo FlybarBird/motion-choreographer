@@ -6,7 +6,7 @@ use crate::audio::{AudioEngine, LtcOut, Mix, PlayClip};
 use crate::lock::{self, CodeSource, Kind};
 use crate::media::{self, Ingested};
 use crate::record::{self, Capture, RecordedPass};
-use crate::rig::{DevicePreset, Drive, Ride, RigAdapter};
+use crate::rig::{DevicePreset, Drive, EstopLine, Ride, RigAdapter};
 use crate::runlog::RunLog;
 use crate::storage::{self, Storage};
 use ptz_core::api::*;
@@ -197,6 +197,7 @@ pub struct Show {
     last_tick: Instant,
     log: RunLog,
     tx: broadcast::Sender<Push>,
+    estop_line: EstopLine,
 }
 
 pub type Shared = Arc<Mutex<Show>>;
@@ -219,10 +220,10 @@ struct Unit {
 }
 
 impl Unit {
-    fn new(camera: &ptz_core::camera::CameraConfig) -> Unit {
+    fn new(camera: &ptz_core::camera::CameraConfig, line: &EstopLine) -> Unit {
         Unit {
             id: camera.id.clone(),
-            rig: crate::hw::build(&camera.rig, &camera.axes),
+            rig: crate::hw::build(&camera.rig, &camera.axes, line),
             live: Live::default(),
             held: false,
             halting: None,
@@ -364,7 +365,8 @@ impl Show {
         let media = media::load_all(&storage.media_root(), project.rate);
         let audio = AudioEngine::start(cfg.audio.clone());
         let (loaded_tx, loaded_rx) = mpsc::channel();
-        let units = project.cameras.iter().map(Unit::new).collect();
+        let estop_line = EstopLine::default();
+        let units = project.cameras.iter().map(|camera| Unit::new(camera, &estop_line)).collect();
         let record_camera = project.first().id.clone();
         let mut show = Show {
             storage,
@@ -398,9 +400,15 @@ impl Show {
             last_tick: now,
             log,
             tx,
+            estop_line,
         };
         show.rebuild_mix();
         Ok((show, rx))
+    }
+
+    /// The way an E-Stop reaches this show's rigs without waiting for the show.
+    pub fn estop_line(&self) -> EstopLine {
+        self.estop_line.clone()
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<Push> {
@@ -814,7 +822,7 @@ impl Show {
                 let kept = old.iter().position(|u| u.id == cam.id).filter(|_| !rebuilt.contains(&cam.id));
                 self.units.push(match kept {
                     Some(at) => old.remove(at),
-                    None => Unit::new(cam),
+                    None => Unit::new(cam, &self.estop_line),
                 });
             }
             // The adapters that are left stop their devices as they are dropped.
@@ -1422,8 +1430,10 @@ impl Show {
                     u.held = false;
                     u.halting = Some(now);
                 }
+                // Every rig has its stop from the show now, and the show is latched.
+                self.estop_line.release();
             }
-            Action::ResetEstop => {}
+            Action::ResetEstop => self.estop_line.release(),
         }
         let mut after = transport::apply(&before, action, self.external.is_some());
         if action == Action::Play && after.time == TimeMode::LockedFile {

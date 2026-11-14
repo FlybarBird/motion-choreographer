@@ -7,7 +7,7 @@ pub mod fake;
 pub mod fr7;
 pub mod visca;
 
-use crate::rig::{DevicePreset, Drive, PoseReading, RigAdapter, Simulator};
+use crate::rig::{DevicePreset, Drive, EstopLine, PoseReading, RigAdapter, Simulator};
 use autopod::{AutoPod, PodConfig};
 use fr7::{Fr7, Fr7Config};
 use ptz_core::api::AdapterStatus;
@@ -73,6 +73,19 @@ impl HardwareRig {
         let fr7 = (!rig.fr7_host.trim().is_empty()).then(|| Fr7::start(Fr7Config::of(rig), *axes));
         let pod = (!rig.autopod_host.trim().is_empty()).then(|| AutoPod::start(PodConfig::of(rig), axes.elevation));
         HardwareRig { fr7, pod, query_delay_s: rig.query_delay_ms.max(0.0) / 1000.0, told: Pose::home(), sync_elevation: 0.0 }
+    }
+}
+
+impl HardwareRig {
+    /// Put both devices on a show's E-Stop line.
+    pub fn on_line(self, line: &EstopLine) -> HardwareRig {
+        if let Some(fr7) = &self.fr7 {
+            fr7.on_line(line);
+        }
+        if let Some(pod) = &self.pod {
+            pod.on_line(line);
+        }
+        self
     }
 }
 
@@ -183,9 +196,9 @@ impl RigAdapter for HardwareRig {
 }
 
 /// The rig one camera's settings ask for.
-pub fn build(rig: &RigConfig, axes: &AxisTable) -> Box<dyn RigAdapter> {
+pub fn build(rig: &RigConfig, axes: &AxisTable, line: &EstopLine) -> Box<dyn RigAdapter> {
     match rig.kind {
         RigKind::Simulator => Box::new(Simulator::new()),
-        RigKind::Hardware => Box::new(HardwareRig::start(rig, axes)),
+        RigKind::Hardware => Box::new(HardwareRig::start(rig, axes).on_line(line)),
     }
 }

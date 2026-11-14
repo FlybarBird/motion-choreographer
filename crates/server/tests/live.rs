@@ -599,3 +599,82 @@ fn with_absolute_moves_a_preset_move_is_one_command_and_the_other_axes_still_tra
     assert!(close(&rig.pose(), &mark.pose, &tol, 0.5), "ended at {:?}", rig.pose());
     do_act(&api, Action::Disarm);
 }
+
+#[test]
+fn estop_reaches_the_rig_while_the_show_itself_is_held_up() {
+    let t = TestServer::start("live-estop-busy");
+    let api = t.client("a");
+    api.take_lease("Luke-MacBook", false).unwrap();
+    let rig = Rig::start();
+    let project = rig.connect(&api);
+    let mark = store(&api, "Far", Pose { pan: 120.0, tilt: 10.0, zoom: 0.4, focus: 0.4, elevation: 300.0 });
+    song_with_move(&api, &project, "Busy", &mark);
+    do_act(&api, Action::Arm);
+    wait_for(&api, |s| s.transport.output == Output::Armed);
+    do_act(&api, Action::Play);
+    wait_for(&api, |s| s.frame > 60);
+    assert!(rig.fr7.is_moving() && rig.pod.is_moving(), "live and mid-move");
+
+    // Something holds the show up for a second: a slow disk, a long save. Nothing that needs
+    // the show can run meanwhile, and the stations that are open keep asking for status.
+    let show = t.running.as_ref().unwrap().show.clone();
+    let held_up = show.lock().unwrap();
+    let began = Instant::now();
+    let asking: Vec<_> = (0..3)
+        .map(|i| {
+            let station = t.client(&format!("station-{i}"));
+            std::thread::spawn(move || station.status().map(|_| ()))
+        })
+        .collect();
+    std::thread::sleep(Duration::from_millis(20));
+    rig.fr7.clear_seen();
+    rig.pod.clear_seen();
+    let watcher = t.client("watcher");
+    let pressed = Instant::now();
+    let estop = std::thread::spawn(move || watcher.act(Action::Estop, &TransportRequest::default()));
+
+    // The rig is told to stop at once: not when the show is free again, and not by the rig's
+    // own deadman, which waits 300 ms for a target before it acts.
+    let (mut head_told, mut column_told) = (None, None);
+    while (head_told.is_none() || column_told.is_none()) && pressed.elapsed() < Duration::from_millis(900) {
+        if head_told.is_none() && rig.fr7_stops() > 0 {
+            head_told = Some(pressed.elapsed());
+        }
+        if column_told.is_none() && rig.pod.orders().iter().any(|c| c == "#PTS5050") {
+            column_told = Some(pressed.elapsed());
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let held_for = began.elapsed();
+    drop(held_up);
+    let prompt = |told: Option<Duration>| told.is_some_and(|t| t < Duration::from_millis(250));
+    assert!(
+        prompt(head_told) && prompt(column_told),
+        "with the show held up for {held_for:?}, E-Stop reached the head after {head_told:?} and the column after {column_told:?}"
+    );
+
+    // The show catches up: E-Stop is latched, and the rig was stopped by it, not by starving.
+    let st = estop.join().unwrap().unwrap();
+    assert!(st.transport.estop && !st.hardware_live);
+    for station in asking {
+        station.join().unwrap().unwrap();
+    }
+    wait_for(&api, |s| !s.telemetry.halting);
+    assert!(!rig.is_moving());
+    let pressed_by: Vec<LogRecord> =
+        log_kinds(&api).into_iter().filter(|r| r.kind == "transport" && r.data["action"] == "estop").collect();
+    assert_eq!(pressed_by.len(), 1, "the press is in the run log once: {pressed_by:?}");
+    assert!(pressed_by[0].data["by"].as_str().is_some_and(|by| by.contains("watcher")), "{:?}", pressed_by[0].data);
+
+    // Nothing is left behind that keeps the rig from being armed again.
+    do_act(&api, Action::ResetEstop);
+    let st = do_act(&api, Action::Arm);
+    assert_eq!(st.transport.output, Output::Positioning);
+    let began = Instant::now();
+    while !rig.is_moving() && began.elapsed() < Duration::from_secs(3) {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(rig.is_moving(), "the rig takes targets again");
+    do_act(&api, Action::Disarm);
+    wait_for(&api, |s| !s.telemetry.halting);
+}
