@@ -95,6 +95,9 @@ pub struct AdapterStatus {
     /// AutoPod only.
     pub calibrated: Option<bool>,
     pub round_trip_ms: Option<f64>,
+    /// AutoPod only: the raw position value, for building the height map.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_position: Option<f64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
@@ -107,10 +110,17 @@ pub struct RecordStatus {
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+#[serde(default)]
 pub struct Telemetry {
     /// Rig position minus target per axis while live.
     pub error: Pose,
     pub fault: Option<String>,
+    /// E-Stop was pressed and the rig has not yet reported that it stands still.
+    pub halting: bool,
+    /// Progress of a preset sync that is moving the camera.
+    pub preset_sync: Option<String>,
+    /// The rig is real hardware, not the simulator.
+    pub hardware: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]

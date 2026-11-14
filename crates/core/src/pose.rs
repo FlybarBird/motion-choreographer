@@ -136,6 +136,17 @@ impl AxisTable {
     }
 }
 
+impl AxisTable {
+    /// The first axis of `pose` outside its range, as operator text.
+    pub fn out_of_range(&self, pose: &Pose) -> Option<String> {
+        Axis::ALL.into_iter().find_map(|a| {
+            let (lim, v) = (self.get(a), pose.get(a));
+            (v < lim.min - 1e-6 || v > lim.max + 1e-6)
+                .then(|| format!("{} is at {}, outside {} to {}", a.label(), a.format(v), a.format(lim.min), a.format(lim.max)))
+        })
+    }
+}
+
 impl Default for AxisTable {
     /// FR7 pan/tilt range and top speed from Sony's command list (upright
     /// mounting). Elevation defaults to a single AutoPod column.
@@ -219,6 +230,19 @@ pub struct KeepOutRule {
 }
 
 impl KeepOutRule {
+    /// "When elevation is below 200 mm, tilt must be above -10 degrees": the usual first rule.
+    pub fn example() -> KeepOutRule {
+        KeepOutRule {
+            name: "Rule".into(),
+            when_axis: Axis::Elevation,
+            when: Cmp::Below,
+            when_value: 200.0,
+            then_axis: Axis::Tilt,
+            must_be: Cmp::Above,
+            must_value: -10.0,
+        }
+    }
+
     pub fn violated(&self, pose: &Pose) -> bool {
         self.when.holds(pose.get(self.when_axis), self.when_value)
             && !self.must_be.holds(pose.get(self.then_axis), self.must_value)
@@ -258,8 +282,22 @@ pub struct RigConfig {
     pub kind: RigKind,
     /// `host` or `host:port` of the FR7. Empty means no camera head.
     pub fr7_host: String,
+    /// Port of the FR7's web interface, which serves preset names and thumbnails.
+    pub fr7_http_port: u16,
     pub fr7_user: String,
     pub fr7_password: String,
+    /// Position counts per degree of pan and tilt.
+    pub fr7_counts_per_degree: f64,
+    /// Counts fall, not rise, as the head pans left.
+    pub fr7_invert_pan: bool,
+    /// Counts fall, not rise, as the head tilts up.
+    pub fr7_invert_tilt: bool,
+    /// Run a plain preset move as one absolute command and let the head ramp itself,
+    /// instead of steering it along the curve.
+    pub fr7_absolute_moves: bool,
+    /// Age of a position reading when it arrives, in milliseconds. Zero uses the
+    /// round trip the adapter measures as it runs.
+    pub query_delay_ms: f64,
     /// `host` or `host:port` of the AutoPod Plus leg box. Empty means no pedestal.
     pub autopod_host: String,
     pub autopod_calibration: Vec<CalPoint>,
@@ -276,8 +314,14 @@ impl Default for RigConfig {
         RigConfig {
             kind: RigKind::Simulator,
             fr7_host: String::new(),
+            fr7_http_port: 80,
             fr7_user: String::new(),
             fr7_password: String::new(),
+            fr7_counts_per_degree: 236.0,
+            fr7_invert_pan: false,
+            fr7_invert_tilt: false,
+            fr7_absolute_moves: false,
+            query_delay_ms: 0.0,
             autopod_host: String::new(),
             autopod_calibration: Vec::new(),
             tolerance: Pose { pan: 2.0, tilt: 2.0, zoom: 0.05, focus: 0.08, elevation: 15.0 },
