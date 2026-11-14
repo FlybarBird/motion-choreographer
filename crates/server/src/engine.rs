@@ -4,11 +4,13 @@
 
 use crate::audio::{AudioEngine, LtcOut, Mix, PlayClip};
 use crate::media::{self, Ingested};
+use crate::record::{self, Capture, RecordedPass};
 use crate::rig::{RigAdapter, Simulator};
 use crate::runlog::RunLog;
 use crate::storage::{self, Storage};
 use ptz_core::api::*;
 use ptz_core::compile::{compile, Compiled};
+use ptz_core::edit;
 use ptz_core::pose::{Axis, Pose, Preset, Project};
 use ptz_core::song::Song;
 use ptz_core::time::{frame_to_sample, FrameRate, Timecode};
@@ -145,6 +147,10 @@ pub struct Show {
     lease_ttl: Duration,
     rig: Box<dyn RigAdapter>,
     jog_deadline: Option<Instant>,
+    /// Axes that Record writes.
+    record_axes: Vec<Axis>,
+    /// The pass being captured, while there is one.
+    capture: Option<Capture>,
     lock_source: Option<String>,
     /// The simulator was positioned by hand; the monitor shows it until the playhead moves.
     manual: bool,
@@ -223,6 +229,8 @@ impl Show {
             lease_ttl: cfg.lease_ttl,
             rig: Box::new(Simulator::new()),
             jog_deadline: None,
+            record_axes: Vec::new(),
+            capture: None,
             lock_source: None,
             manual: false,
             started: now,
@@ -891,7 +899,17 @@ impl Show {
             }
             Action::Arm => {}
             Action::Disarm => self.rig.stop(),
-            Action::RecordOn | Action::RecordOff => {}
+            Action::RecordOn => {
+                let axes = match &req.axes {
+                    Some(given) => Axis::ALL.into_iter().filter(|a| given.contains(a)).collect(),
+                    None => self.record_axes.clone(),
+                };
+                if axes.is_empty() {
+                    return Err(Fail::refused("Record-enable at least one axis lane first"));
+                }
+                self.record_axes = axes;
+            }
+            Action::RecordOff => {}
             Action::Estop => {
                 self.audio.stop();
                 self.rig.stop();
@@ -903,6 +921,11 @@ impl Show {
         self.transport = transport::apply(&before, action, true);
         let frame = self.frame_f.floor() as i64;
         self.log("transport", json!({ "action": action.key(), "by": self.who(client), "frame": frame, "state": self.transport }));
+        self.sync_capture();
+        // The virtual rig follows a moved playhead at once, not a tick later.
+        if self.rig.is_simulator() && self.transport.output == Output::Rehearse && self.capture.is_none() && !self.manual {
+            self.rig.sync_virtual(&self.timeline_pose(), &Axis::ALL);
+        }
         self.poke();
         Ok(())
     }
@@ -923,7 +946,118 @@ impl Show {
         }
         self.transport = after;
         self.log("event", json!({ "event": format!("{event:?}"), "frame": self.frame_f.floor() as i64, "state": after }));
+        self.sync_capture();
         self.poke();
+    }
+
+    // ---- record ----
+
+    fn recording(&self) -> bool {
+        self.transport.record && self.transport.run == Run::Playing
+    }
+
+    /// Start a pass when Record and Play are both on; end it when either goes off.
+    fn sync_capture(&mut self) {
+        if self.recording() {
+            if self.capture.is_none() && self.entry().is_some() {
+                // The pass includes the frame Play was pressed on.
+                let mut capture = Capture::new(self.record_axes.clone());
+                capture.feed(self.frame_f - self.rate().seconds_to_frames(self.rig.query_delay_s()), self.rig.pose());
+                self.capture = Some(capture);
+                let axes = self.record_axes.clone();
+                self.log("record_start", json!({ "frame": self.frame_f.ceil() as i64, "axes": axes }));
+            }
+        } else if let Some(capture) = self.capture.take() {
+            self.finish_pass(capture);
+        }
+    }
+
+    fn free_pass_id(&self, song: &str) -> String {
+        (1..)
+            .map(|n| format!("pass-{n:04}"))
+            .find(|id| self.storage.pass_path(song, id).is_some_and(|p| !p.exists()))
+            .unwrap_or_else(|| "pass".into())
+    }
+
+    /// Turn a finished capture into keys on the timeline. The pass replaces
+    /// what was on its axes over the frames it covers.
+    fn finish_pass(&mut self, capture: Capture) {
+        let _ = self.rig.jog(Jog::default());
+        self.jog_deadline = None;
+        self.manual = false;
+        let Some(song_id) = self.current.clone() else { return };
+        let frames = capture.frames() as i64;
+        if frames < 2 {
+            self.log("record_discarded", json!({ "song": song_id, "reason": "The pass was shorter than two frames" }));
+            return;
+        }
+        let pass = RecordedPass {
+            id: self.free_pass_id(&song_id),
+            song_id: song_id.clone(),
+            recorded_at: storage::now_rfc3339(),
+            rate: self.rate(),
+            start_frame: capture.start_frame(),
+            query_delay_s: self.rig.query_delay_s(),
+            samples: capture.samples(),
+        };
+        let saved = match self.storage.pass_path(&song_id, &pass.id) {
+            Some(path) => storage::write_json(&path, &pass).map_err(|e| e.to_string()),
+            None => Err("the pass has no usable file name".into()),
+        };
+        if let Err(e) = &saved {
+            self.log("record_warning", json!({ "song": song_id, "pass": pass.id, "problem": format!("Raw samples were not kept: {e}") }));
+        }
+        let curves = record::fit_pass(&pass.samples, 1.0);
+        let keys: BTreeMap<Axis, usize> = curves.iter().map(|(a, k)| (*a, k.len())).collect();
+        let Some(entry) = self.songs.get(&song_id) else { return };
+        let punched =
+            edit::punch_keys(&entry.song, &self.project, pass.start_frame, frames - 1, curves, saved.is_ok().then(|| pass.id.clone()));
+        match punched {
+            Ok((song, clip)) => match self.replace_working(&song_id, song, "record") {
+                Ok(_) => self.log(
+                    "record_pass",
+                    json!({
+                        "song": song_id, "clip": clip, "pass": pass.id, "start_frame": pass.start_frame,
+                        "frames": frames, "axes": capture.axes, "keys": keys,
+                    }),
+                ),
+                Err(fail) => self.log("record_failed", json!({ "song": song_id, "pass": pass.id, "reason": fail.msg })),
+            },
+            Err(refusal) => self.log("record_failed", json!({ "song": song_id, "pass": pass.id, "reason": refusal.to_string() })),
+        }
+    }
+
+    /// Fit a recorded clip again from its raw samples, tighter or looser.
+    pub fn refit(&mut self, client: &str, clip_id: &str, req: &Refit) -> Res<WorkingSong> {
+        self.require_lease(client)?;
+        if !(req.scale.is_finite() && (0.05..=50.0).contains(&req.scale)) {
+            return Err(Fail::bad("The fit tolerance scale must be between 0.05 and 50"));
+        }
+        let Some(entry) = self.entry() else {
+            return Err(Fail::refused("Create or load a song first"));
+        };
+        let song_id = entry.song.id.clone();
+        self.require_editable(&song_id)?;
+        let Some(clip) = entry.song.motion_clip(clip_id) else {
+            return Err(Fail::not_found(format!("No clip with id {clip_id} in {}", entry.song.name)));
+        };
+        let Some(pass_id) = &clip.recorded_pass else {
+            return Err(Fail::refused("This clip was not recorded, so there is nothing to refit"));
+        };
+        let pass: Option<RecordedPass> = self.storage.pass_path(&song_id, pass_id).and_then(|p| storage::read_json(&p));
+        let Some(pass) = pass else {
+            return Err(Fail::refused(format!("The raw samples of {pass_id} are missing from the data folder")));
+        };
+        let whole = clip.axes.iter().all(|a| pass.samples.get(a).is_some_and(|v| v.len() as i64 == clip.duration_frames + 1));
+        if !whole {
+            return Err(Fail::refused("This clip was trimmed or split after it was recorded. Refit works on a whole pass"));
+        }
+        let samples: BTreeMap<Axis, Vec<f64>> = pass.samples.into_iter().filter(|(a, _)| clip.axes.contains(a)).collect();
+        let curves = record::fit_pass(&samples, req.scale);
+        let song = edit::replace_curves(&entry.song, &self.project, clip_id, curves).map_err(|r| Fail::invalid(r.to_string()))?;
+        let out = self.replace_working(&song_id, song, "refit")?;
+        self.log("record_refit", json!({ "song": song_id, "clip": clip_id, "pass": pass_id_of(&out.song, clip_id), "scale": req.scale }));
+        Ok(out)
     }
 
     pub fn jog(&mut self, client: &str, jog: Jog) -> Res<()> {
@@ -937,6 +1071,19 @@ impl Show {
         if self.transport.run != Run::Stopped && !self.transport.record {
             return Err(Fail::refused("Stop to position the rig by hand, or turn Record on to capture the move"));
         }
+        // During a pass only the record-enabled axes are hand-driven; the rest play the timeline.
+        let jog = if self.transport.run != Run::Stopped {
+            let keep = |a: Axis| if self.record_axes.contains(&a) { jog.get(a) } else { 0.0 };
+            Jog {
+                pan: keep(Axis::Pan),
+                tilt: keep(Axis::Tilt),
+                zoom: keep(Axis::Zoom),
+                focus: keep(Axis::Focus),
+                elevation: keep(Axis::Elevation),
+            }
+        } else {
+            jog
+        };
         self.rig.jog(jog).map_err(Fail::refused)?;
         if jog.is_zero() {
             self.jog_deadline = None;
@@ -1016,11 +1163,24 @@ impl Show {
                 }
             } else if self.transport.output == Output::Armed {
                 self.rig.drive(&target, 1.0);
-            } else if self.rig.is_simulator() && !self.manual {
-                self.rig.sync_virtual(&target, &Axis::ALL);
+            } else if self.rig.is_simulator() {
+                if self.capture.is_some() {
+                    let playing: Vec<Axis> = Axis::ALL.into_iter().filter(|a| !self.record_axes.contains(a)).collect();
+                    self.rig.sync_virtual(&target, &playing);
+                } else if !self.manual {
+                    self.rig.sync_virtual(&target, &Axis::ALL);
+                }
             }
         }
         self.rig.tick(dt, &self.project.axes);
+        if self.capture.is_some() {
+            // The pose just read belongs to where the transport was `query_delay_s` ago.
+            let stamp = self.frame_f - self.rate().seconds_to_frames(self.rig.query_delay_s());
+            let pose = self.rig.pose();
+            if let Some(capture) = &mut self.capture {
+                capture.feed(stamp, pose);
+            }
+        }
     }
 
     // ---- status ----
@@ -1068,10 +1228,18 @@ impl Show {
             audio: self.audio_status(),
             lock: LockStatus { source: self.lock_source.clone(), ..LockStatus::default() },
             adapters: self.rig.status(),
-            record: RecordStatus::default(),
+            record: RecordStatus {
+                axes: self.record_axes.clone(),
+                active: self.capture.is_some(),
+                frames: self.capture.as_ref().map(|c| c.frames() as i64).unwrap_or(0),
+            },
             telemetry: Telemetry::default(),
         }
     }
+}
+
+fn pass_id_of(song: &Song, clip: &str) -> Option<String> {
+    song.motion_clip(clip).and_then(|c| c.recorded_pass.clone())
 }
 
 /// Start the 60 Hz tick thread. It stops when the last other handle is dropped.

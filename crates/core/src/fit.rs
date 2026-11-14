@@ -13,7 +13,8 @@ pub fn default_tolerance(axis: Axis) -> f64 {
     }
 }
 
-fn slope(samples: &[f64], i: usize) -> f64 {
+/// Slope at `i` from the samples either side of it.
+fn central(samples: &[f64], i: usize) -> f64 {
     let n = samples.len();
     if n < 2 {
         return 0.0;
@@ -23,30 +24,55 @@ fn slope(samples: &[f64], i: usize) -> f64 {
     (samples[hi] - samples[lo]) / (hi - lo) as f64
 }
 
-fn segment_keys(samples: &[f64], a: usize, b: usize) -> (Key, Key) {
+/// Slope at `from` looking only toward `toward`. At a corner (a move that
+/// starts or stops abruptly) this is the slope the segment actually has.
+fn inward(samples: &[f64], from: usize, toward: usize) -> f64 {
+    let j = if toward > from { (from + 2).min(toward) } else { from.saturating_sub(2).max(toward) };
+    if j == from {
+        return 0.0;
+    }
+    (samples[j] - samples[from]) / (j as f64 - from as f64)
+}
+
+fn hermite(samples: &[f64], a: usize, b: usize, slope_a: f64, slope_b: f64) -> [Key; 2] {
     let len = (b - a) as f64;
     let mut k0 = Key::new(a as i64, samples[a], Interp::Bezier);
     let mut k1 = Key::new(b as i64, samples[b], Interp::Bezier);
     // Handles a third of the way along make time linear in the curve
     // parameter, so the segment is a cubic Hermite through the two samples.
-    k0.out_handle = [len / 3.0, slope(samples, a) * len / 3.0];
-    k1.in_handle = [-len / 3.0, -slope(samples, b) * len / 3.0];
-    (k0, k1)
+    k0.out_handle = [len / 3.0, slope_a * len / 3.0];
+    k1.in_handle = [-len / 3.0, -slope_b * len / 3.0];
+    [k0, k1]
 }
 
-fn worst(samples: &[f64], a: usize, b: usize) -> (usize, f64) {
-    let (k0, k1) = segment_keys(samples, a, b);
-    let pair = [k0, k1];
+fn worst(samples: &[f64], pair: &[Key; 2], a: usize, b: usize) -> (usize, f64) {
     let mut at = a;
     let mut err = 0.0;
     for (i, s) in samples.iter().enumerate().take(b).skip(a + 1) {
-        let e = (keys_value(&pair, i as f64).unwrap_or(*s) - s).abs();
+        let e = (keys_value(pair, i as f64).unwrap_or(*s) - s).abs();
         if e > err {
             err = e;
             at = i;
         }
     }
     (at, err)
+}
+
+/// The two keys for `a..=b`, where the fit is worst, and by how much. Each end
+/// takes the smooth slope or the one-sided slope, whichever fits better, so a
+/// corner gets a broken handle instead of a cluster of keys.
+fn segment(samples: &[f64], a: usize, b: usize) -> ([Key; 2], usize, f64) {
+    let mut best = (hermite(samples, a, b, central(samples, a), central(samples, b)), a, f64::INFINITY);
+    for slope_a in [central(samples, a), inward(samples, a, b)] {
+        for slope_b in [central(samples, b), inward(samples, b, a)] {
+            let pair = hermite(samples, a, b, slope_a, slope_b);
+            let (at, err) = worst(samples, &pair, a, b);
+            if err < best.2 {
+                best = (pair, at, err);
+            }
+        }
+    }
+    best
 }
 
 /// Fit keys to one value per frame. Key frames are indices into `samples`.
@@ -63,7 +89,7 @@ pub fn fit_keys(samples: &[f64], tolerance: f64) -> Vec<Key> {
         if b - a < 2 {
             continue;
         }
-        let (at, err) = worst(samples, a, b);
+        let (_, at, err) = segment(samples, a, b);
         if err > tolerance {
             cuts.push(at);
             stack.push((a, at));
@@ -72,9 +98,24 @@ pub fn fit_keys(samples: &[f64], tolerance: f64) -> Vec<Key> {
     }
     cuts.sort_unstable();
     cuts.dedup();
+    // Splitting at the worst sample overshoots; drop every cut the fit does not need.
+    loop {
+        let before = cuts.len();
+        let mut i = 1;
+        while i + 1 < cuts.len() {
+            if segment(samples, cuts[i - 1], cuts[i + 1]).2 <= tolerance {
+                cuts.remove(i);
+            } else {
+                i += 1;
+            }
+        }
+        if cuts.len() == before {
+            break;
+        }
+    }
     let mut keys: Vec<Key> = Vec::with_capacity(cuts.len());
     for w in cuts.windows(2) {
-        let (k0, k1) = segment_keys(samples, w[0], w[1]);
+        let ([k0, k1], _, _) = segment(samples, w[0], w[1]);
         match keys.last_mut() {
             Some(last) => last.out_handle = k0.out_handle,
             None => keys.push(k0),
@@ -124,7 +165,22 @@ mod tests {
         s.extend(vec![20.0; 100]);
         let keys = fit_keys(&s, 0.05);
         assert!(max_error(&s, &keys) <= 0.05 + 1e-9);
-        assert!(keys.len() < 20);
+        assert!(keys.len() <= 8, "{} keys", keys.len());
+    }
+
+    #[test]
+    fn a_move_that_starts_and_stops_abruptly_gets_corner_keys() {
+        // Still, a constant-speed ramp, still: the shape of a jog.
+        let mut s = vec![4.0; 101];
+        s.extend((1..=100).map(|i| 4.0 + 0.4 * i as f64));
+        s.extend(vec![44.0; 60]);
+        let keys = fit_keys(&s, 0.05);
+        assert!(max_error(&s, &keys) <= 0.05 + 1e-9);
+        assert_eq!(keys.iter().map(|k| k.frame).collect::<Vec<_>>(), vec![0, 100, 200, 260]);
+        // The corner key is flat coming in and at ramp speed going out.
+        let corner = keys[1];
+        assert!(corner.in_handle[1].abs() < 1e-9);
+        assert!((corner.out_handle[1] / corner.out_handle[0] - 0.4).abs() < 1e-9);
     }
 
     #[test]

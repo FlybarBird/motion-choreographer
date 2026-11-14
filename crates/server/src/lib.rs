@@ -4,6 +4,7 @@ pub mod audio;
 pub mod engine;
 pub mod http;
 pub mod media;
+pub mod record;
 pub mod rig;
 pub mod runlog;
 pub mod seed;
