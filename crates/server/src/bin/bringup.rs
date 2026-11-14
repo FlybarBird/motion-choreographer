@@ -169,6 +169,10 @@ fn fakes(mut args: impl Iterator<Item = String>) {
                 count =
                     value("--count").parse().ok().filter(|n| (1..=12).contains(n)).unwrap_or_else(|| fail("--count is 1 to 12"));
             }
+            "--help" | "-h" => {
+                print!("{HELP}");
+                return;
+            }
             other => fail(&format!("unknown option {other} for fakes")),
         }
     }
