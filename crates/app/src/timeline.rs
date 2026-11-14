@@ -18,8 +18,11 @@ pub enum Lane {
     Markers,
     Video,
     Audio,
-    Motion,
-    Axis(Axis),
+    /// One camera's moves. The number is the camera's place in the project.
+    Motion(usize),
+    Axis(usize, Axis),
+    /// Moves left behind by cameras that are no longer in the project.
+    Missing,
 }
 
 impl Lane {
@@ -28,8 +31,9 @@ impl Lane {
             Lane::Markers => "Markers",
             Lane::Video => "Reference video",
             Lane::Audio => "Audio",
-            Lane::Motion => "Camera move",
-            Lane::Axis(a) => a.label(),
+            Lane::Motion(_) => "Camera move",
+            Lane::Axis(_, a) => a.label(),
+            Lane::Missing => "Missing camera",
         }
     }
 
@@ -38,8 +42,17 @@ impl Lane {
             Lane::Markers => 22.0,
             Lane::Video => 62.0,
             Lane::Audio => 56.0,
-            Lane::Motion => 46.0,
-            Lane::Axis(_) => 30.0,
+            Lane::Motion(_) => 46.0,
+            Lane::Axis(..) => 30.0,
+            Lane::Missing => 34.0,
+        }
+    }
+
+    /// The camera this lane belongs to, by its place in the project.
+    pub fn camera(self) -> Option<usize> {
+        match self {
+            Lane::Motion(i) | Lane::Axis(i, _) => Some(i),
+            _ => None,
         }
     }
 }
@@ -49,17 +62,27 @@ pub struct View {
     pub px_per_frame: f32,
     /// Frame at the left edge of the lanes.
     pub scroll: f64,
-    /// Camera move twirled open to the five axis lanes.
-    pub motion_open: bool,
+    /// Cameras whose move lane is twirled open to the five axis lanes, one bit per camera.
+    pub open: u16,
 }
 
 impl Default for View {
     fn default() -> Self {
-        View { px_per_frame: 1.0, scroll: 0.0, motion_open: false }
+        View { px_per_frame: 1.0, scroll: 0.0, open: 0 }
     }
 }
 
 impl View {
+    pub fn is_open(&self, camera: usize) -> bool {
+        camera < 16 && self.open & (1 << camera) != 0
+    }
+
+    pub fn set_open(&mut self, camera: usize, open: bool) {
+        if camera < 16 {
+            self.open = if open { self.open | (1 << camera) } else { self.open & !(1 << camera) };
+        }
+    }
+
     pub const MIN_PPF: f32 = 0.02;
     pub const MAX_PPF: f32 = 40.0;
 
@@ -132,7 +155,8 @@ pub struct Layout {
     pub ruler: Rect,
     /// The lane area right of the header column, below the ruler.
     pub body: Rect,
-    pub twirl: Rect,
+    /// The twirl of each camera's move lane.
+    pub twirls: Vec<(usize, Rect)>,
     pub lanes: Vec<LaneBox>,
     pub clips: Vec<ClipBox>,
     pub markers: Vec<MarkerBox>,
@@ -163,31 +187,37 @@ impl Layout {
         self.clips.iter().find(|c| c.id == id && c.kind != ClipKind::AxisPart)
     }
 
-    pub fn content_height(view: &View) -> f32 {
-        let mut h = RULER_H;
-        for lane in lanes(view) {
-            h += lane.height();
-        }
-        h
+    pub fn twirl(&self, camera: usize) -> Option<Rect> {
+        self.twirls.iter().find(|t| t.0 == camera).map(|t| t.1)
+    }
+
+    pub fn content_height(song: &Song, project: &Project, view: &View) -> f32 {
+        RULER_H + lanes(song, project, view).iter().map(|lane| lane.height()).sum::<f32>()
     }
 }
 
-fn lanes(view: &View) -> Vec<Lane> {
-    let mut out = vec![Lane::Markers, Lane::Video, Lane::Audio, Lane::Motion];
-    if view.motion_open {
-        out.extend(Axis::ALL.iter().map(|a| Lane::Axis(*a)));
+fn lanes(song: &Song, project: &Project, view: &View) -> Vec<Lane> {
+    let mut out = vec![Lane::Markers, Lane::Video, Lane::Audio];
+    for i in 0..project.cameras.len() {
+        out.push(Lane::Motion(i));
+        if view.is_open(i) {
+            out.extend(Axis::ALL.iter().map(|a| Lane::Axis(i, *a)));
+        }
+    }
+    if song.motion.iter().any(|c| project.camera(&c.camera).is_none()) {
+        out.push(Lane::Missing);
     }
     out
 }
 
-pub fn layout(song: &Song, view: &View, rect: Rect) -> Layout {
+pub fn layout(song: &Song, project: &Project, view: &View, rect: Rect) -> Layout {
     let ruler = Rect::from_min_max(pos2(rect.left() + HEADER_W, rect.top()), pos2(rect.right(), rect.top() + RULER_H));
     let body = Rect::from_min_max(pos2(rect.left() + HEADER_W, ruler.bottom()), rect.right_bottom());
     let mut out = Layout {
         rect,
         ruler,
         body,
-        twirl: Rect::NOTHING,
+        twirls: Vec::new(),
         lanes: Vec::new(),
         clips: Vec::new(),
         markers: Vec::new(),
@@ -197,10 +227,10 @@ pub fn layout(song: &Song, view: &View, rect: Rect) -> Layout {
         length: song.length_frames,
     };
     let mut y = ruler.bottom();
-    for lane in lanes(view) {
+    for lane in lanes(song, project, view) {
         let r = Rect::from_min_max(pos2(rect.left(), y), pos2(rect.right(), y + lane.height()));
-        if lane == Lane::Motion {
-            out.twirl = Rect::from_min_size(pos2(rect.left() + 4.0, y + 4.0), egui::vec2(18.0, lane.height() - 8.0));
+        if let Lane::Motion(i) = lane {
+            out.twirls.push((i, Rect::from_min_size(pos2(rect.left() + 4.0, y + 4.0), egui::vec2(18.0, lane.height() - 8.0))));
         }
         out.lanes.push(LaneBox { lane, rect: r });
         y += lane.height();
@@ -230,46 +260,42 @@ pub fn layout(song: &Song, view: &View, rect: Rect) -> Layout {
         }
     }
 
-    // Moves on different axes may overlap in time; give each its own row.
+    // Each camera has its own lane. Within one, moves on different axes may overlap in time; give each its own row.
+    let lane_of = |c: &ptz_core::song::MotionClip| project.camera_index(&c.camera).map(Lane::Motion).unwrap_or(Lane::Missing);
     let mut order: Vec<usize> = (0..song.motion.len()).collect();
     order.sort_by_key(|i| (song.motion[*i].start_frame, song.motion[*i].id.clone()));
-    let mut row_ends: Vec<i64> = Vec::new();
+    let mut row_ends: std::collections::HashMap<Lane, Vec<i64>> = std::collections::HashMap::new();
     let mut rows: Vec<usize> = vec![0; song.motion.len()];
     for i in &order {
         let c = &song.motion[*i];
-        let row = row_ends.iter().position(|end| *end <= c.start_frame).unwrap_or(row_ends.len());
-        if row == row_ends.len() {
-            row_ends.push(c.end_frame());
+        let ends = row_ends.entry(lane_of(c)).or_default();
+        let row = ends.iter().position(|end| *end <= c.start_frame).unwrap_or(ends.len());
+        if row == ends.len() {
+            ends.push(c.end_frame());
         } else {
-            row_ends[row] = c.end_frame();
+            ends[row] = c.end_frame();
         }
         rows[*i] = row;
     }
-    let row_count = row_ends.len().max(1);
-    if let Some(lr) = out.lane_rect(Lane::Motion) {
-        for i in &order {
-            let c = &song.motion[*i];
-            let rect = span(&out, lr, c.start_frame, c.end_frame(), rows[*i], row_count);
-            let kind = if c.is_keys() { ClipKind::Keys } else { ClipKind::Move };
-            out.clips.push(ClipBox {
-                id: c.id.clone(),
-                lane: Lane::Motion,
-                kind,
-                rect,
-                start: c.start_frame,
-                end: c.end_frame(),
-            });
-        }
+    for i in &order {
+        let c = &song.motion[*i];
+        let lane = lane_of(c);
+        let Some(lr) = out.lane_rect(lane) else { continue };
+        let row_count = row_ends.get(&lane).map(|r| r.len()).unwrap_or(1).max(1);
+        let rect = span(&out, lr, c.start_frame, c.end_frame(), rows[*i], row_count);
+        let kind = if c.is_keys() { ClipKind::Keys } else { ClipKind::Move };
+        out.clips.push(ClipBox { id: c.id.clone(), lane, kind, rect, start: c.start_frame, end: c.end_frame() });
     }
-    if view.motion_open {
+    {
         for i in &order {
             let c = &song.motion[*i];
+            let Some(camera) = project.camera_index(&c.camera).filter(|i| view.is_open(*i)) else { continue };
             for axis in &c.axes {
-                let Some(lr) = out.lane_rect(Lane::Axis(*axis)) else { continue };
+                let Some(lr) = out.lane_rect(Lane::Axis(camera, *axis)) else { continue };
                 let rect = span(&out, lr, c.start_frame, c.end_frame(), 0, 1);
                 out.clips.push(ClipBox {
                     id: c.id.clone(),
-                    lane: Lane::Axis(*axis),
+                    lane: Lane::Axis(camera, *axis),
                     kind: ClipKind::AxisPart,
                     rect,
                     start: c.start_frame,
@@ -299,7 +325,7 @@ pub enum Hit {
     Key { clip: String, axis: Axis, index: usize },
     Ruler { frame: i64 },
     Marker { id: String },
-    Twirl,
+    Twirl(usize),
     Header { lane: Lane },
     Empty { lane: Option<Lane>, frame: i64 },
     Outside,
@@ -315,8 +341,8 @@ pub fn hit(layout: &Layout, pos: Pos2) -> Hit {
     }
     let lane = layout.lane_at(pos.y);
     if pos.x < layout.body.left() {
-        if layout.twirl.contains(pos) {
-            return Hit::Twirl;
+        if let Some((camera, _)) = layout.twirls.iter().find(|t| t.1.contains(pos)) {
+            return Hit::Twirl(*camera);
         }
         return match lane {
             Some(lane) => Hit::Header { lane },
@@ -569,8 +595,8 @@ impl Timeline {
                 self.drag = Some(Drag::Scrub);
                 Outcome::Seek(frame)
             }
-            Hit::Twirl => {
-                self.view.motion_open = !self.view.motion_open;
+            Hit::Twirl(camera) => {
+                self.view.set_open(camera, !self.view.is_open(camera));
                 Outcome::None
             }
             Hit::ClipBody { id } | Hit::Marker { id } => {
@@ -676,13 +702,26 @@ impl Timeline {
                         self.snap_frame = Some(target);
                     }
                 }
-                self.drag = Some(Drag::Move { ids: ids.clone(), primary, grab_frame, copy, moved: delta != 0 });
+                // Dragged onto another camera's lane, a move is handed to that camera.
+                let hand_to = layout
+                    .lane_at(pos.y)
+                    .and_then(|lane| lane.camera())
+                    .and_then(|i| doc.project.cameras.get(i))
+                    .filter(|to| doc.song.motion_clip(&primary).is_some_and(|c| c.camera != to.id))
+                    .map(|to| to.id.clone());
+                let moved = delta != 0 || hand_to.is_some();
+                self.drag = Some(Drag::Move { ids: ids.clone(), primary, grab_frame, copy, moved });
                 self.preview_ids = None;
-                if delta == 0 {
+                if !moved {
                     self.preview = None;
                     self.attempt = None;
                 } else if copy {
-                    match edit::copy_clips(doc.song, doc.project, &ids, delta) {
+                    let copied =
+                        edit::copy_clips(doc.song, doc.project, &ids, delta).and_then(|(song, new_ids)| match &hand_to {
+                            Some(camera) => edit::set_camera(&song, doc.project, &new_ids, camera).map(|song| (song, new_ids)),
+                            None => Ok((song, new_ids)),
+                        });
+                    match copied {
                         Ok((song, new_ids)) => {
                             self.preview = Some(song);
                             self.preview_ids = Some(new_ids);
@@ -691,7 +730,8 @@ impl Timeline {
                         Err(r) => self.set_result(Err(r), &ids, delta),
                     }
                 } else {
-                    self.set_result(edit::move_clips(doc.song, doc.project, &ids, delta), &ids, delta);
+                    let result = edit::move_clips_to(doc.song, doc.project, &ids, delta, hand_to.as_deref());
+                    self.set_result(result, &ids, delta);
                 }
                 Outcome::None
             }
@@ -823,6 +863,7 @@ impl Timeline {
                 self.snap_frame = Some(t);
             }
         }
+        let lane = doc.project.camera_index(&preset.camera).map(Lane::Motion).unwrap_or(Lane::Missing);
         Some(match edit::drop_preview(doc.song, doc.project, preset, frame) {
             Ok(p) => {
                 let from = p.from_name.clone().map(|f| format!("{f} to ")).unwrap_or_else(|| "To ".into());
@@ -830,10 +871,10 @@ impl Timeline {
                 if p.duration_frames < p.wanted_frames {
                     label.push_str(&format!(" (needs {})", secs_text(p.wanted_frames, doc.project)));
                 }
-                Ghost { lane: Lane::Motion, start: p.start_frame, duration: p.duration_frames, label, refusal: None }
+                Ghost { lane, start: p.start_frame, duration: p.duration_frames, label, refusal: None }
             }
             Err(r) => Ghost {
-                lane: Lane::Motion,
+                lane,
                 start: frame,
                 duration: doc.project.rate.seconds_to_frames(2.0).round() as i64,
                 label: preset.name.clone(),
@@ -987,11 +1028,11 @@ mod tests {
     }
 
     fn view(ppf: f32) -> View {
-        View { px_per_frame: ppf, scroll: 0.0, motion_open: false }
+        View { px_per_frame: ppf, scroll: 0.0, open: 0 }
     }
 
     fn motion_y(l: &Layout) -> f32 {
-        l.lane_rect(Lane::Motion).unwrap().center().y
+        l.lane_rect(Lane::Motion(0)).unwrap().center().y
     }
 
     #[test]
@@ -999,7 +1040,7 @@ mod tests {
         let (song, _, ids) = song_with_moves();
         for ppf in [0.5f32, 1.0, 2.0, 3.0] {
             let v = view(ppf);
-            let l = layout(&song, &v, rect());
+            let l = layout(&song, &Project::default(), &v, rect());
             let y = motion_y(&l);
             let c = song.motion_clip(&ids[0]).unwrap();
             let (x0, x1) = (l.x_of(c.start_frame as f64), l.x_of(c.end_frame() as f64));
@@ -1008,14 +1049,14 @@ mod tests {
             assert_eq!(hit(&l, pos2(x1 - 1.0, y)), Hit::ClipEnd { id: ids[0].clone() }, "end at {ppf}");
             // The gap before the first clip.
             let gap = hit(&l, pos2(l.x_of(40.0), y));
-            assert_eq!(gap, Hit::Empty { lane: Some(Lane::Motion), frame: 40 }, "gap at {ppf}");
+            assert_eq!(gap, Hit::Empty { lane: Some(Lane::Motion(0)), frame: 40 }, "gap at {ppf}");
             // Ruler and marker.
             assert_eq!(hit(&l, pos2(l.x_of(60.0), 10.0)), Hit::Ruler { frame: 60 });
             let my = l.lane_rect(Lane::Markers).unwrap().center().y;
             assert!(matches!(hit(&l, pos2(l.x_of(250.0) + 2.0, my)), Hit::Marker { .. }), "marker at {ppf}");
             // Header column and outside.
-            assert_eq!(hit(&l, pos2(60.0, y)), Hit::Header { lane: Lane::Motion });
-            assert_eq!(hit(&l, pos2(10.0, y)), Hit::Twirl);
+            assert_eq!(hit(&l, pos2(60.0, y)), Hit::Header { lane: Lane::Motion(0) });
+            assert_eq!(hit(&l, pos2(10.0, y)), Hit::Twirl(0));
             assert_eq!(hit(&l, pos2(-5.0, y)), Hit::Outside);
         }
     }
@@ -1023,14 +1064,14 @@ mod tests {
     #[test]
     fn narrow_clips_keep_a_body_and_scroll_shifts_everything() {
         let (song, _, ids) = song_with_moves();
-        let v = View { px_per_frame: 0.1, scroll: 0.0, motion_open: false };
-        let l = layout(&song, &v, rect());
+        let v = View { px_per_frame: 0.1, scroll: 0.0, open: 0 };
+        let l = layout(&song, &Project::default(), &v, rect());
         let c = l.clip(&ids[1]).unwrap().clone();
         assert!(c.rect.width() < 21.0);
         assert_eq!(hit(&l, c.rect.center()), Hit::ClipBody { id: ids[1].clone() });
 
-        let v2 = View { px_per_frame: 2.0, scroll: 300.0, motion_open: false };
-        let l2 = layout(&song, &v2, rect());
+        let v2 = View { px_per_frame: 2.0, scroll: 300.0, open: 0 };
+        let l2 = layout(&song, &Project::default(), &v2, rect());
         assert_eq!(l2.x_of(300.0), l2.body.left());
         assert!((l2.frame_at(l2.body.left() + 200.0) - 400.0).abs() < 1e-6);
         let c2 = l2.clip(&ids[1]).unwrap();
@@ -1041,13 +1082,15 @@ mod tests {
     fn open_twirl_adds_axis_lanes_with_keys() {
         let (mut song, project, ids) = song_with_moves();
         song = edit::convert_to_keys(&song, &project, &ids[0]).unwrap();
-        let v = View { px_per_frame: 1.0, scroll: 0.0, motion_open: true };
-        let l = layout(&song, &v, rect());
+        let v = View { px_per_frame: 1.0, scroll: 0.0, open: 1 };
+        let l = layout(&song, &Project::default(), &v, rect());
         assert_eq!(l.lanes.len(), 9);
         assert_eq!(l.keys.len(), 10, "two keys on each of five axes");
         let k = l.keys.iter().find(|k| k.axis == Axis::Pan && k.index == 0).unwrap();
         assert_eq!(hit(&l, k.pos), Hit::Key { clip: ids[0].clone(), axis: Axis::Pan, index: 0 });
-        assert!((Layout::content_height(&v) - (RULER_H + 22.0 + 62.0 + 56.0 + 46.0 + 150.0)).abs() < 1e-3);
+        assert!(
+            (Layout::content_height(&song, &Project::default(), &v) - (RULER_H + 22.0 + 62.0 + 56.0 + 46.0 + 150.0)).abs() < 1e-3
+        );
     }
 
     /// The headless driver: the same press, drag and release the window sends.
@@ -1067,7 +1110,7 @@ mod tests {
         }
 
         fn layout(&self) -> Layout {
-            layout(&self.song, &self.t.view, rect())
+            layout(&self.song, &self.project, &self.t.view, rect())
         }
 
         fn take(&mut self, o: Outcome) {
@@ -1146,7 +1189,7 @@ mod tests {
         let audio_y = l.lane_rect(Lane::Audio).unwrap().center().y;
         let doc = Doc { song: &d.song, project: &d.project, playhead: 0.0 };
         let g = d.t.preset_ghost(&l, &doc, &p[0], pos2(l.x_of(940.0), audio_y), Mods::default()).unwrap();
-        assert_eq!((g.lane, g.start), (Lane::Motion, 940));
+        assert_eq!((g.lane, g.start), (Lane::Motion(0), 940));
         assert!(
             d.t.preset_ghost(&l, &doc, &p[0], pos2(l.body.left() - 20.0, y), Mods::default()).is_none(),
             "not over the lane names"
@@ -1268,7 +1311,7 @@ mod tests {
         assert_eq!(d.t.selection.iter().cloned().collect::<Vec<_>>(), vec![ids[0].clone()]);
 
         // Marquee over empty lane space selects what it touches.
-        let below = l.lane_rect(Lane::Motion).unwrap();
+        let below = l.lane_rect(Lane::Motion(0)).unwrap();
         d.drag(pos2(l.x_of(380.0), below.top() + 2.0), pos2(l.x_of(900.0), below.bottom() - 2.0), Mods::default());
         assert_eq!(d.t.selection, [ids[1].clone(), ids[2].clone()].into_iter().collect());
         assert!(d.undo.is_empty(), "selecting is not an edit");
@@ -1304,7 +1347,7 @@ mod tests {
 
     #[test]
     fn zoom_keeps_the_frame_under_the_pointer_and_ticks_adapt() {
-        let mut v = View { px_per_frame: 1.0, scroll: 100.0, motion_open: false };
+        let mut v = View { px_per_frame: 1.0, scroll: 100.0, open: 0 };
         let before = v.scroll + 300.0 / v.px_per_frame as f64;
         v.zoom_around(2.5, 300.0);
         let after = v.scroll + 300.0 / v.px_per_frame as f64;

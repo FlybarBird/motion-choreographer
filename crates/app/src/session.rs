@@ -222,8 +222,6 @@ impl Session {
     pub fn select_camera(&mut self, id: &str) {
         if self.project.camera(id).is_some() && self.active_camera != id {
             self.active_camera = id.to_string();
-            // Record follows the selection until a pass is running.
-            self.timeline.key_selection.clear();
         }
     }
 
@@ -530,6 +528,15 @@ impl Session {
         }
     }
 
+    /// The camera Record writes: the one a pass is capturing, else the selected one.
+    pub fn record_camera_shown(&self) -> &str {
+        if self.status.transport.record && self.project.camera(&self.status.record.camera).is_some() {
+            &self.status.record.camera
+        } else {
+            self.cam_id()
+        }
+    }
+
     pub fn toggle_record_axis(&mut self, axis: ptz_core::Axis) {
         if self.status.transport.record {
             self.toast("Turn Record off to change which axes it writes", true);
@@ -545,7 +552,7 @@ impl Session {
 
     pub fn act(&mut self, action: Action) {
         if action == Action::RecordOn && self.record_axes.is_empty() {
-            self.timeline.view.motion_open = true;
+            self.timeline.view.set_open(self.cam_index(), true);
             self.toast("Record-enable an axis first: click the red dot on an axis lane", true);
             return;
         }

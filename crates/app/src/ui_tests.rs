@@ -35,8 +35,28 @@ pub struct Rig {
 }
 
 pub fn rig(song: Song) -> Rig {
+    rig_with(Project::default(), presets(), song)
+}
+
+/// Three cameras: the first has the three usual presets, the second one of its own, the third none.
+pub fn three_cameras() -> (Project, Vec<Preset>) {
+    let mut project = Project::default();
+    project.cameras[0].name = "Stage left".into();
+    for (id, name, x) in [("cam2", "Centre", 4.0), ("cam3", "Balcony", 8.0)] {
+        let mut camera = ptz_core::CameraConfig::new(id, name);
+        camera.mount.x = x;
+        project.cameras.push(camera);
+    }
+    let mut all = presets();
+    let mut drums = Preset::new("drums", "Drums", Pose { pan: 12.0, tilt: -3.0, zoom: 0.4, focus: 0.5, elevation: 200.0 });
+    drums.camera = "cam2".into();
+    all.push(drums);
+    (project, all)
+}
+
+pub fn rig_with(project: Project, presets: Vec<Preset>, song: Song) -> Rig {
     let (link, cmds, events) = Link::detached();
-    let session = Session::offline(link, Project::default(), presets(), song);
+    let session = Session::offline(link, project, presets, song);
     let shell = Shell::new(session, None);
     let mut themed = false;
     let harness = Harness::builder().with_size(vec2(1500.0, 920.0)).build_ui_state(
@@ -61,7 +81,7 @@ impl Rig {
 
     fn layout(&self) -> timeline::Layout {
         let s = &self.harness.state().session;
-        timeline::layout(self.song(), &s.timeline.view, s.probe_timeline.expect("the timeline was drawn"))
+        timeline::layout(self.song(), &s.project, &s.timeline.view, s.probe_timeline.expect("the timeline was drawn"))
     }
 
     fn lane_point(&self, lane: Lane, frame: f64) -> Pos2 {
@@ -100,7 +120,7 @@ fn dragging_a_preset_from_the_browser_drops_a_move_on_the_timeline() {
     assert!(r.song().motion.is_empty());
 
     let from = r.preset_point("lectern");
-    let to = r.lane_point(Lane::Motion, 200.0);
+    let to = r.lane_point(Lane::Motion(0), 200.0);
     r.drag(from, to);
 
     let song = r.song().clone();
@@ -123,7 +143,7 @@ fn dragging_a_preset_from_the_browser_drops_a_move_on_the_timeline() {
 
     // A second preset dropped later links from the first.
     let from = r.preset_point("awards");
-    let to = r.lane_point(Lane::Motion, 700.0);
+    let to = r.lane_point(Lane::Motion(0), 700.0);
     r.drag(from, to);
     assert_eq!(r.song().motion.len(), 2);
     let label = timeline::move_label(r.song(), &r.song().motion[1].id, &Project::default());
@@ -140,7 +160,7 @@ fn dragging_the_end_of_a_move_makes_it_longer_with_custom_time() {
     let before = r.song().motion_clip(&id).unwrap().clone();
 
     let l = r.layout();
-    let y = l.lane_rect(Lane::Motion).unwrap().center().y;
+    let y = l.lane_rect(Lane::Motion(0)).unwrap().center().y;
     let from = pos2(l.x_of(before.end_frame() as f64) - 2.0, y);
     let to = pos2(l.x_of(before.end_frame() as f64 + 150.0) - 2.0, y);
     r.drag(from, to);
@@ -189,7 +209,7 @@ fn squeezing_a_move_warns_and_the_inspector_button_clears_it() {
     let before = r.song().motion_clip(&id).unwrap().clone();
 
     let l = r.layout();
-    let y = l.lane_rect(Lane::Motion).unwrap().center().y;
+    let y = l.lane_rect(Lane::Motion(0)).unwrap().center().y;
     let from = pos2(l.x_of(before.end_frame() as f64) - 2.0, y);
     let to = pos2(l.x_of(before.start_frame as f64 + 12.0) - 2.0, y);
     r.drag(from, to);
@@ -562,11 +582,11 @@ fn the_rig_pad_sends_velocity_while_held_and_stops_on_release() {
 fn record_dots_on_the_axis_lanes_choose_what_record_writes_and_k_keys_the_selected_lanes() {
     use egui_kittest::kittest::Queryable as _;
     let mut r = rig(Song::new("s", "Test Song", "01:00:00:00", 1500));
-    r.harness.state_mut().session.timeline.view.motion_open = true;
+    r.harness.state_mut().session.timeline.view.set_open(0, true);
     r.harness.run_steps(3);
     assert_eq!(r.harness.state().session.record_axes, vec![Axis::Pan, Axis::Tilt]);
 
-    let dot = |r: &Rig, axis: Axis| crate::timeline_ui::record_dot(&r.layout(), axis).expect("the axis lane is open");
+    let dot = |r: &Rig, axis: Axis| crate::timeline_ui::record_dot(&r.layout(), 0, axis).expect("the axis lane is open");
     let at = dot(&r, Axis::Zoom);
     r.click(at);
     let at = dot(&r, Axis::Pan);
@@ -602,7 +622,7 @@ fn record_dots_on_the_axis_lanes_choose_what_record_writes_and_k_keys_the_select
 
     // Clicking a lane's name selects it for K; K keys only that lane.
     let l = r.layout();
-    let name = pos2(l.rect.left() + 60.0, l.lane_rect(Lane::Axis(Axis::Tilt)).unwrap().center().y);
+    let name = pos2(l.rect.left() + 60.0, l.lane_rect(Lane::Axis(0, Axis::Tilt)).unwrap().center().y);
     r.click(name);
     assert_eq!(r.harness.state().session.axis_lanes.iter().copied().collect::<Vec<_>>(), vec![Axis::Tilt]);
     r.harness.key_press(egui::Key::K);
@@ -1042,4 +1062,169 @@ impl Rig {
         let s = &self.harness.state().session;
         s.compiled.blocking_count(s.song.as_ref().unwrap())
     }
+}
+
+#[test]
+fn the_camera_bar_and_the_number_keys_select_a_camera_and_presets_store_sync_and_record_follow() {
+    use egui_kittest::kittest::Queryable as _;
+    let (project, presets) = three_cameras();
+    let mut r = rig_with(project, presets, Song::new("s", "Test Song", "01:00:00:00", 1500));
+    let shown = |r: &Rig| -> Vec<String> { r.harness.state().session.probe_presets.iter().map(|p| p.0.clone()).collect() };
+    assert_eq!(r.harness.state().session.cam_id(), "cam1");
+    assert_eq!(shown(&r), vec!["wide", "lectern", "awards"]);
+
+    r.press("2 Centre");
+    assert_eq!(r.harness.state().session.cam_id(), "cam2");
+    assert_eq!(shown(&r), vec!["drums"], "only the selected camera's presets are offered");
+
+    r.harness.key_press(egui::Key::Num3);
+    r.harness.run_steps(3);
+    assert_eq!(r.harness.state().session.cam_id(), "cam3");
+    r.harness.get_by_label("No presets yet for Balcony.");
+    r.harness.key_press(egui::Key::Num7);
+    r.harness.run_steps(3);
+    assert_eq!(r.harness.state().session.cam_id(), "cam3", "a key past the last camera does nothing");
+
+    // Store, sync and Record all act on the selected camera.
+    let _ = r.cmds.try_iter().count();
+    r.press("Store current pose");
+    r.press("Sync from rig");
+    r.press("Record");
+    let cmds: Vec<Cmd> = r.cmds.try_iter().collect();
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::StorePreset(p) if p.camera.as_deref() == Some("cam3") && p.name == "Preset 1")));
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::SyncPresets(camera) if camera == "cam3")));
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::Act(Action::RecordOn, req) if req.camera.as_deref() == Some("cam3"))));
+
+    // The monitor follows too: the selected camera's pose at the playhead, not the first camera's.
+    {
+        let s = &mut r.harness.state_mut().session;
+        let drums = s.presets.iter().find(|p| p.id == "drums").unwrap().clone();
+        let (song, _) = ptz_core::edit::insert_preset_move(s.song.as_ref().unwrap(), &s.project, &drums, 0).unwrap();
+        s.commit_edit(song);
+        s.seek(1400);
+    }
+    r.harness.run_steps(3);
+    let s = &r.harness.state().session;
+    assert_eq!(s.monitor_pose().0, Pose::home(), "the balcony camera has no moves");
+    assert_eq!(s.camera_pose("cam2").0.pan, 12.0);
+
+    // A camera's state is on its chip: a held camera says so, and why is in its hover text.
+    {
+        let s = &mut r.harness.state_mut().session;
+        s.status.cameras[1].fault = Some("FR7: no answer for 600 ms".into());
+        s.status.cameras[1].held = true;
+    }
+    r.harness.run_steps(3);
+    r.harness.get_by_label("held");
+}
+
+#[test]
+fn each_camera_has_its_own_lane_and_a_move_dragged_to_another_lane_changes_camera() {
+    let (project, presets) = three_cameras();
+    let mut r = rig_with(project, presets, Song::new("s", "Test Song", "01:00:00:00", 1500));
+    let l = r.layout();
+    assert_eq!(l.lanes.len(), 6, "markers, video, audio and one lane per camera");
+    assert!(l.lane_rect(Lane::Missing).is_none());
+
+    // A preset lands on its own camera's lane wherever it is let go.
+    r.press("2 Centre");
+    let from = r.preset_point("drums");
+    let to = r.lane_point(Lane::Motion(0), 300.0);
+    r.drag(from, to);
+    let clip = r.song().motion[0].clone();
+    assert_eq!(clip.camera, "cam2");
+    assert_eq!(r.layout().clip(&clip.id).unwrap().lane, Lane::Motion(1));
+
+    // Dragged down a lane it becomes the third camera's move, at the time it was dropped.
+    let from = r.layout().clip(&clip.id).unwrap().rect.center();
+    let to = pos2(from.x + r.layout().px_per_frame * 100.0, r.layout().lane_rect(Lane::Motion(2)).unwrap().center().y);
+    r.drag(from, to);
+    let moved = r.song().motion_clip(&clip.id).unwrap().clone();
+    assert_eq!(moved.camera, "cam3");
+    assert!((moved.start_frame - clip.start_frame - 100).abs() <= 2, "{}", moved.start_frame);
+    assert_eq!(r.harness.state().session.undo.len(), 2, "one undo step for the drop and one for the drag");
+    assert_eq!(r.harness.state().session.cam_id(), "cam2", "touching the move selected the camera it belonged to");
+
+    // Twirling a camera open shows that camera's five axis lanes only.
+    let twirl = r.layout().twirl(2).unwrap().center();
+    r.click(twirl);
+    let l = r.layout();
+    assert_eq!(l.lanes.len(), 11);
+    assert!(l.lane_rect(Lane::Axis(2, Axis::Pan)).is_some() && l.lane_rect(Lane::Axis(0, Axis::Pan)).is_none());
+
+    // Clicking a camera's lane header selects it.
+    let header = pos2(l.rect.left() + 70.0, l.lane_rect(Lane::Motion(0)).unwrap().center().y);
+    r.click(header);
+    assert_eq!(r.harness.state().session.cam_id(), "cam1");
+
+    // A move whose camera has left the project is kept on a lane of its own and blocks Arm.
+    {
+        let s = &mut r.harness.state_mut().session;
+        let mut project = s.project.clone();
+        project.cameras.remove(2);
+        s.put_project(project);
+    }
+    r.harness.run_steps(3);
+    let l = r.layout();
+    assert_eq!(l.clip(&clip.id).unwrap().lane, Lane::Missing);
+    assert_eq!(r.blocking(), 1);
+}
+
+#[test]
+fn cameras_are_added_named_and_removed_in_the_inspector_up_to_twelve() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut r = rig(Song::new("s", "Test Song", "01:00:00:00", 1500));
+    let projects = |r: &Rig| -> Vec<Project> {
+        r.cmds.try_iter().filter_map(|c| if let Cmd::PutProject(p) = c { Some(*p) } else { None }).collect()
+    };
+    r.harness.state_mut().show_tab(Tab::Inspector);
+    r.harness.run_steps(3);
+    r.harness.get_by_label("1 of 12 cameras. Keys 1 to 9, 0, - and = select them.");
+
+    r.press("Add a camera");
+    let sent = projects(&r).pop().expect("the project was sent");
+    assert_eq!(sent.cameras.len(), 2);
+    let (first, second) = (&sent.cameras[0], &sent.cameras[1]);
+    assert_eq!((second.id.as_str(), second.name.as_str()), ("cam2", "Camera 2"));
+    assert_eq!(second.axes, first.axes, "it starts with the selected camera's limits");
+    assert_eq!(second.rig.kind, ptz_core::pose::RigKind::Simulator);
+    assert_eq!((second.mount.x - first.mount.x, second.mount.y), (2.0, first.mount.y), "two metres to its right");
+    assert_eq!(r.harness.state().session.cam_id(), "cam2", "the new camera is selected");
+    sent.validate().unwrap();
+
+    // Removing a camera that has presets asks first, and says how many go with it.
+    r.press("1 Camera 1");
+    r.press("Remove camera");
+    assert!(projects(&r).is_empty(), "nothing is removed on the first press");
+    r.press("Remove it and its 3 presets");
+    let sent = projects(&r).pop().expect("the project was sent");
+    assert_eq!(sent.cameras.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), vec!["cam2"]);
+    assert_eq!(r.harness.state().session.cam_id(), "cam2");
+
+    // Twelve is the most, and the last one cannot be removed.
+    {
+        let s = &mut r.harness.state_mut().session;
+        let mut project = s.project.clone();
+        while project.cameras.len() < 12 {
+            let id = project.free_camera_id();
+            let name = format!("Camera {}", project.cameras.len() + 1);
+            project.cameras.push(ptz_core::CameraConfig::new(&id, &name));
+        }
+        project.validate().unwrap();
+        s.put_project(project);
+    }
+    r.harness.run_steps(3);
+    let _ = projects(&r);
+    r.harness.get_by_label("12 of 12 cameras. Keys 1 to 9, 0, - and = select them.");
+    r.press("Add a camera");
+    assert!(projects(&r).is_empty(), "a thirteenth camera is not offered");
+    r.harness.key_press(egui::Key::Equals);
+    r.harness.run_steps(3);
+    assert_eq!(r.harness.state().session.cam_index(), 11, "= selects camera 12");
+
+    // While armed the camera list is fixed.
+    r.harness.state_mut().session.status.transport.output = Output::Armed;
+    r.harness.run_steps(3);
+    r.press("Remove camera");
+    assert!(projects(&r).is_empty());
 }

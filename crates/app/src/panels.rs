@@ -220,6 +220,29 @@ fn inspect_move(ui: &mut Ui, s: &mut Session, id: &str) {
     let fps = s.project.rate.fps();
     ui.label(RichText::new(crate::timeline::move_label(&song, id, &s.project)).strong().size(14.0));
     let issues: Vec<Issue> = s.issues_for(id).into_iter().cloned().collect();
+    let missing = s.project.camera(&clip.camera).is_none();
+    if s.project.cameras.len() > 1 || missing {
+        ui.horizontal(|ui| {
+            ui.label("Camera");
+            let shown = s.project.label(&clip.camera);
+            egui::ComboBox::from_id_salt("move_camera")
+                .selected_text(shown)
+                .width(190.0)
+                .show_ui(ui, |ui| {
+                    for camera in s.project.cameras.clone() {
+                        let label = s.project.label(&camera.id);
+                        if ui.selectable_label(camera.id == clip.camera, label).clicked() && camera.id != clip.camera {
+                            let ids = [id.to_string()];
+                            s.edit(|song, project| edit::set_camera(song, project, &ids, &camera.id));
+                            s.select_camera(&camera.id);
+                        }
+                    }
+                })
+                .response
+                .on_hover_text("The camera that makes this move. Dragging the move to another camera's lane does the same");
+        });
+    }
+    let presets: Vec<Preset> = s.presets.iter().filter(|p| p.camera == clip.camera).cloned().collect();
 
     if !issues.is_empty() {
         section(ui, "Issues");
@@ -268,7 +291,7 @@ fn inspect_move(ui: &mut Ui, s: &mut Session, id: &str) {
                     if ui.selectable_label(from.is_linked(), "Where the camera already is").clicked() {
                         s.edit(|song, project| edit::set_from(song, project, id, FromPose::linked()));
                     }
-                    for p in s.presets.clone() {
+                    for p in presets.clone() {
                         let on = matches!(from, FromPose::Pinned(r) if r.preset_id == p.id);
                         if ui.selectable_label(on, &p.name).clicked() {
                             s.edit(|song, project| edit::set_from(song, project, id, FromPose::Pinned(PresetRef::of(&p))));
@@ -279,7 +302,7 @@ fn inspect_move(ui: &mut Ui, s: &mut Session, id: &str) {
 
                 ui.label("To");
                 egui::ComboBox::from_id_salt("to").selected_text(to.name.clone()).width(190.0).show_ui(ui, |ui| {
-                    for p in s.presets.clone() {
+                    for p in presets.clone() {
                         if ui.selectable_label(to.preset_id == p.id, &p.name).clicked() {
                             s.edit(|song, project| edit::set_to(song, project, id, &p));
                         }
@@ -697,9 +720,47 @@ pub fn inspector(ui: &mut Ui, s: &mut Session) {
 
 // -------------------------------------------------------------------- Log
 
-fn log_line(kind: &str, data: &serde_json::Value) -> String {
+/// A log record in words. With several cameras, a record about one of them starts with its number and name.
+fn log_line(project: &ptz_core::Project, kind: &str, data: &serde_json::Value) -> String {
+    let line = log_text(kind, data);
+    match data.get("camera").and_then(|v| v.as_str()) {
+        Some(camera) if project.cameras.len() > 1 => format!("{}: {line}", project.label(camera)),
+        _ => line,
+    }
+}
+
+fn log_text(kind: &str, data: &serde_json::Value) -> String {
     let text = |k: &str| data.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
     match kind {
+        "camera_held" => {
+            let rest = data.get("still_running").and_then(|v| v.as_u64()).unwrap_or(0);
+            match rest {
+                0 => "held where it stopped".to_string(),
+                1 => "held where it stopped; 1 other camera carries on".to_string(),
+                n => format!("held where it stopped; {n} other cameras carry on"),
+            }
+        }
+        "cameras_changed" => {
+            let names = |k: &str| -> Vec<String> {
+                data.get(k)
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                    .unwrap_or_default()
+            };
+            let (added, removed) = (names("added"), names("removed"));
+            let mut parts = Vec::new();
+            if !added.is_empty() {
+                parts.push(format!("added {}", added.join(", ")));
+            }
+            if !removed.is_empty() {
+                parts.push(format!("removed {}", removed.join(", ")));
+            }
+            if parts.is_empty() {
+                parts.push("reordered".to_string());
+            }
+            let count = data.get("cameras").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+            format!("{}; the show has {count}", parts.join(", "))
+        }
         "transport" => {
             let action = text("action");
             let by = text("by");
@@ -791,14 +852,14 @@ pub fn log(ui: &mut Ui, s: &mut Session) {
                     ui.label(RichText::new(format!("{:>5}", r.seq)).monospace().color(MUTED));
                     ui.label(RichText::new(time).monospace().color(MUTED));
                     let color = match r.kind.as_str() {
-                        "estop" | "fault" | "estop_halted" | "estop_still_moving" => RED,
+                        "estop" | "fault" | "camera_held" | "estop_halted" | "estop_still_moving" => RED,
                         "limit" | "lease" | "refused" | "issue_accepted" | "acceptance_withdrawn" => AMBER,
                         "arm" => GREEN,
                         "transport" => OFF_WHITE,
                         _ => BLUE,
                     };
                     ui.label(RichText::new(format!("{:<13}", r.kind)).monospace().color(color));
-                    ui.label(RichText::new(log_line(&r.kind, &r.data)).monospace());
+                    ui.label(RichText::new(log_line(&s.project, &r.kind, &r.data)).monospace());
                 });
             }
         },

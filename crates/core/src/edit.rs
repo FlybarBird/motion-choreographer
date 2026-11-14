@@ -140,8 +140,16 @@ pub fn move_clip(song: &Song, project: &Project, id: &str, new_start: i64) -> Ed
 
 /// Move several clips and markers by the same number of frames.
 pub fn move_clips(song: &Song, project: &Project, ids: &[String], delta: i64) -> Edit {
+    move_clips_to(song, project, ids, delta, None)
+}
+
+/// Move clips in time and, in the same step, hand the moves among them to another camera.
+pub fn move_clips_to(song: &Song, project: &Project, ids: &[String], delta: i64, camera: Option<&str>) -> Edit {
     if ids.is_empty() {
         return Err(Refusal::Empty);
+    }
+    if camera.is_some_and(|c| project.camera(c).is_none()) {
+        return Err(Refusal::NoSuchCamera);
     }
     let mut next = song.clone();
     let has = |id: &String| ids.contains(id);
@@ -159,6 +167,9 @@ pub fn move_clips(song: &Song, project: &Project, ids: &[String], delta: i64) ->
     for c in next.motion.iter_mut().filter(|c| has(&c.id)) {
         c.start_frame += delta;
         c.accepted = None;
+        if let Some(camera) = camera {
+            c.camera = camera.to_string();
+        }
         end = end.max(c.end_frame());
     }
     for c in next.media.iter_mut().filter(|c| has(&c.id)) {
@@ -1192,5 +1203,22 @@ mod tests {
         // Copies stay on their camera.
         let (copied, ids) = duplicate(&song, &p, std::slice::from_ref(&b)).unwrap();
         assert_eq!(copied.motion_clip(&ids[0]).unwrap().camera, "cam2");
+    }
+
+    #[test]
+    fn a_move_can_change_time_and_camera_in_one_step_where_either_alone_would_collide() {
+        let (song, p) = two_cameras();
+        let (song, a) = insert_preset_move(&song, &p, &preset("A", 60.0, 400.0), 100).unwrap();
+        let (song, b) = insert_preset_move(&song, &p, &preset_on("cam2", "B", 10.0), 100).unwrap();
+        let (song, c) = insert_preset_move(&song, &p, &preset("C", -20.0, 400.0), 600).unwrap();
+        // On camera 2 now it would sit on B; at frame 600 on its own camera it would sit on C.
+        assert!(set_camera(&song, &p, std::slice::from_ref(&a), "cam2").is_err());
+        assert!(move_clips(&song, &p, std::slice::from_ref(&a), 500).is_err());
+        let moved = move_clips_to(&song, &p, std::slice::from_ref(&a), 500, Some("cam2")).unwrap();
+        let clip = moved.motion_clip(&a).unwrap();
+        assert_eq!((clip.start_frame, clip.camera.as_str()), (600, "cam2"));
+        assert_eq!(moved.motion_clip(&b).unwrap().camera, "cam2");
+        assert_eq!(moved.motion_clip(&c).unwrap().camera, CAM);
+        assert_eq!(move_clips_to(&song, &p, &[a], 0, Some("cam9")).unwrap_err(), Refusal::NoSuchCamera);
     }
 }
