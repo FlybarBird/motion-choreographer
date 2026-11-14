@@ -133,8 +133,54 @@ impl Settings {
 /// Arm is never a quiet switch: the rig travels to the pose at the playhead before anything plays.
 pub const ARM_LABEL: &str = "Arm (moves rig to playhead)";
 
+/// Every dialog the window can open. Each one is modal: the rest of the window is dimmed and takes no
+/// click while it is open. E-STOP alone is kept above them all (see [`e_stop`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Prompt {
+    NewSong,
+    LoadSong,
+    SaveAs,
+    Revert,
+    DeleteSong,
+    SyncPresets,
+    TakeOver,
+    RenameMarker,
+    StampedDrop,
+}
+
+impl Prompt {
+    pub const ALL: [Prompt; 9] = [
+        Prompt::NewSong,
+        Prompt::LoadSong,
+        Prompt::SaveAs,
+        Prompt::Revert,
+        Prompt::DeleteSong,
+        Prompt::SyncPresets,
+        Prompt::TakeOver,
+        Prompt::RenameMarker,
+        Prompt::StampedDrop,
+    ];
+
+    /// The one way a dialog is put on the screen.
+    fn show(self, ctx: &egui::Context, add: impl FnOnce(&mut Ui)) {
+        egui::Modal::new(egui::Id::new(("prompt", self as u8))).show(ctx, add);
+    }
+}
+
+/// Is a dialog open over the window? This is the one place that knows: it asks egui for the modal that
+/// was on the screen when this frame's keys and clicks were made, so it holds for every dialog there is
+/// and for any added later. While it is true the keyboard does nothing to the show and no jog is held.
+pub fn modal_open(ctx: &egui::Context) -> bool {
+    ctx.memory(|m| m.top_modal_layer().is_some())
+}
+
+/// The marker a double-click on the timeline asked to rename, and the name as typed so far.
+pub fn marker_rename_id() -> egui::Id {
+    egui::Id::new("rename_marker")
+}
+
 #[derive(Default)]
-enum Dialog {
+pub(crate) enum Dialog {
     #[default]
     None,
     New {
@@ -156,7 +202,7 @@ enum Dialog {
 pub struct Shell {
     pub session: Session,
     pub dock: DockState<Tab>,
-    dialog: Dialog,
+    pub(crate) dialog: Dialog,
     pub layout_changed: bool,
 }
 
@@ -301,6 +347,34 @@ impl Flow {
         );
         let size = vec2(whole.size().x.min(left), whole.size().y);
         ui.allocate_ui_with_layout(size, Layout::left_to_right(Align::Center), |ui| ui.add(egui::Label::new(text).truncate()));
+    }
+}
+
+/// E-STOP has a layer of its own above every dialog, menu and tip the window can show, over the place kept
+/// for it in the transport bar. Whatever else is open it is drawn whole, in its own colour, and it takes
+/// the click: a dialog stops clicks only on what lies beneath it, and nothing is laid out above this.
+fn e_stop(ui: &mut Ui, s: &mut Session) {
+    let (place, _) = ui.allocate_exact_size(ESTOP_SIZE, egui::Sense::hover());
+    let id = egui::Id::new("e_stop");
+    let ctx = ui.ctx().clone();
+    // The first time a layer is laid out egui only measures it. That pass is done over at once, so that
+    // there is no frame in which the button is not there.
+    if ctx.memory(|m| m.area_rect(id).is_none()) {
+        ctx.request_discard("E-STOP is on show from the first frame");
+    }
+    let pressed = egui::Area::new(id)
+        .order(egui::Order::TOP)
+        .fixed_pos(place.min)
+        .fade_in(false)
+        .sense(egui::Sense::hover())
+        .show(&ctx, |ui| {
+            icon_button(ui, true, icon::WARNING_OCTAGON, "E-STOP", Look::Solid(RED), ESTOP_SIZE)
+                .on_hover_text("Stop all motion now. Works from any station, with or without the lease")
+                .clicked()
+        })
+        .inner;
+    if pressed {
+        s.act(Action::Estop);
     }
 }
 
@@ -528,7 +602,12 @@ impl Shell {
             }
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.menu_button("View", |ui| {
+                let view = ui.button("View");
+                // E-STOP is just beneath and is drawn above everything: the menu opens beside it, not across it.
+                let clear = ui.max_rect().right() - ESTOP_SIZE.x - 6.0;
+                let beside =
+                    egui::Rect::from_x_y_ranges(view.rect.left().min(clear)..=view.rect.right().min(clear), view.rect.y_range());
+                egui::Popup::menu(&view).anchor(beside).align(egui::RectAlign::BOTTOM_END).align_alternatives(&[]).show(|ui| {
                     if ui.button("Reset layout").clicked() {
                         self.dock = default_layout();
                         self.layout_changed = true;
@@ -578,10 +657,7 @@ impl Shell {
                     action_button(ui, s, Action::ResetEstop, reset, "Reset E-Stop", Look::Solid(AMBER), 130.0);
                     chip(ui, "E-STOP LATCHED", RED, true);
                 } else {
-                    let r = icon_button(ui, true, icon::WARNING_OCTAGON, "E-STOP", Look::Solid(RED), ESTOP_SIZE);
-                    if r.on_hover_text("Stop all motion now. Works from any station, with or without the lease").clicked() {
-                        s.act(Action::Estop);
-                    }
+                    e_stop(ui, s);
                 }
                 ui.add_space(4.0);
                 crate::media_ui::meters(ui, s);
@@ -783,7 +859,7 @@ impl Shell {
         match &mut self.dialog {
             Dialog::None => {}
             Dialog::New { name, start_tc } => {
-                egui::Modal::new(egui::Id::new("dlg_new")).show(ctx, |ui| {
+                Prompt::NewSong.show(ctx, |ui| {
                     ui.set_width(340.0);
                     ui.heading("New song");
                     ui.add_space(6.0);
@@ -815,7 +891,7 @@ impl Shell {
                 });
             }
             Dialog::Load => {
-                egui::Modal::new(egui::Id::new("dlg_load")).show(ctx, |ui| {
+                Prompt::LoadSong.show(ctx, |ui| {
                     ui.set_width(520.0);
                     ui.heading("Load a song");
                     ui.add_space(6.0);
@@ -858,7 +934,7 @@ impl Shell {
                 });
             }
             Dialog::SaveAs { name } => {
-                egui::Modal::new(egui::Id::new("dlg_saveas")).show(ctx, |ui| {
+                Prompt::SaveAs.show(ctx, |ui| {
                     ui.set_width(340.0);
                     ui.heading("Save As");
                     ui.label(RichText::new("Makes a copy with its own revisions and opens it.").color(MUTED));
@@ -879,7 +955,7 @@ impl Shell {
                 });
             }
             Dialog::Revert => {
-                egui::Modal::new(egui::Id::new("dlg_revert")).show(ctx, |ui| {
+                Prompt::Revert.show(ctx, |ui| {
                     ui.set_width(360.0);
                     ui.heading("Revert to the last Save?");
                     ui.label("Every change since the last Save is dropped. This cannot be undone.");
@@ -898,7 +974,7 @@ impl Shell {
                 });
             }
             Dialog::DeleteSong { id, name } => {
-                egui::Modal::new(egui::Id::new("dlg_delete")).show(ctx, |ui| {
+                Prompt::DeleteSong.show(ctx, |ui| {
                     ui.set_width(360.0);
                     ui.heading(format!("Delete {name}?"));
                     ui.label("The draft and every committed revision are removed from the server.");
@@ -916,7 +992,7 @@ impl Shell {
             }
         }
         if s.confirm_sync {
-            egui::Modal::new(egui::Id::new("dlg_sync")).show(ctx, |ui| {
+            Prompt::SyncPresets.show(ctx, |ui| {
                 ui.set_width(380.0);
                 ui.heading("Read presets from the camera?");
                 ui.label("The camera is recalled to each of its presets in turn, so that its pose and picture can be read. It will move, at its own speed, through every preset it holds.");
@@ -938,7 +1014,7 @@ impl Shell {
         }
         if s.confirm_takeover {
             let holder = s.status.lease.as_ref().map(|l| l.holder.clone()).unwrap_or_default();
-            egui::Modal::new(egui::Id::new("dlg_takeover")).show(ctx, |ui| {
+            Prompt::TakeOver.show(ctx, |ui| {
                 ui.set_width(380.0);
                 ui.heading(format!("Take the edit lease from {holder}?"));
                 ui.label(format!("{holder} stops being able to edit or run the show at once, and is told this station took over. The song stays as it is."));
@@ -964,11 +1040,11 @@ impl Shell {
         }
 
         // Marker rename, opened by a double-click on the timeline.
-        let rename_id = egui::Id::new("rename_marker");
+        let rename_id = marker_rename_id();
         if let Some((id, mut name)) = ctx.data(|d| d.get_temp::<(String, String)>(rename_id)) {
             let mut done = false;
             let mut apply = false;
-            egui::Modal::new(egui::Id::new("dlg_marker")).show(ctx, |ui| {
+            Prompt::RenameMarker.show(ctx, |ui| {
                 ui.set_width(300.0);
                 ui.heading("Rename marker");
                 let r = ui.add(egui::TextEdit::singleline(&mut name).desired_width(260.0));
@@ -1019,7 +1095,7 @@ impl Shell {
         };
         let mut choice: Option<bool> = None;
         let mut close = false;
-        egui::Modal::new(egui::Id::new("dlg_stamped_drop")).show(ctx, |ui| {
+        Prompt::StampedDrop.show(ctx, |ui| {
             ui.set_width(430.0);
             ui.heading(format!("{} starts at {file_start}", info.name));
             ui.add_space(4.0);

@@ -199,7 +199,7 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
         if let Some(p) = pointer {
             if let Hit::Marker { id } = timeline::hit(&base, p) {
                 let name = song.markers.iter().find(|mk| mk.id == id).map(|mk| mk.name.clone()).unwrap_or_default();
-                ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("rename_marker"), (id, name)));
+                ui.ctx().data_mut(|d| d.insert_temp(crate::app::marker_rename_id(), (id, name)));
             }
         }
     }

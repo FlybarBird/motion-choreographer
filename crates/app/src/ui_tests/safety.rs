@@ -3,6 +3,7 @@
 //! whatever is really under it.
 
 use super::*;
+use crate::app::Prompt;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 
 fn song() -> Song {
@@ -173,5 +174,109 @@ fn e_stop_is_painted_whole_with_and_without_a_fault() {
         let crowded = crowded(window);
         assert_painted_whole(&crowded, &format!("{size} with a fault"));
         shot(&crowded, &format!("{size}-fault"));
+    }
+}
+
+/// Put a dialog on the screen. Every dialog there is has an arm here: a new one does not compile without.
+fn open(r: &mut Rig, prompt: Prompt) {
+    use crate::app::Dialog;
+    let ctx = r.harness.ctx.clone();
+    let shell = r.harness.state_mut();
+    match prompt {
+        Prompt::NewSong => shell.dialog = Dialog::New { name: "Encore".into(), start_tc: "02:00:00:00".into() },
+        Prompt::LoadSong => shell.dialog = Dialog::Load,
+        Prompt::SaveAs => shell.dialog = Dialog::SaveAs { name: "Test Song copy".into() },
+        Prompt::Revert => shell.dialog = Dialog::Revert,
+        Prompt::DeleteSong => shell.dialog = Dialog::DeleteSong { id: "old".into(), name: "Old song".into() },
+        Prompt::SyncPresets => shell.session.confirm_sync = true,
+        Prompt::TakeOver => shell.session.confirm_takeover = true,
+        Prompt::RenameMarker => {
+            ctx.data_mut(|d| d.insert_temp(crate::app::marker_rename_id(), ("m1".to_string(), "Chorus".to_string())));
+        }
+        Prompt::StampedDrop => {
+            shell.session.stamped_drop = Some(crate::session::StampedDrop {
+                media: stamped_media("late", ptz_core::api::MediaKind::Audio, "05:00:00:00"),
+                at_frame: 100,
+            })
+        }
+    }
+    r.harness.run_steps(3);
+    assert!(crate::app::modal_open(&r.harness.ctx), "{prompt:?} is open");
+}
+
+/// Something of each dialog that is on the screen only while it is open.
+fn words_of(prompt: Prompt) -> &'static str {
+    match prompt {
+        Prompt::NewSong => "New song",
+        Prompt::LoadSong => "Load a song",
+        Prompt::SaveAs => "Makes a copy with its own revisions and opens it.",
+        Prompt::Revert => "Revert to the last Save?",
+        Prompt::DeleteSong => "Delete Old song?",
+        Prompt::SyncPresets => "Read presets from the camera?",
+        Prompt::TakeOver => "Take the edit lease from Dana?",
+        Prompt::RenameMarker => "Rename marker",
+        Prompt::StampedDrop => "late.wav starts at 05:00:00:00",
+    }
+}
+
+/// A window with another station on the lease, so that there is somebody to take it over from.
+fn watched(window: egui::Vec2) -> Rig {
+    let mut r = rig_sized(window, Project::default(), presets(), song());
+    let status = &mut r.harness.state_mut().session.status;
+    status.lease = Some(ptz_core::api::LeaseStatus { holder: "Dana".into(), client_id: "dana".into(), expires_in_ms: 5000 });
+    status.you_hold_lease = false;
+    r.harness.run_steps(2);
+    r
+}
+
+#[test]
+fn e_stop_takes_a_click_under_every_dialog() {
+    for window in [SMALLEST_WINDOW, DEFAULT_WINDOW] {
+        for prompt in Prompt::ALL {
+            let mut r = watched(window);
+            open(&mut r, prompt);
+            assert!(r.harness.query_by_label(words_of(prompt)).is_some(), "{prompt:?} is on the screen");
+            assert_painted_whole(&r, &format!("{window:?} under {prompt:?}"));
+            shot(&r, &format!("{}x{}-under-{prompt:?}", window.x, window.y));
+            assert_whole(&mut r, window, "E-STOP", Action::Estop);
+            assert!(r.harness.query_by_label(words_of(prompt)).is_some(), "{prompt:?} stays open through an E-Stop");
+        }
+    }
+}
+
+/// Dialogs are put up in one way, which is what the walk through [`Prompt::ALL`] relies on.
+#[test]
+fn every_dialog_is_one_of_the_prompts() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut made = vec![];
+    for entry in std::fs::read_dir(&src).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|e| e == "rs") {
+            let text = std::fs::read_to_string(&path).unwrap();
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            made.extend(text.lines().filter(|l| l.contains("Modal::new(")).map(|l| format!("{name}: {}", l.trim())));
+        }
+    }
+    assert_eq!(made.len(), 1, "only Prompt::show makes a modal: {made:#?}");
+    assert!(made[0].starts_with("app.rs:"), "{made:#?}");
+}
+
+/// E-STOP is drawn over anything that opens across it, so the one menu beside it opens to its side.
+#[test]
+fn the_view_menu_opens_clear_of_e_stop() {
+    for window in [SMALLEST_WINDOW, DEFAULT_WINDOW] {
+        let mut r = rig_sized(window, Project::default(), presets(), song());
+        let view = rect_of(&r, "View").center();
+        r.click(view);
+        let stop = rect_of(&r, "E-STOP");
+        for item in ["Reset layout", "Fit timeline"] {
+            let at = rect_of(&r, item);
+            assert!(!at.intersects(stop.expand(2.0)), "{window:?}: {item} at {at:?} is clear of E-STOP at {stop:?}");
+        }
+        shot(&r, &format!("{}x{}-view-menu", window.x, window.y));
+        let item = rect_of(&r, "Fit timeline").center();
+        r.click(item);
+        assert!(r.harness.query_by_label("Fit timeline").is_none(), "{window:?}: the menu closes when an item is chosen");
+        assert_whole(&mut r, window, "E-STOP", Action::Estop);
     }
 }
