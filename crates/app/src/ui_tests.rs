@@ -999,7 +999,7 @@ fn rig_settings_switch_to_hardware_and_take_a_height_from_the_leg_box() {
         s.project.rig.kind = ptz_core::pose::RigKind::Hardware;
         s.project.rig.autopod_host = "10.0.0.31".into();
         s.status.adapters = vec![ptz_core::api::AdapterStatus {
-            name: "AutoPod".into(),
+            name: "AutoPod+".into(),
             connected: true,
             detail: "10.0.0.31:80 answers in 3.0 ms".into(),
             calibrated: Some(true),

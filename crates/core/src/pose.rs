@@ -149,7 +149,7 @@ impl AxisTable {
 
 impl Default for AxisTable {
     /// FR7 pan/tilt range and top speed from Sony's command list (upright
-    /// mounting). Elevation defaults to a single AutoPod column.
+    /// mounting). Elevation defaults to a single AutoPod+ column.
     fn default() -> Self {
         AxisTable {
             pan: AxisLimits { min: -170.0, max: 170.0, max_speed: 60.0, max_accel: 240.0, settle_s: 0.2 },
@@ -269,7 +269,7 @@ pub enum RigKind {
     Hardware,
 }
 
-/// One measured point of the AutoPod calibration map.
+/// One measured point of the AutoPod+ calibration map.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
 pub struct CalPoint {
     pub raw: f64,
@@ -301,7 +301,7 @@ pub struct RigConfig {
     /// Age of a position reading when it arrives, in milliseconds. Zero uses the
     /// round trip the adapter measures as it runs.
     pub query_delay_ms: f64,
-    /// `host` or `host:port` of the AutoPod Plus leg box. Empty means no pedestal.
+    /// `host` or `host:port` of the AutoPod+ leg box. Empty means no pedestal.
     pub autopod_host: String,
     pub autopod_calibration: Vec<CalPoint>,
     /// Allowed position error per axis before a tracking fault, in axis units.

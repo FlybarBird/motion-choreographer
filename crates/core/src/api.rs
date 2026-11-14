@@ -92,10 +92,10 @@ pub struct AdapterStatus {
     pub name: String,
     pub connected: bool,
     pub detail: String,
-    /// AutoPod only.
+    /// AutoPod+ only.
     pub calibrated: Option<bool>,
     pub round_trip_ms: Option<f64>,
-    /// AutoPod only: the raw position value, for building the height map.
+    /// AutoPod+ only: the raw position value, for building the height map.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_position: Option<f64>,
 }

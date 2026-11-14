@@ -1,6 +1,6 @@
 # PTZ Programmer
 
-Timeline programming and playout for a Sony FR7 on an AutoPod pedestal.
+Timeline programming and playout for a Sony FR7 on an AutoPod+ pedestal.
 
 You build a song by dragging camera presets onto a timeline. Each move takes its
 time from the distance between the two poses and the rig's speed limits, and you
@@ -237,7 +237,7 @@ Rehearse never sends a motion command to the rig. To move it:
 Arm is refused, with the reason on the button, unless the transport is stopped,
 Record is off, the loaded song is a committed revision with no unsaved edits,
 every timeline issue is fixed (or, for speed and acceleration, accepted with
-**Accept as programmed**), both devices are answering and the AutoPod is
+**Accept as programmed**), both devices are answering and the AutoPod+ is
 calibrated. While armed the song, the presets and the project settings cannot
 be changed.
 
@@ -274,20 +274,20 @@ that only the path to the playhead would break still holds the rig.
 ## The real rig
 
 Under **Rig** in the project settings, **Drives** switches the server between
-the simulator and **FR7 and AutoPod**. It can only be changed while stopped and
+the simulator and **FR7 and AutoPod+**. It can only be changed while stopped and
 disarmed.
 
 | Setting | What it is |
 | --- | --- |
 | FR7 address | VISCA over IP, UDP port 52381 unless given. |
 | Web port, user, password | The camera's web interface, for preset names and pictures. |
-| AutoPod address | The leg box, port 80 unless given. |
+| AutoPod+ address | The leg box, port 80 unless given. |
 | Counts per degree, counts run backwards | How the head reports pan and tilt. |
 | Speed steps | The speed of each of the 24 VISCA steps. Assumed until bring-up measures them. |
 | Plain moves | Send a preset move as one absolute move and let the head run it, instead of steering it. |
 | Query delay | How old a position is when it arrives. |
 | Arm moves at, Tracking fault after, tolerances | As described under Going live. |
-| AutoPod height map | Raw position against measured height, at three heights or more. **Add the current height** takes the raw value from the leg box. |
+| AutoPod+ height map | Raw position against measured height, at three heights or more. **Add the current height** takes the raw value from the leg box. |
 
 **Sync from rig** in the Presets tab reads the camera's presets. On the real rig
 the camera has to be recalled to each one so its pose and picture can be read,
@@ -297,7 +297,7 @@ abandons it.
 To try all of this with no hardware, run stand-ins for both devices:
 
 ```sh
-ptz-bringup fakes      # FR7 on 127.0.0.1:52381 (web 8088, login admin / fr7-password), AutoPod on 127.0.0.1:8089
+ptz-bringup fakes      # FR7 on 127.0.0.1:52381 (web 8088, login admin / fr7-password), AutoPod+ on 127.0.0.1:8089
 ```
 
 and point the rig settings at them. They speak the same bytes as the adapters
@@ -317,7 +317,7 @@ does, and brings the rig back to where it stood:
 
 | Step | What it settles |
 | --- | --- |
-| `connect` | Both devices answer; the web login works; the AutoPod is calibrated. |
+| `connect` | Both devices answer; the web login works; the AutoPod+ names its model and firmware, is switched on and is calibrated. |
 | `moves` | Which way the counts run on each axis, counts per degree, zoom and focus reach a position. |
 | `timing` | How long a position query takes, how fast commands can be sent, the query delay. |
 | `speeds` | The real speed of each VISCA step. |
@@ -337,10 +337,10 @@ is never changed by it.
 
 ### What is assumed until bring-up confirms it
 
-The adapters were written from Sony's published VISCA and CGI documents and the
-community Companion module for the AutoPod, and tested against stand-ins built
-from the same reading. None of it has met the real devices. Each of these is
-measured or shown by a bring-up step and is a setting, not a constant:
+The FR7 adapter was written from Sony's published VISCA and CGI documents and
+tested against a stand-in built from the same reading. It has not met the real
+camera. Each of these is measured or shown by a bring-up step and is a setting,
+not a constant:
 
 - The speed of each VISCA pan and tilt step (assumed: 24 steps spread evenly
   by ratio from 0.02 to 60 degrees per second).
@@ -349,8 +349,23 @@ measured or shown by a bring-up step and is a setting, not a constant:
 - Preset recall as `81 01 04 3F 02 pp FF` with `pp` one less than the preset
   number, and the shape of the web interface's answers (`PresetName=1,Wide,2,Lectern`).
 - The VISCA sequence number after a reset (the link tries 1, then 0).
-- The AutoPod commands `#PTS50tt` (speed), `#APC` (position) and `#RER`
-  (calibrated), and that the speed byte `tt` is linear.
+
+The AutoPod+ adapter follows the exchange recorded between a real hand
+controller (TX v3.30) and leg box (RX v3.49e) in the `autopod-osc-bridge`
+project, and the stand-in answers the way that leg box does:
+
+| Known from those recordings | Still measured on site |
+| --- | --- |
+| A request is `GET /cgi-bin/aw_ptz?cmd=%23APC&res=1 HTTP/1.0` with no headers; the reply is HTTP/1.0, closed after the body. | That the column moves at a speed proportional to the speed byte. |
+| `#APC` answers `aPC` and two four-digit hex fields; elevation is the second. `#RER` answers `rER00` when healthy. | How raw position maps to millimetres (the height map). |
+| `#PTS50tt` answers `pTS50tt`; `tt` runs from 00 (full down) through 50 (rest) to 99 (full up). | Top speed up and down. |
+| `QID` answers `OID:AUTOPOD+`, `#V?` the firmware, `#O` `p1` or `p0` (standby). | How long a stop takes and how far the column travels. |
+| A command the unit does not have answers `ER1:` and the command. `/cgi-bin/get_state` is 404. | |
+
+The server reads the model, firmware and power state when it connects and shows
+them with the adapter ("AutoPod+ V3.49e at 192.168.60.204:80 answers in 3 ms").
+A unit in standby blocks Arm; the show never switches it on by itself. A
+refused command is reported as a refusal, not as a lost connection.
 
 ## The run log
 

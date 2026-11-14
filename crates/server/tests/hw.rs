@@ -1,4 +1,4 @@
-//! The FR7 and AutoPod adapters against the protocol fakes: every byte that
+//! The FR7 and AutoPod+ adapters against the protocol fakes: every byte that
 //! goes on the wire is checked against the published command lists, and the
 //! control loop is checked against a simulated head and column.
 
@@ -172,8 +172,28 @@ fn every_autopod_command_reaches_the_leg_box_as_the_published_text() {
     link.velocity(1.0).unwrap();
     link.velocity(-0.5).unwrap();
     link.stop().unwrap();
-    assert_eq!(fake.seen(), vec!["#RER", "#APC", "#PTS5099", "#PTS5026", "#PTS5050"]);
+    link.velocity(-1.0).unwrap();
+    link.stop().unwrap();
+    assert_eq!(fake.seen(), vec!["#RER", "#APC", "#PTS5099", "#PTS5025", "#PTS5050", "#PTS5000", "#PTS5050"]);
     assert!(!fake.is_moving());
+
+    // What the unit says about itself, asked the way the TX asks.
+    fake.clear_seen();
+    let identity = link.identity().unwrap();
+    assert_eq!(identity.label(), "AutoPod+ V3.49e");
+    assert_eq!(link.power().unwrap(), Some(true));
+    assert_eq!(fake.seen(), vec!["QID", "#V?", "#O"]);
+    fake.set_identity("AW-UE150", "V1.2");
+    assert_eq!(link.identity().unwrap().label(), "AW-UE150 (not an AutoPod+) V1.2");
+
+    // A command the unit does not have is refused, which is not the same as the unit being gone.
+    let err = link.send("#XYZ").unwrap_err();
+    assert_eq!(err, "the AutoPod+ refused #XYZ (ER1)");
+    assert!(link.last_refused);
+    fake.refuse(Some("QID"));
+    assert_eq!(link.identity().unwrap().model, None, "a unit that will not say its model is still usable");
+    fake.refuse(None);
+    assert!(link.position().is_ok() && !link.last_refused);
 
     fake.set_calibration("rER53");
     assert_eq!(link.calibration().unwrap(), Calibration::Uncalibrated);
@@ -196,14 +216,14 @@ fn the_rig_follows_a_moving_target_and_touches_nothing_until_it_is_driven() {
     let axes = AxisTable::default();
     let mut rig = HardwareRig::start(&rig_config(Some(&fr7), Some(&pod)), &axes);
     wait_until("both devices answer", || rig.problem().is_none());
-    assert_eq!(rig.status().iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["FR7", "AutoPod"]);
+    assert_eq!(rig.status().iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["FR7", "AutoPod+"]);
     assert_eq!(rig.status()[1].calibrated, Some(true));
 
     // Connected and idle, the adapters only ask where the rig is.
     std::thread::sleep(Duration::from_millis(400));
     assert!(fr7.commands().is_empty(), "idle sent {:02X?}", fr7.commands());
     assert!(fr7.seen().len() > 6, "position is polled");
-    assert!(pod.seen().iter().all(|c| c == "#APC" || c == "#RER"), "{:?}", pod.seen());
+    assert_eq!(pod.orders(), Vec::<String>::new());
     assert!(rig.jog(Default::default()).is_err(), "hand control is the simulator's");
 
     // A four second move on every axis, fed at the engine's rate.
@@ -301,7 +321,7 @@ fn an_absolute_move_is_one_command_and_the_head_runs_its_own_ramp() {
 fn a_missing_device_and_an_uncalibrated_pedestal_are_named() {
     let axes = AxisTable::default();
     let none = HardwareRig::start(&RigConfig { kind: RigKind::Hardware, ..RigConfig::default() }, &axes);
-    assert!(none.problem().unwrap().contains("no FR7 or AutoPod address"));
+    assert!(none.problem().unwrap().contains("no FR7 or AutoPod+ address"));
 
     let pod = FakeAutoPod::start();
     pod.set_calibration("rER53");
@@ -322,4 +342,84 @@ fn a_missing_device_and_an_uncalibrated_pedestal_are_named() {
 
     pod.set_silent(true);
     wait_until("the silence is noticed", || rig.problem().is_some_and(|p| p.contains("not answering")));
+}
+
+/// One raw exchange with the stand-in, as bytes.
+fn raw_exchange(addr: std::net::SocketAddr, request: &[u8]) -> String {
+    use std::io::{Read, Write};
+    let mut stream = std::net::TcpStream::connect(addr).unwrap();
+    stream.write_all(request).unwrap();
+    let mut reply = String::new();
+    stream.read_to_string(&mut reply).unwrap();
+    reply
+}
+
+#[test]
+fn the_stand_in_leg_box_frames_its_replies_as_the_real_rx_does() {
+    let fake = FakeAutoPod::start();
+    fake.place(0.0);
+    let reply = raw_exchange(fake.addr, &autopod::request_bytes("#APC"));
+    assert_eq!(
+        reply, "HTTP/1.0 200 OK\r\nServer: AutoPod+/1.7\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\naPC80001000\r\n",
+        "HTTP/1.0, no length, Content-Type last, body ending CRLF"
+    );
+    let body = |cmd: &str| autopod::parse_reply(raw_exchange(fake.addr, &autopod::request_bytes(cmd)).as_bytes()).unwrap();
+    assert_eq!(body("#RER"), (200, "rER00".into()));
+    assert_eq!(body("QID"), (200, "OID:AUTOPOD+".into()));
+    assert_eq!(body("#V?"), (200, "V3.49e".into()));
+    assert_eq!(body("#O"), (200, "p1".into()));
+    assert_eq!(body("#T50"), (200, "tS50".into()));
+    assert_eq!(body("#PTS5050"), (200, "pTS5050".into()));
+    assert_eq!(body("#D0"), (200, "d00".into()));
+    assert_eq!(body("#NOPE"), (200, "ER1:NOPE".into()), "an unknown command is refused the Panasonic way");
+    let get = |path: &str| raw_exchange(fake.addr, format!("GET {path} HTTP/1.0\r\n\r\n").as_bytes());
+    assert!(get("/cgi-bin/get_state").starts_with("HTTP/1.0 404 "), "RX v3.49e has no get_state");
+    assert!(get("/cgi-bin/aw_cam?cmd=QID&res=1").ends_with("OID:AUTOPOD+\r\n"));
+    assert!(get("/live/camdata.html").contains("OID:AUTOPOD+\r\nTITLE:"));
+
+    // Full down is 00 and full up is 99; both move the column at its top speed.
+    body("#PTS5000");
+    assert!(fake.is_moving());
+    body("#T50");
+    assert!(!fake.is_moving(), "the #T form stops it too");
+}
+
+#[test]
+fn standby_and_a_refused_speed_command_are_problems_that_keep_the_connection() {
+    let pod = FakeAutoPod::start();
+    let axes = AxisTable::default();
+    let mut rig = HardwareRig::start(&rig_config(None, Some(&pod)), &axes);
+    wait_until("the leg box answers", || rig.problem().is_none());
+    let status = rig.status();
+    assert!(status[0].detail.starts_with("AutoPod+ V3.49e at "), "{}", status[0].detail);
+
+    pod.set_power(false);
+    wait_until("standby is noticed", || rig.problem().is_some());
+    assert_eq!(rig.problem().unwrap(), "The AutoPod+ is in standby. Switch it on at the leg box");
+    assert!(rig.status()[0].connected);
+    assert!(!pod.orders().iter().any(|c| c.starts_with("#O")), "the show never switches the unit on by itself");
+    pod.set_power(true);
+    wait_until("power is noticed", || rig.problem().is_none());
+
+    // The unit is there but refuses the speed command: named, connected, and cleared once it accepts again.
+    pod.refuse(Some("#PTS"));
+    let target = Pose { elevation: 200.0, ..Pose::home() };
+    let drive = Drive::to(target, 1.0);
+    let began = Instant::now();
+    while rig.problem().is_none() && began.elapsed() < Duration::from_secs(3) {
+        rig.drive(&drive);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let why = rig.problem().expect("the refusal is reported");
+    assert!(why.starts_with("The AutoPod+ refused #PTS50") && why.ends_with("(ER1)"), "{why}");
+    assert!(rig.status()[0].connected, "a refusal is not a lost connection");
+    assert_eq!(pod.height_mm(), 0.0);
+    pod.refuse(None);
+    let began = Instant::now();
+    while rig.problem().is_some() && began.elapsed() < Duration::from_secs(3) {
+        rig.drive(&drive);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(rig.problem(), None);
+    rig.stop();
 }

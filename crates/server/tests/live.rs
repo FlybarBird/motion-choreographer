@@ -1,4 +1,4 @@
-//! Arm and live output over real HTTP, with the FR7 and AutoPod protocol fakes
+//! Arm and live output over real HTTP, with the FR7 and AutoPod+ protocol fakes
 //! standing in for the rig.
 
 mod common;
@@ -238,9 +238,14 @@ fn arm_is_refused_for_each_missing_precondition_with_its_own_reason() {
     // Each adapter in use has to answer, and the pedestal has to be calibrated.
     rig.pod.set_calibration("rER53");
     wait_for(&api, |s| s.adapters[1].calibrated == Some(false));
-    assert_eq!(arm(&api), "The AutoPod is not calibrated. Run its calibration at the leg box");
+    assert_eq!(arm(&api), "The AutoPod+ is not calibrated. Run its calibration at the leg box");
     rig.pod.set_calibration("rER00");
     wait_for(&api, |s| s.adapters[1].calibrated == Some(true));
+    rig.pod.set_power(false);
+    wait_for(&api, |s| s.adapters[1].detail.ends_with("is in standby"));
+    assert_eq!(arm(&api), "The AutoPod+ is in standby. Switch it on at the leg box");
+    rig.pod.set_power(true);
+    wait_for(&api, |s| s.adapters[1].detail.contains("answers in"));
     rig.fr7.set_silent(true);
     wait_for(&api, |s| !s.adapters[0].connected);
     assert_eq!(arm(&api), format!("The FR7 is not answering at {}", rig.fr7.visca));
@@ -292,8 +297,8 @@ fn rehearse_never_sends_a_motion_command_to_hardware() {
         assert!(!st.hardware_live, "{what}: {:?}", st.transport);
         assert_eq!(st.transport.output, Output::Rehearse, "{what}");
         assert!(rig.fr7.commands().is_empty(), "{what}: the camera was sent {:02X?}", rig.fr7.commands());
-        let pod = rig.pod.seen();
-        assert!(pod.iter().all(|c| c == "#APC" || c == "#RER"), "{what}: the pedestal was sent {pod:?}");
+        let pod = rig.pod.orders();
+        assert!(pod.is_empty(), "{what}: the pedestal was sent {pod:?}");
     };
 
     // Every way of rolling: free-run, locked to a file, locked to code; with and without Record.
@@ -340,7 +345,7 @@ fn rehearse_never_sends_a_motion_command_to_hardware() {
         commands.iter().all(|c| [visca::pan_tilt_stop(), visca::zoom_stop(), visca::focus_stop()].contains(c)),
         "{commands:02X?}"
     );
-    assert!(rig.pod.seen().iter().all(|c| c == "#APC" || c == "#RER" || c == "#PTS5050"));
+    assert!(rig.pod.orders().iter().all(|c| c == "#PTS5050"), "{:?}", rig.pod.orders());
 }
 
 #[test]
@@ -484,7 +489,7 @@ fn a_rig_that_lags_or_stops_answering_is_held_and_disarmed_inside_the_tracking_w
     // The pedestal going away is the same.
     rig.pod.set_silent(true);
     let st = wait_for(&api, |s| s.telemetry.fault.is_some());
-    assert_eq!(st.telemetry.fault, Some(format!("The AutoPod is not answering at {}", rig.pod.addr)));
+    assert_eq!(st.telemetry.fault, Some(format!("The AutoPod+ is not answering at {}", rig.pod.addr)));
     let log = log_kinds(&api);
     assert_eq!(log.iter().filter(|r| r.kind == "fault").count(), 3);
     assert!(log.iter().any(|r| r.kind == "adapter" && r.data["name"] == "FR7" && r.data["connected"] == false));
@@ -541,8 +546,8 @@ fn syncing_presets_recalls_each_one_on_the_camera_and_is_refused_while_live() {
     // The camera was recalled to each preset in turn, and that is all that moved it.
     let recalls: Vec<Vec<u8>> = rig.fr7.commands();
     assert_eq!(recalls, vec![visca::preset_recall(1), visca::preset_recall(2), visca::preset_recall(3)]);
-    let pod = rig.pod.seen();
-    assert!(pod.iter().all(|c| c == "#APC" || c == "#RER" || c == "#PTS5050"), "a sync does not move the pedestal: {pod:?}");
+    let pod = rig.pod.orders();
+    assert!(pod.iter().all(|c| c == "#PTS5050"), "a sync does not move the pedestal: {pod:?}");
     assert_eq!(rig.pod.height_mm(), 140.0);
 
     // E-Stop during a sync stops the camera and abandons it.

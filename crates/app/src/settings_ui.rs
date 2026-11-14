@@ -161,7 +161,7 @@ fn rig(ui: &mut Ui, s: &mut Session, project: &mut Project, editable: bool) {
             ui.label("Drives");
             let shown = |kind: RigKind| match kind {
                 RigKind::Simulator => "The simulator",
-                RigKind::Hardware => "FR7 and AutoPod",
+                RigKind::Hardware => "FR7 and AutoPod+",
             };
             egui::ComboBox::from_id_salt("rig_kind").selected_text(shown(rig.kind)).width(170.0).show_ui(ui, |ui| {
                 ui.selectable_value(&mut rig.kind, RigKind::Simulator, shown(RigKind::Simulator));
@@ -188,7 +188,7 @@ fn rig(ui: &mut Ui, s: &mut Session, project: &mut Project, editable: bool) {
                     }
                 });
                 ui.end_row();
-                ui.label("AutoPod address");
+                ui.label("AutoPod+ address");
                 if let Some(host) = crate::panels::text_field(ui, "autopod_host", &rig.autopod_host, 170.0) {
                     rig.autopod_host = host.trim().to_string();
                 }
@@ -250,7 +250,7 @@ fn rig(ui: &mut Ui, s: &mut Session, project: &mut Project, editable: bool) {
 
         if rig.kind == RigKind::Hardware && !rig.autopod_host.is_empty() {
             ui.add_space(4.0);
-            ui.label(RichText::new("AutoPod height map: the leg box's raw position at measured heights").color(MUTED).small());
+            ui.label(RichText::new("AutoPod+ height map: the leg box's raw position at measured heights").color(MUTED).small());
             let mut remove = None;
             egui::Grid::new("height_map").num_columns(3).spacing([10.0, 4.0]).show(ui, |ui| {
                 for (i, point) in rig.autopod_calibration.iter_mut().enumerate() {
@@ -265,7 +265,7 @@ fn rig(ui: &mut Ui, s: &mut Session, project: &mut Project, editable: bool) {
             if let Some(i) = remove {
                 rig.autopod_calibration.remove(i);
             }
-            let raw = s.status.adapters.iter().find(|a| a.name == "AutoPod").and_then(|a| a.raw_position);
+            let raw = s.status.adapters.iter().find(|a| a.name == "AutoPod+").and_then(|a| a.raw_position);
             let id = ui.make_persistent_id("height_now");
             let mut mm = ui.data_mut(|d| d.get_temp::<f64>(id)).unwrap_or(0.0);
             ui.horizontal(|ui| {
@@ -273,7 +273,7 @@ fn rig(ui: &mut Ui, s: &mut Session, project: &mut Project, editable: bool) {
                 let add = ui
                     .add_enabled(raw.is_some(), egui::Button::new("Add the current height").small())
                     .on_hover_text("Measure the column now, enter the height, and add it with the raw position the leg box reports")
-                    .on_disabled_hover_text("The AutoPod is not answering, so its raw position is not known");
+                    .on_disabled_hover_text("The AutoPod+ is not answering, so its raw position is not known");
                 if let (true, Some(raw)) = (add.clicked(), raw) {
                     rig.autopod_calibration.retain(|p| p.raw != raw);
                     rig.autopod_calibration.push(CalPoint { raw, mm });
