@@ -678,6 +678,7 @@ pub fn start(cfg: &Config, bind: &str, access_key: Option<String>) -> Result<Run
     spawn_tick(&show);
     let app = App { show: show.clone(), access_key: access_key.filter(|k| !k.is_empty()).map(Arc::new) };
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+    let halting = show.clone();
     let thread = std::thread::Builder::new()
         .name("http".into())
         .spawn(move || {
