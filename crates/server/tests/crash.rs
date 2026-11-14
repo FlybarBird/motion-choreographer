@@ -94,10 +94,8 @@ fn killing_the_server_mid_write_never_leaves_a_broken_song() {
     child.wait().unwrap();
 
     // The run log survived three kills with its chain intact.
-    let out = Command::new(env!("CARGO_BIN_EXE_ptz-server"))
-        .args(["--data", dir.to_str().unwrap(), "--verify-log"])
-        .output()
-        .unwrap();
+    let out =
+        Command::new(env!("CARGO_BIN_EXE_ptz-server")).args(["--data", dir.to_str().unwrap(), "--verify-log"]).output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let _ = std::fs::remove_dir_all(&dir);
 }

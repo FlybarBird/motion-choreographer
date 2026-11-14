@@ -78,11 +78,7 @@ fn query_value(query: Option<&str>, key: &str) -> Option<String> {
 }
 
 fn request_value(parts_headers: &axum::http::HeaderMap, query: Option<&str>, header: &str, key: &str) -> Option<String> {
-    parts_headers
-        .get(header)
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string())
-        .or_else(|| query_value(query, key))
+    parts_headers.get(header).and_then(|v| v.to_str().ok()).map(|s| s.to_string()).or_else(|| query_value(query, key))
 }
 
 /// Who is asking. Sent as the `x-client-id` header, or `?client=` on the WebSocket.
@@ -329,10 +325,7 @@ pub fn router(app: App) -> Router {
         .route("/presets/{id}", delete(delete_preset))
         .route("/rig/jog", post(rig_jog))
         .route("/log", get(get_log));
-    Router::new()
-        .nest(API, api)
-        .layer(axum::middleware::from_fn_with_state(app.clone(), gate))
-        .with_state(app)
+    Router::new().nest(API, api).layer(axum::middleware::from_fn_with_state(app.clone(), gate)).with_state(app)
 }
 
 /// A server running on its own thread.
@@ -371,9 +364,7 @@ impl Drop for Running {
 pub fn start(cfg: &Config, bind: &str, access_key: Option<String>) -> Result<Running, String> {
     let addr: SocketAddr = bind.parse().map_err(|_| format!("{bind} is not an address like 127.0.0.1:8787"))?;
     if !addr.ip().is_loopback() && access_key.as_deref().unwrap_or("").is_empty() {
-        return Err(format!(
-            "Refusing to listen on {addr} without --access-key. Anyone on the network could drive the rig."
-        ));
+        return Err(format!("Refusing to listen on {addr} without --access-key. Anyone on the network could drive the rig."));
     }
     let listener = std::net::TcpListener::bind(addr).map_err(|e| format!("Could not listen on {addr}: {e}"))?;
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;

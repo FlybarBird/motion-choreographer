@@ -58,7 +58,7 @@ pub fn seeded_presets() -> Vec<Preset> {
         Preset {
             id: "lectern-mcu".into(),
             name: "Lectern MCU".into(),
-            pose: Pose { pan: -24.0, tilt: -1.5, zoom: 0.62, focus: 0.5, elevation: 310.0 },
+            pose: Pose { pan: -24.0, tilt: 1.5, zoom: 0.62, focus: 0.5, elevation: 310.0 },
             camera_number: Some(2),
             has_thumbnail: false,
         },
