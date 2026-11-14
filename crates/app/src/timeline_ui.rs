@@ -4,7 +4,7 @@ use crate::session::Session;
 use crate::theme::*;
 use crate::timeline::{self, ClipBox, ClipKind, Doc, Ghost, Hit, Lane, Layout, Mods, Outcome, HEADER_W};
 use egui::{pos2, vec2, Align2, Color32, CornerRadius, FontId, Painter, Pos2, Rect, Sense, Stroke, StrokeKind, Ui};
-use ptz_core::api::MediaInfo;
+use ptz_core::api::{MediaInfo, PeakLevel};
 use ptz_core::pose::{Axis, Preset};
 use ptz_core::song::{ClipBody, Song, Track};
 
@@ -60,6 +60,8 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
     }
     s.timeline.view.clamp(song.length_frames, body_w);
 
+    request_peaks(s, &song);
+
     let playhead = s.playhead();
     let base = timeline::layout(&song, &s.timeline.view, rect);
     let m = mods(ui);
@@ -113,7 +115,15 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
         let info = &payload.0;
         ghost = s.timeline.media_ghost(&base, &doc, &info.name, media_track(info), info.duration_frames, p, m);
     }
-    if let Some(payload) = resp.dnd_release_payload::<PresetDrag>() {
+    // Taking a payload of the wrong type would throw it away, so ask for the type first.
+    let holds = |ui: &Ui, preset: bool| {
+        if preset {
+            egui::DragAndDrop::has_payload_of_type::<PresetDrag>(ui.ctx())
+        } else {
+            egui::DragAndDrop::has_payload_of_type::<MediaDrag>(ui.ctx())
+        }
+    };
+    if let Some(payload) = holds(ui, true).then(|| resp.dnd_release_payload::<PresetDrag>()).flatten() {
         if let Some(p) = ui.ctx().pointer_latest_pos() {
             let doc = Doc { song: &song, project: &s.project, playhead };
             outcomes.push(match &editable {
@@ -122,7 +132,7 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
             });
         }
     }
-    if let Some(payload) = resp.dnd_release_payload::<MediaDrag>() {
+    if let Some(payload) = holds(ui, false).then(|| resp.dnd_release_payload::<MediaDrag>()).flatten() {
         if let Some(p) = ui.ctx().pointer_latest_pos() {
             let doc = Doc { song: &song, project: &s.project, playhead };
             let info = &payload.0;
@@ -443,27 +453,63 @@ fn clip_fill(kind: ClipKind, selected: bool) -> Color32 {
     }
 }
 
-fn paint_waveform(painter: &Painter, r: Rect, peaks: &[f32], in_frac: f32, out_frac: f32, color: Color32) {
-    if peaks.is_empty() || r.width() < 2.0 {
-        return;
+/// The waveform level that suits the zoom: the coarsest with at least one bucket per pixel.
+pub fn peak_level_for(sample_rate: u32, fps: f64, px_per_frame: f32) -> u32 {
+    let samples_per_pixel = sample_rate as f64 / fps / px_per_frame.max(1e-6) as f64;
+    let mut level = 256u32;
+    while (level as f64) * 2.0 <= samples_per_pixel && level < (1 << 24) {
+        level *= 2;
     }
-    let visible = r.intersect(painter.clip_rect());
-    if visible.width() <= 0.0 {
-        return;
+    level
+}
+
+/// Ask the server for the waveform of every media clip on the timeline, at the level the zoom needs.
+fn request_peaks(s: &mut Session, song: &Song) {
+    let fps = s.project.rate.fps();
+    for clip in &song.media {
+        let Some(info) = s.media.iter().find(|m| m.id == clip.media_id) else { continue };
+        let want = peak_level_for(info.sample_rate, fps, s.timeline.view.px_per_frame);
+        if s.peaks_requested.get(&clip.media_id) != Some(&want) {
+            s.peaks_requested.insert(clip.media_id.clone(), want);
+            s.link.send(crate::link::Cmd::FetchPeaks { media: clip.media_id.clone(), spp: want });
+        }
     }
-    let mid = r.center().y;
-    let half = r.height() / 2.0 - 2.0;
-    let n = peaks.len() as f32;
+}
+
+/// Which media second each pixel column of a clip shows, and the waveform there.
+/// `in_s..out_s` is the stretch of the file the clip plays.
+pub fn waveform_columns(level: &PeakLevel, r: Rect, visible: Rect, in_s: f64, out_s: f64) -> Vec<(f32, f32, f32)> {
+    let mut out = Vec::new();
+    if level.pairs.is_empty() || r.width() < 1.0 || visible.width() <= 0.0 {
+        return out;
+    }
+    let bucket = level.bucket_seconds();
+    let per_px = (out_s - in_s) / r.width() as f64;
     let mut x = visible.left().floor();
     while x < visible.right() {
-        let t0 = in_frac + (out_frac - in_frac) * ((x - r.left()) / r.width());
-        let t1 = in_frac + (out_frac - in_frac) * ((x + 1.0 - r.left()) / r.width());
-        let i0 = ((t0 * n) as usize).min(peaks.len() - 1);
-        let i1 = ((t1 * n).ceil() as usize).clamp(i0 + 1, peaks.len());
-        let peak = peaks[i0..i1].iter().copied().fold(0.0f32, f32::max).min(1.0);
-        let h = (peak * half).max(0.5);
-        painter.vline(x + 0.5, mid - h..=mid + h, Stroke::new(1.0, color));
+        let t0 = in_s + (x - r.left()) as f64 * per_px;
+        let t1 = t0 + per_px;
+        let i0 = (t0 / bucket).floor().max(0.0) as usize;
+        let i1 = ((t1 / bucket).ceil() as usize).max(i0 + 1).min(level.pairs.len());
+        if i0 < i1 {
+            let (lo, hi) = level.pairs[i0..i1].iter().fold((0i8, 0i8), |(lo, hi), p| (lo.min(p.0), hi.max(p.1)));
+            out.push((x, lo as f32 / 127.0, hi as f32 / 127.0));
+        }
         x += 1.0;
+    }
+    out
+}
+
+fn paint_waveform(painter: &Painter, r: Rect, level: &PeakLevel, in_s: f64, out_s: f64, color: Color32) {
+    let visible = r.intersect(painter.clip_rect());
+    let mid = r.center().y;
+    let half = r.height() / 2.0 - 2.0;
+    painter.hline(visible.x_range(), mid, Stroke::new(1.0, with_alpha(color, 60)));
+    for (x, lo, hi) in waveform_columns(level, r, visible, in_s, out_s) {
+        let (top, bottom) = (mid - hi * half, mid - lo * half);
+        if bottom - top >= 0.5 {
+            painter.vline(x + 0.5, top..=bottom.max(top + 1.0), Stroke::new(1.0, color));
+        }
     }
 }
 
@@ -517,11 +563,12 @@ fn paint_clip(painter: &Painter, l: &Layout, c: &ClipBox, song: &Song, s: &Sessi
                 } else {
                     c.rect.shrink2(vec2(0.0, 2.0))
                 };
-                if let Some(peaks) = s.peaks.get(&m.media_id) {
-                    let total = m.media_frames.max(1) as f32;
+                if let Some(level) = s.peaks.get(&m.media_id) {
+                    let fps = s.project.rate.fps();
                     let pc = p.with_clip_rect(visible);
-                    let color = if m.muted { with_alpha(OFF_WHITE, 50) } else { with_alpha(OFF_WHITE, 150) };
-                    paint_waveform(&pc, wave, peaks, m.in_frame as f32 / total, m.out_frame as f32 / total, color);
+                    let color = if m.muted { with_alpha(OFF_WHITE, 50) } else { with_alpha(OFF_WHITE, 170) };
+                    let wave = Rect::from_x_y_ranges(c.rect.x_range(), wave.y_range());
+                    paint_waveform(&pc, wave, level, m.in_frame as f64 / fps, m.out_frame as f64 / fps, color);
                 }
                 let label = if m.muted { format!("{} (muted)", m.name) } else { m.name.clone() };
                 p.with_clip_rect(visible.shrink(2.0)).text(

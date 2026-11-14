@@ -223,3 +223,128 @@ fn clicking_the_ruler_seeks_and_space_asks_for_the_primary_action() {
     let acts: Vec<_> = r.cmds.try_iter().filter_map(|c| if let Cmd::Act(a, _) = c { Some(a) } else { None }).collect();
     assert_eq!(acts, vec![ptz_core::transport::Action::Play]);
 }
+
+fn click_media() -> ptz_core::api::MediaInfo {
+    ptz_core::api::MediaInfo {
+        id: "click".into(),
+        name: "Click 12.4s.wav".into(),
+        kind: ptz_core::api::MediaKind::Audio,
+        channels: 1,
+        sample_rate: 48_000,
+        samples: 595_200,
+        duration_s: 12.4,
+        duration_frames: 310,
+        start_tc: None,
+        start_tc_source: None,
+        proxy_frames: 0,
+        ltc_channel: None,
+    }
+}
+
+/// The overview the server would send for a click at 2.5 s.
+fn click_level(samples_per_bucket: u32) -> ptz_core::api::PeakLevel {
+    let buckets = 595_200usize.div_ceil(samples_per_bucket as usize);
+    let mut pairs = vec![(0i8, 0i8); buckets];
+    pairs[120_000 / samples_per_bucket as usize] = (-90, 114);
+    ptz_core::api::PeakLevel { samples_per_bucket, sample_rate: 48_000, pairs }
+}
+
+impl Rig {
+    /// Screen x of the loudest waveform column of a media clip, computed as the painter does.
+    fn loudest_x(&self, clip: &str) -> f32 {
+        let s = &self.harness.state().session;
+        let l = self.layout();
+        let m = self.song().media_clip(clip).unwrap();
+        let rect = l.clips.iter().find(|c| c.id == clip).expect("the clip is laid out").rect;
+        let level = s.peaks.get(&m.media_id).expect("the waveform arrived");
+        let fps = s.project.rate.fps();
+        let cols = crate::timeline_ui::waveform_columns(level, rect, rect, m.in_frame as f64 / fps, m.out_frame as f64 / fps);
+        cols.iter().max_by(|a, b| (a.2 - a.1).total_cmp(&(b.2 - b.1))).expect("columns").0
+    }
+}
+
+#[test]
+fn dragging_audio_from_the_media_tab_places_a_clip_and_its_waveform_shows_the_click() {
+    let mut r = rig(Song::new("s", "Test Song", "01:00:00:00", 1500));
+    r.events.send(Event::Media(vec![click_media()])).unwrap();
+    r.harness.run_steps(2);
+    r.harness.state_mut().show_tab(crate::app::Tab::Media);
+    r.harness.run_steps(3);
+
+    let card = r.harness.state().session.probe_media.iter().find(|(id, _)| id == "click").expect("the media card was drawn").1;
+    let to = r.lane_point(Lane::Audio, 100.0);
+    r.drag(card.center(), to);
+
+    let song = r.song().clone();
+    let toasts: Vec<String> = r.harness.state().session.toasts.iter().map(|t| t.text.clone()).collect();
+    assert_eq!(song.media.len(), 1, "one audio clip was created; card {card:?} to {to:?}; {toasts:?}");
+    let clip = song.media[0].clone();
+    assert_eq!(clip.media_id, "click");
+    assert!((clip.start_frame - 100).abs() <= 2, "it starts where it was dropped: {}", clip.start_frame);
+    assert_eq!((clip.in_frame, clip.out_frame, clip.media_frames), (0, 310, 310));
+
+    // The app asked for the waveform once, at the level its zoom needs.
+    let cmds: Vec<Cmd> = r.cmds.try_iter().collect();
+    let asked: Vec<u32> =
+        cmds.iter().filter_map(|c| if let Cmd::FetchPeaks { spp, .. } = c { Some(*spp) } else { None }).collect();
+    let ppf = r.harness.state().session.timeline.view.px_per_frame;
+    assert_eq!(asked, vec![crate::timeline_ui::peak_level_for(48_000, 25.0, ppf)]);
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::PutWorking { song: put, .. } if *put == song)));
+
+    // With the waveform in, the click is drawn at 2.5 s into the clip.
+    r.events.send(Event::Peaks { media: "click".into(), level: click_level(asked[0]) }).unwrap();
+    r.harness.run_steps(2);
+    let click_frame = clip.start_frame as f64 + 62.5;
+    let px_per_bucket = ppf * 25.0 * asked[0] as f32 / 48_000.0;
+    let x = r.loudest_x(&clip.id);
+    assert!(
+        (x - r.layout().x_of(click_frame)).abs() <= px_per_bucket + 1.0,
+        "click drawn at {x}, frame {click_frame} is at {}",
+        r.layout().x_of(click_frame)
+    );
+
+    // Trimming the head hides the start of the file; the click stays under the same frame.
+    let l = r.layout();
+    let y = l.lane_rect(Lane::Audio).unwrap().center().y;
+    let from = pos2(l.x_of(clip.start_frame as f64) + 2.0, y);
+    let to = pos2(l.x_of(clip.start_frame as f64 + 30.0) + 2.0, y);
+    r.drag(from, to);
+    let trimmed = r.song().media[0].clone();
+    assert!((trimmed.in_frame - 30).abs() <= 2, "{trimmed:?}");
+    assert_eq!(trimmed.start_frame - clip.start_frame, trimmed.in_frame, "the sound did not slide");
+    assert_eq!(trimmed.end_frame(), clip.end_frame());
+    let x_after = r.loudest_x(&clip.id);
+    assert!((x_after - x).abs() <= 1.0, "the click moved from {x} to {x_after}");
+
+    // Dragging the body moves the clip and the click with it.
+    let l = r.layout();
+    let from = pos2(l.x_of(trimmed.start_frame as f64 + 100.0), y);
+    let to = pos2(l.x_of(trimmed.start_frame as f64 + 300.0), y);
+    r.drag(from, to);
+    let moved = r.song().media[0].clone();
+    assert!((moved.start_frame - trimmed.start_frame - 200).abs() <= 3, "{moved:?}");
+    assert_eq!((moved.in_frame, moved.out_frame), (trimmed.in_frame, trimmed.out_frame));
+
+    // Zooming in asks for a finer level, once.
+    let before = r.harness.state().session.timeline.view.px_per_frame;
+    r.harness.state_mut().session.timeline.view.px_per_frame = before * 16.0;
+    r.harness.run_steps(3);
+    let asked: Vec<u32> =
+        r.cmds.try_iter().filter_map(|c| if let Cmd::FetchPeaks { spp, .. } = c { Some(spp) } else { None }).collect();
+    assert_eq!(asked, vec![crate::timeline_ui::peak_level_for(48_000, 25.0, before * 16.0)]);
+}
+
+#[test]
+fn the_transport_bar_names_the_output_or_says_why_it_is_silent() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut r = rig(Song::new("s", "Test Song", "01:00:00:00", 1500));
+    // The Inspector shows project settings when nothing is selected, including the output and routing.
+    r.harness.state_mut().session.status.audio.silent_reason =
+        Some("There is no default audio output device. Running silent".into());
+    r.harness.run_steps(2);
+    r.harness.get_by_label("There is no default audio output device. Running silent");
+    r.harness.state_mut().session.status.audio.output = Some("MacBook Pro Speakers".into());
+    r.harness.state_mut().session.status.audio.device_rate = 48_000;
+    r.harness.run_steps(2);
+    r.harness.get_by_label("MacBook Pro Speakers, 48000 Hz");
+}
