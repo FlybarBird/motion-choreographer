@@ -30,15 +30,18 @@ Two longer documents go with this one:
 
 ## Run it
 
-Rust 1.88 or newer.
+Rust 1.95 or newer (`rustup update stable`).
 
 ```sh
 make run-server     # data in ~/PTZProgrammer, listens on http://127.0.0.1:8787
 make run-app        # in a second terminal
 ```
 
-The app connects to `http://127.0.0.1:8787` on launch. If no server is running,
-the connect screen offers **Start a server on this computer**.
+The app connects on launch to the server it last used, `http://127.0.0.1:8787`
+the first time. If no server answers, the connect screen offers **Start a
+server on this computer**: `ptz-server` with its defaults, which keeps running
+after the app quits and drives whatever rig the project in `~/PTZProgrammer`
+names.
 
 A first run seeds three presets (Stage Wide, Lectern MCU, Awards Two-Shot) and
 three songs (Walk-In, Opening Number, Awards Bed). `ptz-server --no-seed` starts
@@ -47,15 +50,21 @@ empty.
 On Linux the app needs the usual X11 or Wayland libraries and the server needs
 the ALSA headers (`libasound2-dev`).
 
-### Install on an Apple Silicon Mac
+### Install on a Mac
 
 ```sh
 make install-mac
 ```
 
-Builds for `aarch64-apple-darwin`, assembles `PTZ Programmer.app` with the three
-command-line tools inside it, signs it ad hoc, copies it to `~/Applications` and
-links `ptz-server`, `ptz-probe` and `ptz-bringup` into `~/.local/bin`.
+Builds for this Mac (Apple Silicon or Intel), assembles `PTZ Programmer.app`
+with the three command-line tools inside it, signs it ad hoc, copies it to
+`~/Applications` and links `ptz-server`, `ptz-probe` and `ptz-bringup` into
+`~/.local/bin`. Running it again installs a newer version over the old one; it
+asks you to quit the app and stop the server first. `make uninstall-mac`
+removes the app and the links and leaves the show data alone.
+
+The ad hoc signature is enough for the Mac that built it. A second Mac, for a
+remote station, builds its own copy the same way.
 
 ### A remote operator station
 
@@ -91,7 +100,9 @@ A show holds one to twelve cameras. The camera bar under the transport lists
 them; click one, or press `1` to `9`, `0`, `-` and `=`, to select it. The
 Program monitor, the Presets tab, the Rig controller and Record all follow the
 selected camera. Each camera has its own **Camera move** lane on the timeline,
-with its own axis lanes, and a preset dropped on a lane belongs to that camera.
+with its own axis lanes. A preset belongs to one camera and always lands on
+that camera's lane, whichever lane the pointer is over. A move can be dragged
+to another camera's lane afterwards.
 
 Cameras are added, named, reordered and removed in the Inspector with nothing
 selected, under **Cameras**. **Add a camera** copies the selected camera's
@@ -322,7 +333,8 @@ One station at a time holds the edit lease. Others watch, and can take over.
 
 ## Going live
 
-Rehearse never sends a motion command to the rig. To move it:
+Playing, scrubbing and cueing in Rehearse never send a motion command to the
+rig. (**Sync from rig** does move a real camera, and asks first.) To move it:
 
 1. **Arm (moves rig to playhead)**. Every camera's rig travels to its pose at
    the playhead at a fraction of its top speed (**Arm moves at** in the rig
@@ -338,11 +350,17 @@ Arm is refused, with the reason on the button, unless the transport is stopped,
 Record is off, the loaded song is a committed revision with no unsaved edits,
 every timeline issue is fixed (or, for speed and acceleration, accepted with
 **Accept as programmed**), and every camera's devices are answering with its
-AutoPod+ calibrated. While armed the song, the presets and the project settings cannot
-be changed.
+AutoPod+ calibrated. While armed the song and the project settings cannot be
+changed. Presets can still be stored and deleted: a move keeps its own copy of
+the pose it was made from, so the armed song is not affected.
+
+While armed and stopped, **Cue**, Home, a click on the ruler, or a jump in the
+timecode the show is locked to sends every rig to the pose at the new
+playhead, at the Arm speed; the bar reads ARMING until they are there.
 
 A camera's rig is held and its output is cut, with the reason in red on the bar and in the
-Rig controller tab until the next Arm or Play, when:
+Rig controller tab, until the show is disarmed and armed again (Play does not
+bring a held camera back), when:
 
 - an axis stays further from the timeline than its tolerance for longer than
   the tracking window (2 degrees of pan and tilt and half a second, unless the
@@ -355,6 +373,25 @@ Rig controller tab until the next Arm or Play, when:
 still, cuts output and latches until **Reset E-Stop**. It works from any
 station, in any state, with or without the edit lease, and over the API as
 `POST /api/v1/estop`.
+
+Told to stop while live (Ctrl-C, `kill`, a closed terminal, a system
+shutdown), the server stops every rig and waits for it to stand still before
+it exits. Killed outright, crashed or without power it cannot: a rig keeps its
+last speed command until its own limits end the move. For that case the server
+sends each camera and pedestal a stop as soon as it connects to it, so
+starting the server again stops a rig that was left moving.
+
+E-Stop is a software stop: a command sent over the network by a running
+server. It does not replace the AutoPod+'s own stop control or cutting power,
+and it cannot work if the server or the network is down. Only one controller
+should drive a camera at a time; a second one sending to the same FR7 will
+fight this one.
+
+Going live switches the FR7's focus to manual so the timeline can drive it.
+Nothing switches it back; set it at the camera if you want autofocus after the
+show. A camera set to **FR7 and AutoPod+** with the AutoPod+ address left
+empty runs without a pedestal: its elevation is taken to be wherever the
+timeline says.
 
 While live the Rig controller tab shows how far each axis is from the timeline
 against its tolerance.
@@ -429,11 +466,16 @@ does, and brings the rig back to where it stood:
 | `estop` | How long each device takes to stand still after a stop, and how far it travels. |
 
 `--only tracking,estop --from report.json` repeats chosen steps; `--quick`
-shortens the runs. The report is written as JSON and printed in words. Then:
+shortens the runs; `--yes` answers every prompt and skips the height map, which
+needs someone to measure. The report is written as JSON and printed in words.
+Then:
 
 ```sh
-ptz-bringup --apply bringup-2026-11-14.json     # into the running server's project
+ptz-bringup --apply bringup-2026-11-14.json --camera 3    # into that camera of the running server's project
 ```
+
+Without `--camera` (a number in the camera list, or an id) the values go to
+camera 1.
 
 Top speeds are only ever lowered by a report, and which rig the server drives
 is never changed by it.
@@ -480,18 +522,24 @@ while live, faults, how long an E-Stop took to bring the rig to a standstill,
 devices connecting and dropping, preset syncs, lock and chase events.
 
 Each record carries the hash of the one before it. `ptz-server --verify-log`
-walks the chain and names the first record that was changed or removed.
+walks the chain and names the first record that was changed, or removed from
+the middle. Records cut off the end of the newest file cannot be detected this
+way.
 
 ## Checks
 
 ```sh
 make test     # unit tests, API tests against a real server, crash test, UI tests
 make check    # rustfmt, clippy with warnings as errors, the install script on stand-in binaries
-make probe    # starts a server on a temp folder and tries every transport action in every state
+make probe    # starts a server on a temp folder and tries every transport action in every state it can reach without timecode
 ```
 
 `ptz-probe` can also be pointed at a running server (`ptz-probe --server URL`).
-It refuses to run unless the rig is the simulator and the show is idle.
+It refuses to run unless the rig is the simulator and the show is idle. It
+takes the edit lease from whoever holds it, presses E-Stop, and slows the Arm
+speed for the run, putting it back at the end; if it is killed part-way, a
+"Probe Scratch" song and the slowed Arm speed are left behind. Use it on a
+scratch data folder, or before real work starts.
 
 The tests that go live (`crates/server/tests/live.rs`, `hw.rs`, `bringup.rs`)
 run the real server and adapters against the stand-in devices over loopback.
@@ -507,8 +555,18 @@ run the real server and adapters against the stand-in devices over loopback.
 | `scripts/macos-install.sh` | The Mac installer. |
 
 Data folder (`~/PTZProgrammer` by default): `project.json`, `presets.json`,
+`state.json` (which song is open),
 `songs/<id>/working.json`, `draft.json`, `rev/NNNN.json` and `passes/`, `media/<id>/`
 (the original file, the decoded audio, the waveform overview, the frame
 pictures of a video), `stage/model.ptzmesh` (the imported stage model), `log/`.
 Every file is written to a temporary name and renamed, so a crash never leaves a
 half-written song.
+
+The server and the app talk plain HTTP, the access key is kept in the app's
+settings file, and the FR7 web password is kept in `project.json` and sent to
+every connected station. Run the show on a closed production network. The
+server also takes its key from the `PTZ_ACCESS_KEY` environment variable, and
+`PTZ_APP_DIR` moves the app's settings file.
+
+`LICENSE` is the MIT licence this is released under; `THIRD-PARTY-NOTICES.md`
+lists the fonts and crates built into the app.

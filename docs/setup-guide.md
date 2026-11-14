@@ -73,7 +73,7 @@ the live loop sends to every camera twenty times a second.
 
 ### To build the software
 
-- Rust 1.88 or newer (`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`).
+- Rust 1.95 or newer (`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`).
 - On a Mac, the Xcode command line tools (`xcode-select --install`).
 - On Linux, the ALSA headers (`libasound2-dev`) and the usual X11 or Wayland
   libraries.
@@ -82,7 +82,7 @@ the live loop sends to every camera twenty times a second.
 
 ## 2. Install
 
-### On an Apple Silicon Mac
+### On a Mac
 
 From the project folder:
 
@@ -90,7 +90,9 @@ From the project folder:
 make install-mac
 ```
 
-The first build takes several minutes. When it finishes you have:
+It builds for the Mac it runs on, Apple Silicon or Intel, and stops with the
+command to run if Rust is missing or older than 1.95. The first build takes
+several minutes. When it finishes you have:
 
 - `~/Applications/PTZ Programmer.app`, the desktop app, with the command-line
   tools inside it;
@@ -100,8 +102,19 @@ If the installer says `~/.local/bin` is not on your PATH, run the line it
 prints, then open a new terminal.
 
 The app is signed ad hoc, which is enough to run it on the Mac that built it.
-macOS may ask for microphone access the first time the server listens for LTC,
-and for local network access the first time it reaches a camera. Allow both.
+A second Mac (a remote station, say) builds its own copy the same way; a copy
+carried across is refused by macOS. macOS may ask for microphone access the
+first time the server listens for LTC, and for local network access the first
+time it reaches a camera. Allow both.
+
+**To install a newer version**, quit the app, stop the server (Ctrl-C in its
+terminal), and run `make install-mac` again. The installer refuses to replace
+the app while it is running. The show data is not touched.
+
+**To remove it**, run `make uninstall-mac`. That removes the app and the three
+links. It leaves the show data (`~/PTZProgrammer`) and the app's settings
+file (see [Where things are kept](#where-things-are-kept)); delete those by
+hand if you want them gone.
 
 ### From source, on a Mac or Linux
 
@@ -118,9 +131,15 @@ With the server running on the simulator:
 ptz-probe
 ```
 
-It takes the edit lease, makes a scratch song, tries every transport action in
-every state (play, arm, E-Stop and the rest), and removes the scratch song. It
-should end without a failure. It refuses to run against a real rig.
+It makes a scratch song, tries every transport action in every state it can
+reach without timecode (play, arm, E-Stop and the rest), and removes the
+scratch song. It should end without a failure. It refuses to run against a
+real rig, or while a show is armed or playing.
+
+Run it before real work starts, not during: it takes the edit lease from
+whoever holds it, presses E-Stop, and slows the Arm speed while it runs. If it
+is interrupted, a song called *Probe Scratch* and the slowed Arm speed
+(Inspector, rig settings) are left behind to put right by hand.
 
 ---
 
@@ -145,7 +164,8 @@ ptz-server
 | `--verify-log` | Check the run log and exit. |
 
 The server keeps running when the app is closed, and the show keeps playing.
-To stop it, press Ctrl-C in its terminal.
+To stop it, press Ctrl-C in its terminal. **Disarm first.** Stop the server
+only when the show is disarmed: see [Safety](#safety-read-this-before-arming).
 
 A new data folder is seeded with three presets (Stage Wide, Lectern MCU, Awards
 Two-Shot) and three songs (Walk-In, Opening Number, Awards Bed) so there is
@@ -153,8 +173,9 @@ something to look at. Use `--no-seed` for a clean start.
 
 ### Open the app
 
-Open **PTZ Programmer**. It tries `http://127.0.0.1:8787` straight away. If no
-server answers, the connect screen appears:
+Open **PTZ Programmer**. It tries the server it last used straight away
+(`http://127.0.0.1:8787` the first time). If no server answers, the connect
+screen appears:
 
 | Field | What to enter |
 | --- | --- |
@@ -162,9 +183,14 @@ server answers, the connect screen appears:
 | Station name | A name for this station. Other stations see it when you hold the edit lease. |
 | Access key | Only for a server on another machine |
 
-**Start a server on this computer** runs `ptz-server` with its defaults (the
-simulator rig, data in `~/PTZProgrammer`) and connects to it. That server keeps
-running after the app quits.
+Servers this station has connected to before are listed under the address;
+click one to use it.
+
+**Start a server on this computer** runs `ptz-server` with its defaults (data
+in `~/PTZProgrammer`) and connects to it. A new data folder starts on the
+simulator; an existing one drives whatever rig its project names, real cameras
+included. That server keeps running after the app quits: stop it from Activity
+Monitor, or with `pkill ptz-server`.
 
 ### Take the edit lease
 
@@ -369,6 +395,33 @@ Read this part through once before you connect anything.
 > is the step that finds out on your hardware, with someone watching, before a
 > show does. Do not skip it.
 
+### Safety: read this before arming
+
+- **E-STOP on the screen is a software stop.** It is a command the server
+  sends over the network. It does not replace the AutoPod+'s own stop control
+  or cutting the power, and it cannot reach the rig if the server or the
+  network is down. Before the first live move, find the pedestal's own stop
+  and the power, and keep someone within reach of them.
+- **Disarm before you stop the server.** Stopped with Ctrl-C (or a normal
+  shutdown of the machine), the server stops every camera and pedestal on its
+  way out. If it is killed outright, loses power or crashes, it cannot: a rig
+  that was moving keeps its last speed command until the camera's or
+  pedestal's own limits end the move. Treat a dead server while live as a
+  reason to use the hardware stop. Starting the server again also stops it:
+  the server sends each camera and pedestal a stop as soon as it connects.
+- **One controller at a time.** Another controller sending to the same FR7 (a
+  remote, a second copy of this program, a vision mixer's PTZ control) fights
+  this one. Take the others off the camera while a show is armed.
+- **Arm, Cue and a click on the ruler move the rig.** While armed and stopped,
+  moving the playhead (or a jump in the timecode the show is locked to) sends
+  every camera to the pose there.
+- **Going live switches the FR7's focus to manual**, so the timeline can drive
+  it. Nothing switches it back afterwards; set it at the camera if you want
+  autofocus again.
+- **A camera with no AutoPod+ address runs without a pedestal.** If **Drives**
+  is FR7 and AutoPod+ and the AutoPod+ address is empty, only the head is
+  driven and the elevation is taken to be whatever the timeline says.
+
 Do the whole of this part for one camera, then the next.
 
 ### 7.1 Try it against the stand-ins first
@@ -516,8 +569,9 @@ remembered.
 
 - One station holds the **edit lease** and can change the show. The others
   watch: they see the timeline, the monitors and the transport follow along.
-- A watching station can **Take over**. The header of the station that held
-  the lease then reads *Watching* and names the new holder.
+- A watching station can **Take over**. It is asked to confirm, because the
+  other station loses control at once. The station that held the lease is told
+  who took it, and its header then reads *Watching* and names the new holder.
 - A station that goes silent for ten seconds loses the lease by itself.
 - **E-STOP works from every station**, with or without the lease.
 - If a station loses the server, a red banner says so. The show keeps running
@@ -575,6 +629,7 @@ The server's data folder (`~/PTZProgrammer` unless `--data` says otherwise):
 | --- | --- |
 | `project.json` | Frame rate, cameras, lenses, positions, rig settings, limits, rules, audio and timecode settings |
 | `presets.json` | Every camera's presets |
+| `state.json` | Which song is open |
 | `songs/<id>/` | Each song: the working copy, the last Save, every committed revision (`rev/`), and recorded passes (`passes/`) |
 | `media/<id>/` | Each imported file, its decoded audio, its waveform, and a video's frame pictures |
 | `stage/model.ptzmesh` | The imported stage model |
@@ -583,10 +638,19 @@ The server's data folder (`~/PTZProgrammer` unless `--data` says otherwise):
 Every file is written to a temporary name and then renamed, so a crash or a
 power cut never leaves a half-written song.
 
-The app keeps only its own window settings (server address, station name,
-access key, panel layout): on a Mac in
+The app keeps only its own window settings (server address, recent servers,
+station name, access key, panel layout): on a Mac in
 `~/Library/Application Support/PTZ Programmer/settings.json`, on Linux in
-`~/.config/PTZ Programmer/settings.json`.
+`~/.config/PTZ Programmer/settings.json`. Setting the `PTZ_APP_DIR`
+environment variable before starting the app keeps that file in a folder of
+your choosing instead, which lets two stations run on one machine.
+
+**Passwords and keys.** The FR7 web password is kept in `project.json` and is
+sent to every station that connects; the access key is kept in the app's
+settings file and, on the server, comes from `--access-key` or the
+`PTZ_ACCESS_KEY` environment variable. The server and the app talk plain HTTP.
+Keep the show on its own closed network, and do not reuse either secret
+anywhere that matters.
 
 ### Back up and move a show
 
@@ -606,19 +670,22 @@ connecting and dropping. Each record carries the hash of the one before it:
 ptz-server --verify-log
 ```
 
-walks the chain and names the first record that was changed or removed.
+walks the chain and names the first record that was changed, or removed from
+the middle. Records cut off the end of the newest file cannot be detected this
+way; copy the log off the machine after a show if it matters.
 
 ### Update
 
-Pull the new source and run `make install-mac` again. It replaces the app and
-the tools. The data folder is not touched, and a project saved by an earlier
-version is brought up to date when the server opens it. Back up first.
+Back up the data folder, quit the app, stop the server, pull the new source
+and run `make install-mac` again. It replaces the app and the tools. The data
+folder is not touched, and a project saved by an earlier version is brought up
+to date when the server opens it.
 
 ### Remove
 
-Delete `~/Applications/PTZ Programmer.app` and the three links in
-`~/.local/bin`. The data folder and the app's settings file stay until you
-delete them.
+`make uninstall-mac` removes `~/Applications/PTZ Programmer.app` and the three
+links in `~/.local/bin`. The data folder and the app's settings file stay
+until you delete them.
 
 ---
 
