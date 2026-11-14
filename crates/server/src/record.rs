@@ -62,7 +62,8 @@ impl Capture {
     pub fn feed(&mut self, stamp: f64, pose: Pose) {
         match self.last {
             None => {
-                self.start_frame = stamp.ceil() as i64;
+                // A pass from the top has readings from before the song began; it starts at frame 0.
+                self.start_frame = (stamp.ceil() as i64).max(0);
                 if stamp == self.start_frame as f64 {
                     self.poses.push(pose);
                 }
@@ -134,6 +135,25 @@ mod tests {
         c.feed(2.5, Pose { tilt: 8.0, ..Pose::home() });
         assert_eq!(c.start_frame(), 0);
         assert_eq!(c.samples()[&Axis::Tilt], vec![3.0, 5.0, 7.0]);
+    }
+
+    /// A reading is some milliseconds old when it arrives, so a pass started at the top of the
+    /// song gets its first readings stamped before frame 0.
+    #[test]
+    fn a_pass_from_the_top_on_a_rig_whose_readings_arrive_late_starts_at_frame_zero() {
+        let mut cap = Capture::new(ptz_core::FIRST_CAMERA, vec![Axis::Pan]);
+        // Readings 2.5 frames old, one every 0.4 of a frame, the head panning a degree a frame.
+        let mut stamp = -2.5;
+        while stamp <= 6.0 {
+            cap.feed(stamp, Pose { pan: stamp, ..Pose::home() });
+            stamp += 0.4;
+        }
+        assert_eq!(cap.start_frame(), 0, "nothing is recorded before the song begins");
+        assert_eq!(cap.frames(), 6, "frames 0 to 5");
+        let pan = &cap.samples()[&Axis::Pan];
+        for (frame, value) in pan.iter().enumerate() {
+            assert!((value - frame as f64).abs() < 1e-9, "frame {frame} holds {value}");
+        }
     }
 
     /// The scripted jog from the plan: pan right at 10 degrees per second from
