@@ -42,10 +42,6 @@ impl Lane {
             Lane::Axis(_) => 30.0,
         }
     }
-
-    pub fn takes_motion(self) -> bool {
-        matches!(self, Lane::Motion | Lane::Axis(_))
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -812,8 +808,10 @@ impl Timeline {
     }
 
     /// Where a dragged preset would land.
+    /// Where a dragged preset would land. Only the pointer's time matters: a
+    /// preset has one lane it can go on, so it lands there from anywhere on the timeline.
     pub fn preset_ghost(&mut self, layout: &Layout, doc: &Doc, preset: &Preset, pos: Pos2, mods: Mods) -> Option<Ghost> {
-        if !layout.body.contains(pos) || !layout.lane_at(pos.y).is_some_and(|l| l.takes_motion()) {
+        if !layout.body.contains(pos) {
             self.snap_frame = None;
             return None;
         }
@@ -1141,6 +1139,21 @@ mod tests {
         assert_eq!(d.undo.len(), 3, "each drop is one undo step");
         let ids: Vec<String> = d.song.motion.iter().map(|c| c.id.clone()).collect();
         assert_eq!(d.t.selection.iter().cloned().collect::<Vec<_>>(), vec![ids[2].clone()]);
+
+        // A drop on any other lane lands on the camera lane at the pointer's time.
+        let l = d.layout();
+        let audio_y = l.lane_rect(Lane::Audio).unwrap().center().y;
+        let doc = Doc { song: &d.song, project: &d.project, playhead: 0.0 };
+        let g = d.t.preset_ghost(&l, &doc, &p[0], pos2(l.x_of(940.0), audio_y), Mods::default()).unwrap();
+        assert_eq!((g.lane, g.start), (Lane::Motion, 940));
+        assert!(
+            d.t.preset_ghost(&l, &doc, &p[0], pos2(l.body.left() - 20.0, y), Mods::default()).is_none(),
+            "not over the lane names"
+        );
+        d.drop_preset(&p[0], pos2(x(&d, 940.0), audio_y));
+        assert_eq!(d.song.motion.len(), 4);
+        d.song = d.undo.pop().unwrap();
+        assert_eq!(d.song.motion.len(), 3);
 
         // A drop inside an existing move is refused and changes nothing.
         let before = d.song.clone();

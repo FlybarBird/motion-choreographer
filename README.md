@@ -59,9 +59,10 @@ server address and the key on the app's connect screen.
 
 1. **New** in the header. Name the song and give it the timecode its first frame
    plays at, for example `01:00:00:00`.
-2. Drag a preset from the **Presets** tab onto the **Camera move** lane. The
-   ghost shows where it lands and how long the move takes: `Stage Wide to
-   Lectern MCU, 7.9 s`. A move starts from wherever the camera already is.
+2. Drag a preset from the **Presets** tab onto the timeline. It lands on the
+   **Camera move** lane at the pointer's time, whichever lane the pointer is
+   over. The ghost shows where it lands and how long the move takes: `Stage
+   Wide to Lectern MCU, 7.9 s`. A move starts from wherever the camera already is.
 3. Drag a move to slide it. Drag its right edge to make it longer; it switches
    from auto time to custom time. Squeeze it too short and it turns amber with
    the reason; **Use auto time** in the Inspector clears it.
