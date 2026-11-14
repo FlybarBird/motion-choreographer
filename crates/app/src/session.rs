@@ -19,6 +19,14 @@ pub struct Toast {
     pub until: Instant,
 }
 
+/// A file whose own timecode falls outside the open song.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StampedDrop {
+    pub media: MediaInfo,
+    /// Where the pointer let go, for "place it here".
+    pub at_frame: i64,
+}
+
 pub struct Session {
     pub link: Link,
     pub station: String,
@@ -47,8 +55,14 @@ pub struct Session {
     pub peaks: HashMap<String, PeakLevel>,
     /// The level asked for per media id, so each is requested once.
     pub peaks_requested: HashMap<String, u32>,
-    pub frames: HashMap<(String, i64), Option<egui::TextureHandle>>,
-    pub frame_jpegs: Vec<(String, i64, Vec<u8>)>,
+    /// Proxy frames of reference video.
+    pub frames: crate::frames::Frames,
+    /// The picture last shown in the reference monitor, held while the next one loads.
+    pub reference_shown: Option<(String, egui::TextureHandle)>,
+    /// Audio inputs and MIDI ports on the server machine, once asked for.
+    pub inputs: Option<InputChoices>,
+    /// A stamped file dropped where its timecode is outside the song, waiting for the operator's choice.
+    pub stamped_drop: Option<StampedDrop>,
     /// Axes Record writes, chosen on the axis lane headers.
     pub record_axes: Vec<ptz_core::Axis>,
     /// Axis lanes selected for `K`.
@@ -117,8 +131,10 @@ impl Session {
             log: hello.log,
             peaks: HashMap::new(),
             peaks_requested: Default::default(),
-            frames: HashMap::new(),
-            frame_jpegs: Vec::new(),
+            frames: Default::default(),
+            reference_shown: None,
+            inputs: None,
+            stamped_drop: None,
             record_axes: vec![ptz_core::Axis::Pan, ptz_core::Axis::Tilt],
             axis_lanes: Default::default(),
             graph: Default::default(),
@@ -257,12 +273,14 @@ impl Session {
                 let same = |id: &String| media.iter().find(|m| &m.id == id) == self.media.iter().find(|m| &m.id == id);
                 self.peaks.retain(|id, _| same(id));
                 self.peaks_requested.retain(|id, _| same(id));
+                self.frames.retain_media(|id| same(&id.to_string()));
                 self.media = media;
             }
             Event::Peaks { media, level } => {
                 self.peaks.insert(media, level);
             }
-            Event::Frame { media, frame, jpeg } => self.frame_jpegs.push((media, frame, jpeg)),
+            Event::Frame { key, image } => self.frames.store(key, image),
+            Event::Inputs(choices) => self.inputs = Some(choices),
             Event::PresetThumb { .. } => {}
             Event::Committed(info) => self.toast(format!("Committed revision {}", info.number), false),
             Event::Uploaded(info) => {

@@ -356,18 +356,152 @@ fn inspect_media(ui: &mut Ui, s: &mut Session, id: &str) {
             ui.label("File");
             ui.label(format!("{} ch, {} Hz", info.channels, info.sample_rate));
             ui.end_row();
-            ui.label("File timecode");
-            match (&info.start_tc, &info.start_tc_source) {
-                (Some(tc), Some(src)) => ui.label(format!("{tc}  ({src})")),
-                (Some(tc), None) => ui.label(tc),
-                _ => ui.label(RichText::new("none found").color(MUTED)),
-            };
-            ui.end_row();
         }
     });
     let mut muted = clip.muted;
     if ui.checkbox(&mut muted, "Mute in Program").changed() {
         s.edit(|song, project| edit::set_media_muted(song, project, id, muted));
+    }
+    if let Some(info) = s.media.iter().find(|m| m.id == clip.media_id).cloned() {
+        file_timecode(ui, s, &song, &clip, &info);
+        lock_to_file(ui, s, &clip, &info);
+    }
+}
+
+/// Where a stamp came from, in the operator's words.
+pub fn stamp_source_label(source: &str) -> String {
+    match source {
+        "bext" => "from the broadcast WAV".into(),
+        "quicktime" => "from the video's timecode track".into(),
+        "typed" => "typed in".into(),
+        other => match other.strip_prefix("ltc channel ") {
+            Some(n) => format!("read from LTC on channel {n}"),
+            None => other.to_string(),
+        },
+    }
+}
+
+/// The file's own start timecode: shown, typed, or read from an LTC channel; and whether the clip sits on it.
+fn file_timecode(
+    ui: &mut Ui,
+    s: &mut Session,
+    song: &ptz_core::song::Song,
+    clip: &ptz_core::song::MediaClip,
+    info: &ptz_core::api::MediaInfo,
+) {
+    let rate = s.project.rate;
+    let editable = s.can_edit();
+    section(ui, "File timecode");
+    ui.add_enabled_ui(editable.is_ok(), |ui| {
+        egui::Grid::new("file_tc_grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+            ui.label("Starts at");
+            ui.horizontal(|ui| {
+                let current = info.start_tc.clone().unwrap_or_default();
+                if let Some(typed) = text_field(ui, &format!("file_tc_{}", info.id), &current, 96.0) {
+                    let typed = typed.trim().to_string();
+                    if typed.is_empty() || Timecode::parse_at(&typed, rate).is_some() {
+                        s.link.send(Cmd::SetMediaTc { id: info.id.clone(), start_tc: typed });
+                    } else {
+                        s.toast(format!("{typed} is not a timecode at {} fps. Use HH:MM:SS:FF", rate.label()), true);
+                    }
+                }
+                match &info.start_tc_source {
+                    Some(source) => ui.label(RichText::new(stamp_source_label(source)).color(MUTED).small()),
+                    None => ui.label(RichText::new("none in the file: type one, or lock by position").color(MUTED).small()),
+                };
+            });
+            ui.end_row();
+            ui.label("Read LTC");
+            ui.horizontal(|ui| {
+                let picked = info.ltc_channel.map(|c| format!("Channel {}", c + 1)).unwrap_or_else(|| "from channel...".into());
+                egui::ComboBox::from_id_salt(("ltc_channel", &info.id)).selected_text(picked).width(118.0).show_ui(ui, |ui| {
+                    for n in 1..=info.channels.max(1) {
+                        if ui.selectable_label(info.ltc_channel == Some(n - 1), format!("Channel {n}")).clicked() {
+                            s.link.send(Cmd::SetMediaTc { id: info.id.clone(), start_tc: format!("ltc:{n}") });
+                        }
+                    }
+                });
+                if info.ltc_channel.is_some() {
+                    ui.label(RichText::new("kept out of Program").color(MUTED).small());
+                }
+            });
+            ui.end_row();
+        });
+    });
+
+    // The clip against its stamp.
+    let Some(code_frame) = info.frame_in(song, rate) else { return };
+    let sits = clip.start_frame - clip.in_frame;
+    if sits == code_frame {
+        ui.label(RichText::new("On its timecode").color(GREEN).small());
+        return;
+    }
+    let file_start = info.start_tc.clone().unwrap_or_default();
+    let fits = code_frame + clip.in_frame >= 0 && code_frame + clip.in_frame < song.length_frames;
+    ui.horizontal_wrapped(|ui| {
+        ui.label(RichText::new("!").color(AMBER).strong());
+        let off = sits - code_frame;
+        let which = if off > 0 { "late" } else { "early" };
+        let text = if fits {
+            format!("Sits {} frames {which} against its timecode", off.abs())
+        } else {
+            format!("Its timecode, {file_start}, is outside this song")
+        };
+        ui.label(RichText::new(text).color(AMBER));
+    });
+    ui.add_enabled_ui(editable.is_ok(), |ui| {
+        if fits {
+            if ui.button("Move to its timecode").clicked() {
+                let to = code_frame + clip.in_frame;
+                let id = clip.id.clone();
+                s.edit(|song, project| edit::move_clip(song, project, &id, to));
+            }
+        } else if ui
+            .button(format!("Set the song start to {file_start}"))
+            .on_hover_text("The song starts on the file's first frame. Everything else keeps its place and takes new timecodes")
+            .clicked()
+        {
+            let (id, to) = (clip.id.clone(), clip.in_frame);
+            s.edit(|song, project| {
+                let moved = edit::set_song_start(song, project, &file_start)?;
+                edit::move_clip(&moved, project, &id, to)
+            });
+        }
+    });
+}
+
+/// Lock the playhead to this file, or let go of it.
+fn lock_to_file(ui: &mut Ui, s: &mut Session, clip: &ptz_core::song::MediaClip, info: &ptz_core::api::MediaInfo) {
+    use ptz_core::transport::Action;
+    section(ui, "Lock");
+    let source = format!("file:{}", clip.id);
+    let locked_here = s.status.lock.source.as_deref() == Some(source.as_str());
+    let g = s.status.guidance.clone();
+    if locked_here {
+        ui.label(RichText::new("The playhead follows this file. Play to code rolls it.").color(MUTED).small());
+        let unlock = ui.add_enabled(g.allows(Action::Unlock), egui::Button::new("Unlock"));
+        let unlock = match g.reason(Action::Unlock) {
+            Some(why) => unlock.on_disabled_hover_text(why),
+            None => unlock,
+        };
+        if unlock.clicked() {
+            s.act(Action::Unlock);
+        }
+        return;
+    }
+    let how = if info.start_tc.is_some() {
+        "The file's timecode becomes the show's clock: exact, with no drift."
+    } else {
+        "The file has no timecode, so it locks from its first sample where the clip sits."
+    };
+    ui.label(RichText::new(how).color(MUTED).small());
+    let lock = ui.add_enabled(g.allows(Action::Lock) && s.lost.is_none(), egui::Button::new("Lock to this file"));
+    let lock = match g.reason(Action::Lock) {
+        Some(why) => lock.on_disabled_hover_text(why),
+        None => lock,
+    };
+    if lock.clicked() {
+        s.link.send(Cmd::Act(Action::Lock, ptz_core::api::TransportRequest { source: Some(source), ..Default::default() }));
     }
 }
 

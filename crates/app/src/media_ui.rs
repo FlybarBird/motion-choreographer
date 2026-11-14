@@ -5,7 +5,7 @@ use crate::panels::note;
 use crate::session::Session;
 use crate::theme::*;
 use crate::timeline_ui::MediaDrag;
-use egui::{vec2, Align2, FontId, Rect, RichText, Sense, Stroke, StrokeKind, Ui};
+use egui::{vec2, Align2, Color32, FontId, Rect, RichText, Sense, Stroke, StrokeKind, Ui};
 use ptz_core::api::{MediaInfo, MediaKind};
 
 pub fn duration_label(seconds: f64) -> String {
@@ -145,9 +145,90 @@ pub fn meters(ui: &mut Ui, s: &Session) {
     resp.on_hover_text(hover);
 }
 
-pub fn reference(ui: &mut Ui, _s: &mut Session) {
-    ui.add_space(12.0);
-    ui.vertical_centered(|ui| note(ui, "No reference video is on the timeline."));
+/// How many frames ahead of the playhead are fetched while playing.
+const PREFETCH: i64 = 12;
+
+/// The video clip under `frame`, and which frame of its file that is.
+pub fn picture_at(song: &ptz_core::song::Song, frame: i64) -> Option<(&ptz_core::song::MediaClip, i64)> {
+    song.media
+        .iter()
+        .filter(|c| c.track == ptz_core::song::Track::Video)
+        .find(|c| (c.start_frame..c.end_frame()).contains(&frame))
+        .map(|c| (c, c.in_frame + frame - c.start_frame))
+}
+
+fn fit(inside: Rect, aspect: f32) -> Rect {
+    let size = if inside.width() / inside.height() > aspect {
+        vec2(inside.height() * aspect, inside.height())
+    } else {
+        vec2(inside.width(), inside.width() / aspect)
+    };
+    Rect::from_center_size(inside.center(), size)
+}
+
+/// The reference monitor: the frame of the reference video under the playhead.
+pub fn reference(ui: &mut Ui, s: &mut Session) {
+    let Some(song) = s.song.clone() else {
+        ui.add_space(12.0);
+        ui.vertical_centered(|ui| note(ui, "No song is open."));
+        return;
+    };
+    if !song.media.iter().any(|c| c.track == ptz_core::song::Track::Video) {
+        ui.add_space(12.0);
+        ui.vertical_centered(|ui| {
+            note(ui, "No reference video is on the timeline.");
+            note(ui, "Import a QuickTime or MP4 file, then drag it from Media onto the Reference video lane.");
+        });
+        return;
+    }
+    let (area, _) = ui.allocate_exact_size(ui.available_size(), Sense::hover());
+    let p = ui.painter_at(area);
+    p.rect_filled(area, 0.0, Color32::BLACK);
+    let frame = s.playhead().floor() as i64;
+    let Some((clip, source)) = picture_at(&song, frame) else {
+        s.reference_shown = None;
+        p.text(area.center(), Align2::CENTER_CENTER, "No picture at the playhead", FontId::proportional(13.0), MUTED);
+        return;
+    };
+    let info = s.media.iter().find(|m| m.id == clip.media_id).cloned();
+    if !info.as_ref().is_some_and(|m| m.proxy_frames > 0) {
+        p.text(area.center(), Align2::CENTER_CENTER, "This file has no picture", FontId::proportional(13.0), MUTED);
+        return;
+    }
+    let key = crate::frames::key(&clip.media_id, source, false);
+    s.frames.want(&s.link, &key);
+    if s.is_playing() {
+        for ahead in 1..=PREFETCH {
+            if source + ahead < clip.out_frame {
+                s.frames.want(&s.link, &crate::frames::key(&clip.media_id, source + ahead, false));
+            }
+        }
+    }
+    if let Some(texture) = s.frames.texture(ui.ctx(), &key) {
+        s.reference_shown = Some((clip.media_id.clone(), texture));
+    }
+    // Until the frame arrives, the last one shown from this file stays up.
+    match s.reference_shown.as_ref().filter(|(media, _)| *media == clip.media_id) {
+        Some((_, texture)) => {
+            let size = texture.size_vec2();
+            let at = fit(area.shrink(2.0), size.x / size.y.max(1.0));
+            p.image(texture.id(), at, Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
+            let strip = Rect::from_min_max(egui::pos2(at.left(), at.bottom() - 20.0), at.max);
+            p.rect_filled(strip, 0.0, with_alpha(NAVY, 170));
+            p.text(strip.left_center() + vec2(6.0, 0.0), Align2::LEFT_CENTER, &clip.name, FontId::proportional(11.0), OFF_WHITE);
+            let rate = s.project.rate;
+            let code = info
+                .as_ref()
+                .and_then(|m| m.start_tc.as_deref())
+                .and_then(|tc| ptz_core::time::Timecode::parse_at(tc, rate))
+                .map(|start| ptz_core::time::Timecode::from_frames(start.to_frames(rate) + source, rate).to_string())
+                .unwrap_or_else(|| format!("frame {source}"));
+            p.text(strip.right_center() - vec2(6.0, 0.0), Align2::RIGHT_CENTER, code, FontId::monospace(11.0), OFF_WHITE);
+        }
+        None => {
+            p.text(area.center(), Align2::CENTER_CENTER, "Loading the picture", FontId::proportional(13.0), MUTED);
+        }
+    }
 }
 
 #[cfg(test)]

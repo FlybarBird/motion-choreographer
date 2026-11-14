@@ -25,6 +25,22 @@ fn route_combo(ui: &mut Ui, label: &str, route: &mut ChannelRoute) {
     ui.end_row();
 }
 
+/// A device picker: the automatic choice first, then what the server found. A name that is
+/// set but not present stays in the list, marked, so it is not silently replaced.
+fn device_combo(ui: &mut Ui, salt: &str, value: &mut String, automatic: &str, found: &[String]) {
+    let shown = if value.is_empty() { automatic.to_string() } else { value.clone() };
+    egui::ComboBox::from_id_salt(salt).selected_text(shown).width(190.0).show_ui(ui, |ui| {
+        ui.selectable_value(value, String::new(), automatic);
+        for name in found {
+            ui.selectable_value(value, name.clone(), name);
+        }
+        if !value.is_empty() && !found.contains(value) {
+            let missing = format!("{value} (not connected)");
+            ui.selectable_value(value, value.clone(), missing);
+        }
+    });
+}
+
 fn step_for(axis: Axis) -> f64 {
     match axis {
         Axis::Pan | Axis::Tilt => 0.5,
@@ -61,6 +77,50 @@ pub fn project(ui: &mut Ui, s: &mut Session) {
             .color(MUTED)
             .small(),
     );
+
+    section(ui, "Timecode inputs");
+    ui.label(RichText::new("Where Lock listens. These are devices on the server machine.").color(MUTED).small());
+    if s.inputs.is_none() {
+        s.inputs = Some(Default::default());
+        s.link.send(Cmd::RefreshInputs);
+    }
+    let choices = s.inputs.clone().unwrap_or_default();
+    ui.add_enabled_ui(editable, |ui| {
+        egui::Grid::new("inputs_grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+            ui.label("LTC input");
+            ui.horizontal(|ui| {
+                device_combo(ui, "ltc_device", &mut project.inputs.ltc_device, "Default input", &choices.audio_inputs);
+                let mut channel = project.inputs.ltc_channel + 1;
+                if ui.add(egui::DragValue::new(&mut channel).range(1..=64).prefix("channel ")).changed() {
+                    project.inputs.ltc_channel = channel - 1;
+                }
+            });
+            ui.end_row();
+            ui.label("MTC input");
+            device_combo(ui, "mtc_port", &mut project.inputs.mtc_port, "First MIDI input", &choices.midi_inputs);
+            ui.end_row();
+            ui.label("Art-Net");
+            if let Some(bind) = crate::panels::text_field(ui, "artnet_bind", &project.inputs.artnet_bind, 150.0) {
+                match bind.trim().parse::<std::net::SocketAddr>() {
+                    Ok(_) => project.inputs.artnet_bind = bind.trim().to_string(),
+                    Err(_) => {
+                        s.toast(format!("{bind} is not an address and port. Use 0.0.0.0:6454 to listen on every network"), true)
+                    }
+                }
+            }
+            ui.end_row();
+            ui.label("Freewheel");
+            ui.add(egui::DragValue::new(&mut project.freewheel_frames).range(0..=250).suffix(" frames"))
+                .on_hover_text("How long the playhead carries on when code drops out, before it stops and holds");
+            ui.end_row();
+        });
+    });
+    for problem in [&choices.audio_problem, &choices.midi_problem].into_iter().flatten() {
+        ui.label(RichText::new(problem).color(AMBER).small());
+    }
+    if ui.small_button("List devices again").clicked() {
+        s.link.send(Cmd::RefreshInputs);
+    }
 
     section(ui, "Rig limits");
     ui.label(
