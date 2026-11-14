@@ -315,6 +315,36 @@ fn inspect_move(ui: &mut Ui, s: &mut Session, id: &str) {
                 });
                 ui.end_row();
 
+                // A move keeps its own copy of the pose, so a preset stored again later does not reach it by itself.
+                let newer = |r: &PresetRef| presets.iter().find(|p| p.id == r.preset_id && PresetRef::of(p) != *r).cloned();
+                let stale_from = match from {
+                    FromPose::Pinned(r) => newer(r),
+                    FromPose::Linked(_) => None,
+                };
+                let stale_to = newer(to);
+                if stale_from.is_some() || stale_to.is_some() {
+                    ui.label("");
+                    ui.horizontal(|ui| {
+                        let which = stale_to.as_ref().or(stale_from.as_ref()).map(|p| p.name.clone()).unwrap_or_default();
+                        ui.label(RichText::new(format!("{which} has changed")).color(AMBER)).on_hover_text(
+                            "The preset was stored again after this move was made. The move still uses the old pose",
+                        );
+                        if ui.button("Update").on_hover_text("Use the preset as it is now").clicked() {
+                            s.edit(|song, project| {
+                                let mut next = song.clone();
+                                if let Some(p) = &stale_from {
+                                    next = edit::set_from(&next, project, id, FromPose::Pinned(PresetRef::of(p)))?;
+                                }
+                                if let Some(p) = &stale_to {
+                                    next = edit::set_to(&next, project, id, p)?;
+                                }
+                                Ok(next)
+                            });
+                        }
+                    });
+                    ui.end_row();
+                }
+
                 tc_row(ui, s, "Start", clip.start_frame);
                 tc_row(ui, s, "End", clip.end_frame());
 

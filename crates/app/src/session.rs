@@ -89,6 +89,8 @@ pub struct Session {
     pub preset_pictures: HashMap<String, PresetPicture>,
     /// "Sync from rig" was pressed on a real rig and waits for the operator to confirm the move.
     pub confirm_sync: bool,
+    /// "Take over" was pressed while another station holds the lease and waits for a second click.
+    pub confirm_takeover: bool,
     /// Where things were drawn last frame, for the UI tests.
     pub probe_timeline: Option<egui::Rect>,
     pub probe_presets: Vec<(String, egui::Rect)>,
@@ -118,6 +120,7 @@ fn idle_status() -> Status {
         lock: Default::default(),
         record: Default::default(),
         telemetry: Default::default(),
+        panel: None,
     }
 }
 
@@ -163,6 +166,7 @@ impl Session {
             probe_tiles: Vec::new(),
             preset_pictures: HashMap::new(),
             confirm_sync: false,
+            confirm_takeover: false,
             probe_timeline: None,
             probe_presets: Vec::new(),
             probe_media: Vec::new(),
@@ -302,7 +306,18 @@ impl Session {
                 self.toast("Reconnected", false);
             }
             Event::Status(status) => {
+                let had = self.status.you_hold_lease;
                 self.status = *status;
+                if had && !self.status.you_hold_lease {
+                    if let Some(l) = &self.status.lease {
+                        let text =
+                            format!("{} took the edit lease. This station is watching; nothing in the song was lost", l.holder);
+                        self.toast(text, true);
+                    }
+                }
+                if self.status.you_hold_lease || self.status.lease.is_none() {
+                    self.confirm_takeover = false;
+                }
                 self.status_at = Instant::now();
                 self.lost = None;
                 self.reconcile();

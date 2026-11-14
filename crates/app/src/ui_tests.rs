@@ -1661,3 +1661,120 @@ fn a_layout_saved_before_the_stage_tabs_existed_gains_them_beside_the_program_mo
     assert_eq!(tabs(&again.dock), tabs(&crate::app::default_layout()));
     assert_eq!(tabs(&again.dock).len(), Tab::ALL.len());
 }
+
+// ---------------------------------------------------------------- audit follow-ups
+
+#[test]
+fn take_over_asks_before_taking_the_lease_from_another_station() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut r = rig(Song::new("s", "Test Song", "01:00:00:00", 1500));
+    let takes = |r: &Rig| -> Vec<bool> {
+        r.cmds.try_iter().filter_map(|c| if let Cmd::TakeLease { force, .. } = c { Some(force) } else { None }).collect()
+    };
+    {
+        let s = &mut r.harness.state_mut().session;
+        s.status.you_hold_lease = false;
+        s.status.lease =
+            Some(ptz_core::api::LeaseStatus { holder: "Front of house".into(), client_id: "other".into(), expires_in_ms: 9000 });
+    }
+    r.harness.run_steps(3);
+
+    r.press("Take over");
+    r.harness.get_by_label("Take the edit lease from Front of house?");
+    assert!(takes(&r).is_empty(), "one click does not take the lease from someone");
+    r.press("Cancel");
+    assert!(r.harness.query_by_label("Take the edit lease from Front of house?").is_none());
+    assert!(takes(&r).is_empty());
+
+    r.press("Take over");
+    r.press("Take it from Front of house");
+    assert_eq!(takes(&r), vec![true]);
+    assert!(r.harness.query_by_label("Take the edit lease from Front of house?").is_none());
+
+    // A free lease is taken at once: there is nobody to take it from.
+    r.harness.state_mut().session.status.lease = None;
+    r.harness.run_steps(3);
+    r.press("Take the lease");
+    assert_eq!(takes(&r), vec![false]);
+}
+
+#[test]
+fn a_station_that_loses_the_lease_is_told_who_took_it() {
+    let mut r = rig(Song::new("s", "Test Song", "01:00:00:00", 1500));
+    assert!(r.harness.state().session.status.you_hold_lease);
+    let mut status = r.harness.state().session.status.clone();
+    status.you_hold_lease = false;
+    status.lease = Some(ptz_core::api::LeaseStatus { holder: "Balcony".into(), client_id: "other".into(), expires_in_ms: 9000 });
+    r.harness.state_mut().session.on_event(Event::Status(Box::new(status.clone())));
+    assert_eq!(r.toasts().iter().filter(|t| t.starts_with("Balcony took the edit lease")).count(), 1, "{:?}", r.toasts());
+    // It is said once, not on every status that follows.
+    r.harness.state_mut().session.on_event(Event::Status(Box::new(status)));
+    assert_eq!(r.toasts().iter().filter(|t| t.starts_with("Balcony took the edit lease")).count(), 1);
+}
+
+#[test]
+fn a_move_whose_preset_was_stored_again_offers_to_update() {
+    use egui_kittest::kittest::Queryable as _;
+    let empty = Song::new("s", "Test Song", "01:00:00:00", 1500);
+    let (song, id) = ptz_core::edit::insert_preset_move(&empty, &Project::default(), &presets()[1], 100).unwrap();
+    let mut r = rig(song);
+    r.harness.state_mut().session.timeline.selection.insert(id.clone());
+    r.harness.state_mut().show_tab(Tab::Inspector);
+    r.harness.run_steps(3);
+    assert!(r.harness.query_by_label("Update").is_none(), "nothing to update while the preset is as it was");
+
+    let name = presets()[1].name.clone();
+    r.harness.state_mut().session.presets[1].pose.pan += 7.5;
+    let now = r.harness.state().session.presets[1].pose;
+    r.harness.run_steps(3);
+    r.harness.get_by_label(&format!("{name} has changed"));
+    let pose_of = |r: &Rig| match &r.song().motion_clip(&id).unwrap().body {
+        ptz_core::song::ClipBody::PresetMove { to, .. } => to.pose,
+        other => panic!("{other:?}"),
+    };
+    assert_ne!(pose_of(&r), now, "the move keeps the pose it was made with");
+
+    let undo = r.harness.state().session.undo.len();
+    r.press("Update");
+    assert_eq!(pose_of(&r), now);
+    assert_eq!(r.harness.state().session.undo.len(), undo + 1, "one undo step");
+    assert!(r.harness.query_by_label("Update").is_none());
+}
+
+#[test]
+fn choosing_a_lens_from_the_list_sets_the_camera_lens_and_keeps_its_sensor() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut r = rig(Song::new("s", "Test Song", "01:00:00:00", 1500));
+    r.harness.state_mut().show_tab(Tab::Inspector);
+    r.harness.run_steps(3);
+    let _ = r.projects();
+    let lenses = ptz_core::lens::Lens::presets();
+    let before = r.harness.state().session.project.cameras[0].lens.clone();
+    assert_eq!(before, lenses[0]);
+
+    // A combo box carries what is chosen as its value, not as its label.
+    r.harness.get_by_value(&before.name).scroll_to_me();
+    r.harness.run_steps(40);
+    r.harness.get_by_value(&before.name).click();
+    r.harness.run_steps(3);
+    r.press(&lenses[3].name);
+    let sent = r.projects().pop().expect("the project was sent");
+    let lens = &sent.cameras[0].lens;
+    assert_eq!((lens.name.as_str(), lens.wide_mm, lens.tele_mm), (lenses[3].name.as_str(), 70.0, 200.0));
+    assert_eq!(lens.sensor_width_mm, before.sensor_width_mm);
+    sent.validate().unwrap();
+}
+
+#[test]
+fn servers_this_station_reached_are_remembered_newest_first() {
+    let mut recent = Vec::new();
+    for url in ["http://a:8787", "http://b:8787", " http://a:8787 ", "", "http://c:8787"] {
+        crate::app::remember_server(&mut recent, url);
+    }
+    assert_eq!(recent, vec!["http://c:8787", "http://a:8787", "http://b:8787"]);
+    for n in 0..9 {
+        crate::app::remember_server(&mut recent, &format!("http://host{n}:8787"));
+    }
+    assert_eq!(recent.len(), 5);
+    assert_eq!(recent[0], "http://host8:8787");
+}
