@@ -39,6 +39,8 @@ pub struct Session {
     pub station: String,
     /// Why the connection is down, while it is.
     pub lost: Option<String>,
+    /// An E-Stop pressed here that the server has not taken: why, and whether it is still being sent.
+    pub stop_not_sent: Option<(String, bool)>,
     pub status: Status,
     status_at: Instant,
     pub project: Project,
@@ -129,6 +131,7 @@ impl Session {
             link,
             station: station.to_string(),
             lost: None,
+            stop_not_sent: None,
             status: hello.status,
             status_at: Instant::now(),
             active_camera: hello.project.first().id.clone(),
@@ -319,6 +322,9 @@ impl Session {
                 }
                 self.status_at = Instant::now();
                 self.lost = None;
+                if self.status.transport.estop {
+                    self.stop_not_sent = None;
+                }
                 self.reconcile();
             }
             Event::Working(w, why) => {
@@ -431,6 +437,7 @@ impl Session {
                 }
             }
             Event::Refused { what, msg } => self.toast(format!("{what}: {msg}"), true),
+            Event::StopNotSent { why, trying } => self.stop_not_sent = Some((why, trying)),
             Event::Info(text) => self.toast(text, false),
         }
     }
@@ -621,7 +628,17 @@ impl Session {
         self.link.send(Cmd::Act(action, req));
     }
 
+    /// May this station ask for `action` now? The one rule for a button and for the key that stands for it.
+    /// E-Stop is always offered: it is sent even to a server that seems out of reach.
+    pub fn offers(&self, action: Action) -> bool {
+        action == Action::Estop || (self.status.guidance.allows(action) && self.lost.is_none())
+    }
+
     pub fn seek(&mut self, frame: i64) {
+        // Nothing is queued up for a server that cannot be reached, to arrive whenever it comes back.
+        if self.lost.is_some() {
+            return;
+        }
         let length = self.song.as_ref().map(|s| s.length_frames).unwrap_or(0);
         let frame = frame.clamp(0, length);
         self.scrub = Some((frame, Instant::now()));

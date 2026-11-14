@@ -193,6 +193,7 @@ fn open(r: &mut Rig, prompt: Prompt) {
         Prompt::RenameMarker => {
             ctx.data_mut(|d| d.insert_temp(crate::app::marker_rename_id(), ("m1".to_string(), "Chorus".to_string())));
         }
+        Prompt::StopNotSent => shell.session.stop_not_sent = Some(("Connection refused".into(), true)),
         Prompt::StampedDrop => {
             shell.session.stamped_drop = Some(crate::session::StampedDrop {
                 media: stamped_media("late", ptz_core::api::MediaKind::Audio, "05:00:00:00"),
@@ -216,6 +217,7 @@ fn words_of(prompt: Prompt) -> &'static str {
         Prompt::TakeOver => "Take the edit lease from Dana?",
         Prompt::RenameMarker => "Rename marker",
         Prompt::StampedDrop => "late.wav starts at 05:00:00:00",
+        Prompt::StopNotSent => crate::app::STOP_NOT_SENT,
     }
 }
 
@@ -361,4 +363,69 @@ fn no_key_reaches_the_show_while_a_dialog_is_open() {
         assert!(crate::app::modal_open(&r.harness.ctx), "{prompt:?} is still open");
         assert_eq!(before, show_state(&r), "under {prompt:?}");
     }
+}
+
+/// The transport buttons are off while the server cannot be reached; so are the keys that stand for them.
+#[test]
+fn transport_keys_do_nothing_while_the_server_is_unreachable() {
+    use egui::Key;
+    let mut r = busy(DEFAULT_WINDOW);
+    r.harness.state_mut().session.lost = Some("Lost the connection to the server. Reconnecting".into());
+    r.harness.run_steps(2);
+    for label in ["Rehearse", "Cue"] {
+        assert!(r.harness.get_by_label(label).accesskit_node().is_disabled(), "the {label} button is off");
+    }
+    for key in [Key::Space, Key::Home, Key::End, Key::ArrowLeft, Key::ArrowRight] {
+        r.harness.key_press(key);
+        r.harness.run_steps(2);
+        assert_eq!(acts(&r), vec![], "{key:?} asks nothing of a server that cannot be reached");
+    }
+    let l = r.layout();
+    r.click(pos2(l.x_of(480.0), l.ruler.center().y));
+    assert_eq!(acts(&r), vec![], "a click on the ruler asks nothing of it either");
+
+    // The same keys, once the server is back.
+    r.harness.state_mut().session.lost = None;
+    r.harness.run_steps(2);
+    r.harness.key_press(Key::Space);
+    r.harness.run_steps(2);
+    assert_eq!(acts(&r).len(), 1, "Space runs the transport again");
+}
+
+/// E-Stop is the one thing sent to a server that cannot be reached. If it does not arrive the operator is
+/// told so, over everything else, until the stop is seen to be latched.
+#[test]
+fn e_stop_is_sent_to_a_server_out_of_reach_and_the_operator_is_told_when_it_does_not_arrive() {
+    use crate::app::{STOP_GAVE_UP, STOP_NOT_SENT, STOP_NOT_SENT_DO, STOP_STILL_TRYING};
+    let mut r = rig_sized(SMALLEST_WINDOW, Project::default(), presets(), song());
+    r.harness.state_mut().session.lost = Some("Lost the connection to the server. Reconnecting".into());
+    // A dialog happens to be open as well.
+    open(&mut r, Prompt::SyncPresets);
+    let at = rect_of(&r, "E-STOP").center();
+    r.click(at);
+    assert_eq!(acts(&r), vec![Action::Estop], "the press is sent all the same");
+    assert!(r.harness.query_by_label(STOP_NOT_SENT).is_none(), "nothing is said before the server has had its chance");
+
+    r.events.send(Event::StopNotSent { why: "Connection refused".into(), trying: true }).unwrap();
+    r.harness.run_steps(3);
+    for words in [STOP_NOT_SENT, STOP_NOT_SENT_DO, "What went wrong: Connection refused", STOP_STILL_TRYING] {
+        assert!(r.harness.query_by_label(words).is_some(), "the operator is told: {words}");
+    }
+    shot(&r, "1100x700-stop-not-sent");
+    r.events.send(Event::StopNotSent { why: "Connection refused".into(), trying: false }).unwrap();
+    r.harness.run_steps(3);
+    assert!(r.harness.query_by_label(STOP_GAVE_UP).is_some());
+    assert!(r.harness.query_by_label(STOP_STILL_TRYING).is_none());
+
+    // E-STOP is above this too, and pressing it sends the stop again.
+    assert_whole(&mut r, SMALLEST_WINDOW, "E-STOP", Action::Estop);
+    assert!(r.harness.query_by_label(STOP_NOT_SENT).is_some(), "it stays until it is closed or the stop is latched");
+
+    // The stop got through after all: the server reports the latch.
+    let mut status = r.harness.state().session.status.clone();
+    status.transport.estop = true;
+    r.events.send(Event::Status(Box::new(status))).unwrap();
+    r.harness.run_steps(3);
+    assert!(r.harness.query_by_label(STOP_NOT_SENT).is_none(), "the notice goes when the stop is latched");
+    assert!(r.harness.query_by_label("E-STOP LATCHED").is_some());
 }

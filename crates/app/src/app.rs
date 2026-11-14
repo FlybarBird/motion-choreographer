@@ -130,6 +130,12 @@ impl Settings {
     }
 }
 
+/// What the operator is told when an E-Stop pressed here has not been taken by the server.
+pub const STOP_NOT_SENT: &str = "E-STOP has not reached the server";
+pub const STOP_NOT_SENT_DO: &str = "The rig may still be moving. Use the stop control on the rig itself, or cut its power.";
+pub const STOP_STILL_TRYING: &str = "The stop is still being sent.";
+pub const STOP_GAVE_UP: &str = "The stop is no longer being sent. Click E-STOP to send it again.";
+
 /// Arm is never a quiet switch: the rig travels to the pose at the playhead before anything plays.
 pub const ARM_LABEL: &str = "Arm (moves rig to playhead)";
 
@@ -146,11 +152,12 @@ pub enum Prompt {
     TakeOver,
     RenameMarker,
     StampedDrop,
+    StopNotSent,
 }
 
 impl Prompt {
     #[cfg(test)]
-    pub const ALL: [Prompt; 9] = [
+    pub const ALL: [Prompt; 10] = [
         Prompt::NewSong,
         Prompt::LoadSong,
         Prompt::SaveAs,
@@ -160,6 +167,7 @@ impl Prompt {
         Prompt::TakeOver,
         Prompt::RenameMarker,
         Prompt::StampedDrop,
+        Prompt::StopNotSent,
     ];
 
     /// The one way a dialog is put on the screen.
@@ -264,7 +272,7 @@ impl egui_dock::TabViewer for Viewer<'_> {
 /// A transport button: enabled when the server says so, with the server's reason when not.
 fn action_button(ui: &mut Ui, s: &mut Session, action: Action, glyph: &str, label: &str, look: Look, min_w: f32) -> bool {
     let g = &s.status.guidance;
-    let enabled = g.allows(action) && s.lost.is_none();
+    let enabled = s.offers(action);
     let resp = icon_button(ui, enabled, glyph, label, look, vec2(min_w, 30.0));
     let reason = if s.lost.is_some() { Some("The server is not reachable") } else { g.reason(action) };
     let resp = match reason {
@@ -789,18 +797,19 @@ impl Shell {
         if pressed(Key::Space) {
             let g = &s.status.guidance;
             // Space runs the transport. Releasing the E-Stop latch takes a click on its own button.
+            // A key does what its button would: nothing, while the button is off.
             if let Some(action) = g.primary.filter(|a| !matches!(a, Action::Estop | Action::ResetEstop)) {
-                if g.allows(action) {
+                if s.offers(action) {
                     s.act(action);
                 }
             }
         }
-        if pressed(Key::Home) && s.status.guidance.allows(Action::Cue) {
+        if pressed(Key::Home) && s.offers(Action::Cue) {
             s.act(Action::Cue);
         }
         let step = if shift { 10 } else { 1 };
         // While the rig controller has the keyboard, the arrows drive the rig.
-        let can_seek = s.status.guidance.allows(Action::Seek) && !s.rig.keyboard;
+        let can_seek = s.offers(Action::Seek) && !s.rig.keyboard;
         if pressed(Key::ArrowLeft) && can_seek {
             let f = s.playhead().round() as i64 - step;
             s.seek(f);
@@ -1080,6 +1089,34 @@ impl Shell {
         }
 
         self.stamped_drop_dialog(ctx);
+        self.stop_not_sent_dialog(ctx);
+    }
+
+    /// E-Stop was pressed here and the server has not taken it. This is put up over everything else,
+    /// and stays until the operator closes it or the server reports the stop latched.
+    fn stop_not_sent_dialog(&mut self, ctx: &egui::Context) {
+        let s = &mut self.session;
+        let Some((why, trying)) = s.stop_not_sent.clone() else { return };
+        let mut close = false;
+        Prompt::StopNotSent.show(ctx, |ui| {
+            ui.set_width(440.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(icon::WARNING_OCTAGON).font(icon_font(22.0)).color(RED));
+                ui.heading(RichText::new(STOP_NOT_SENT).color(RED));
+            });
+            ui.add_space(4.0);
+            ui.label(RichText::new(STOP_NOT_SENT_DO).strong());
+            ui.add_space(4.0);
+            ui.label(RichText::new(format!("What went wrong: {}", why.trim_end_matches('.'))).color(MUTED));
+            ui.label(if trying { STOP_STILL_TRYING } else { STOP_GAVE_UP });
+            ui.add_space(8.0);
+            if ui.button("Close").clicked() {
+                close = true;
+            }
+        });
+        if close || ctx.input(|i| i.key_pressed(Key::Escape)) {
+            s.stop_not_sent = None;
+        }
     }
 
     /// A stamped file was dropped on a song its timecode does not fall inside.
