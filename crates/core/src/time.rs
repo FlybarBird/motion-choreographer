@@ -269,7 +269,7 @@ pub fn frame_to_sample(frame: i64, sample_rate: u32, rate: FrameRate) -> i64 {
 /// Frame that contains `sample`.
 pub fn sample_to_frame(sample: i64, sample_rate: u32, rate: FrameRate) -> i64 {
     let n = sample as i128 * rate.num() as i128;
-    let d = sample_rate as i128 * rate.den() as i128;
+    let d = sample_rate.max(1) as i128 * rate.den() as i128;
     n.div_euclid(d) as i64
 }
 
@@ -401,5 +401,13 @@ mod tests {
         // A song that starts just after midnight: code from just before it is before the song.
         let early = SongClock::new(rate, Timecode::parse_at("00:00:05:00", rate).unwrap(), 4500);
         assert_eq!(early.locate_tc(Timecode::parse_at("23:59:59:00", rate).unwrap()), SongPos::Before);
+    }
+
+    #[test]
+    fn a_sample_rate_of_zero_does_not_divide_by_zero() {
+        // A damaged file header can claim a sample rate of zero.
+        assert_eq!(sample_to_frame(10, 0, FrameRate::F25), sample_to_frame(10, 1, FrameRate::F25));
+        assert_eq!(timecode_of_samples(10, 0, FrameRate::F25), timecode_of_samples(10, 1, FrameRate::F25));
+        assert_eq!(frame_to_sample(10, 0, FrameRate::F25), 0);
     }
 }
