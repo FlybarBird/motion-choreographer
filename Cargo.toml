@@ -1,0 +1,47 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/ptz-core",
+    "crates/ptz-server",
+    "crates/ptz-client",
+]
+default-members = [
+    "crates/ptz-core",
+    "crates/ptz-server",
+    "crates/ptz-client",
+]
+
+[workspace.package]
+version = "0.2.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+ptz-core = { path = "crates/ptz-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.8", features = ["ws", "multipart"] }
+tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
+futures-util = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "multipart", "blocking"] }
+tempfile = "3"
+eframe = { version = "0.31", default-features = true }
+egui = "0.31"
+symphonia = { version = "0.5", features = ["all"] }
+cpal = "0.15"
+hound = "3.5"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+parking_lot = "0.12"
+bytes = "1"
+dirs = "6"
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3

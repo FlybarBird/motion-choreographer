@@ -1,0 +1,17 @@
+[package]
+name = "ptz-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared domain: transport state machine, timecode, audio, interpolation"
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+symphonia = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+hound = { workspace = true }
