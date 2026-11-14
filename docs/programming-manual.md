@@ -1,0 +1,681 @@
+# PTZ Programmer: Programming Manual
+
+How to program a show: build songs out of camera moves, shape them, rehearse
+them, and play them live. It assumes the system has been set up as described in
+the [Setup Guide](setup-guide.md): the server is running, the cameras, lenses
+and venue are in the project, and (for a live show) each rig has been through
+bring-up.
+
+Everything in this manual up to [Going live](#12-going-live) can be done on the
+simulator with no hardware connected.
+
+| Chapter | |
+| --- | --- |
+| [1. How it thinks](#1-how-it-thinks) | The ideas the rest depends on |
+| [2. The window](#2-the-window) | What is where |
+| [3. Your first song](#3-your-first-song) | Ten minutes, start to finish |
+| [4. Presets](#4-presets) | The poses moves are made from |
+| [5. The timeline](#5-the-timeline) | Placing, moving, timing and selecting |
+| [6. Issues](#6-issues) | When a move asks for something the rig cannot do |
+| [7. Keys and the graph editor](#7-keys-and-the-graph-editor) | Shaping a move by hand |
+| [8. Record](#8-record) | Performing a move and keeping it |
+| [9. Several cameras](#9-several-cameras) | Programming up to twelve |
+| [10. Audio, reference video and timecode](#10-audio-reference-video-and-timecode) | What the song plays against |
+| [11. Save, Commit and revisions](#11-save-commit-and-revisions) | Keeping your work, and what can be armed |
+| [12. Going live](#12-going-live) | Arm, Play Live, faults, E-Stop |
+| [13. A show day](#13-a-show-day) | The routine |
+| [14. Reference](#14-reference) | Shortcuts, chips, messages, glossary |
+
+---
+
+## 1. How it thinks
+
+**A song** is one timeline: a piece of the show with a start timecode and a
+length. A show is a set of songs. The server holds one song open at a time.
+
+**A preset** is a stored pose for one camera: pan, tilt, zoom, focus and
+elevation. Presets are the vocabulary; a song is what you say with them.
+
+**A preset move** is a clip on a camera's lane that takes the camera *to* a
+preset. Unless you pin its start to a preset, it does not store where it
+starts: a move starts from wherever the camera already is when the move
+begins, which is wherever the previous move left it. Slide a move later and it
+still arrives at the same pose.
+
+**Auto time.** A new move is exactly as long as the rig needs: the software
+works out the fastest time from the distance between the two poses and the
+rig's speed and acceleration limits. Stretch a move and it becomes **custom
+time**. Squeeze it shorter than the rig can manage and it becomes an **issue**.
+
+**Keys.** When a move needs a shape a preset cannot give it (a pause, a curve,
+a zoom that starts late), it is converted to keys: one curve per axis, edited
+in the graph editor or recorded by hand.
+
+**Rehearse and Live are different outputs.** Rehearse plays the audio and the
+monitors and sends nothing to the rig, ever. To move hardware you **Arm**, and
+only a **committed** revision of a song can be armed. That is the gate between
+editing and a show: what goes live is a frozen revision, not whatever was on
+screen a moment ago.
+
+**The edit lease.** One station at a time can change the show. Others watch.
+E-Stop is the exception: it works from anywhere.
+
+**The selected camera.** One camera is selected at any time. The Program
+monitor, the Presets tab, the Rig controller and Record all follow it.
+
+---
+
+## 2. The window
+
+**Header** (top row): the song commands (New, Load, Save, Save As, Revert,
+Commit), the song's name and start timecode, its revision state, the issue
+count, and at the right the edit lease and the View menu.
+
+**Transport bar** (second row): the timecode at the playhead, the main button,
+Stop, Cue, Lock, Arm or Disarm, Record, the state chips, a one-line hint, the
+audio meters, and E-STOP at the far right.
+
+**Camera bar** (third row): one chip per camera in its own colour, with a dot
+for its state. Click a chip to select that camera. Hover it for detail.
+
+**Tabs.** The rest of the window is panels you can drag by their tabs, split
+and regroup. **View > Reset layout** puts them back.
+
+| Tab | What it is for |
+| --- | --- |
+| Presets | The selected camera's presets. Drag one onto the timeline. |
+| Media | Imported audio and video. Drag one onto the timeline. |
+| Program monitor | What the selected camera frames, through its lens, in the stage model |
+| Stage | The venue from outside, with every camera and its view cone |
+| Multiview | Every camera's picture at once |
+| Reference monitor | The frame of the reference video under the playhead |
+| Inspector | Whatever is selected: a move, a clip, a marker. With nothing selected, the song and the project. |
+| Rig controller | Hand control of the selected camera, its devices, and tracking while live |
+| Timeline | The song |
+| Graph editor | The selected clip as curves |
+| Log | The server's run log |
+
+The Program monitor's corner badges tell you what you are looking at:
+**REHEARSE** or **LIVE** at top left; *Programmed pose*, *Rig pose* or
+*Recording* at top right; the timecode at bottom left; the camera and the focal
+length at bottom right. Under the picture is the pose in numbers.
+
+---
+
+## 3. Your first song
+
+This uses the three presets a new data folder is seeded with. It takes about
+ten minutes and touches everything you will use daily.
+
+1. **Take the lease.** If the header says *Watching*, press **Take the lease**.
+2. **New.** Press **New** in the header. Name the song and give it the
+   timecode its first frame plays at, for example `01:00:00:00`. Press
+   **Create**.
+3. **Place a move.** Open the **Presets** tab. Drag **Stage Wide** onto the
+   timeline and let go about two seconds in. While you drag, a ghost shows
+   where the move will land and how long it will take. It lands on the selected
+   camera's **Camera move** lane.
+4. **Place two more.** Drag **Lectern MCU** to about ten seconds, and **Awards
+   Two-Shot** to about twenty. Each ghost names the journey, for example
+   *Stage Wide to Lectern MCU, 7.9 s*: the time comes from how far the camera
+   has to travel.
+5. **Rehearse.** Press **Space**. The playhead runs and the Program monitor
+   shows the camera travelling between the three framings. Nothing is sent to
+   any rig. Press **Space** again to stop and **Home** to go back to the start.
+6. **Slow a move down.** Drag the right edge of the second move to make it
+   longer. Its label gains *custom*. Rehearse again and see the difference.
+7. **Ask for too much.** Now drag the same edge left until the move is very
+   short. It turns amber, and the header shows *1 issue*. Select the move: the
+   Inspector says which axis is too fast and by how much. Press **Use auto
+   time** and the issue is gone.
+8. **Change how it lands.** With the move selected, set **Ease** in the
+   Inspector to *Ease out* and rehearse. The move now arrives gently.
+9. **Mark a cue.** Put the playhead where the second move starts and press
+   **M**. Double-click the marker to name it.
+10. **Keep it.** Press **Save** (Cmd-S), then **Commit**. The header shows
+    *revision 1*. This revision is what could now be armed.
+
+Made a mistake at any point? **Cmd-Z** undoes it, **Shift-Cmd-Z** redoes it.
+
+---
+
+## 4. Presets
+
+Presets belong to a camera. The Presets tab shows the selected camera's
+presets, each with a picture of its framing, its pose and its focal length.
+
+| To | Do this |
+| --- | --- |
+| Make a preset from the pose on screen | **Store current pose** in the Presets tab. It saves the pose in the Program monitor as *Preset N*. |
+| Make a preset from where the rig is | Drive the camera in the **Rig controller** tab, then **Store preset** there |
+| Read the presets stored in the camera | **Sync from rig**. On a real rig the camera is recalled to each preset in turn, so it moves; the app asks first. Refused while armed or playing. |
+| Use a preset | Drag it onto the timeline |
+| Delete a preset | Right-click it, **Delete preset** |
+
+A move keeps its own copy of the pose it was made from. Storing over, syncing
+or deleting a preset afterwards does not change the moves already on a
+timeline; to change where a move goes, pick another preset for it in the
+Inspector.
+
+A useful habit: build the presets for each camera position first (wide, each
+speaker position, each two-shot), name them for what they frame, and only then
+start on the timeline.
+
+---
+
+## 5. The timeline
+
+### The lanes
+
+From the top: the ruler, **Markers**, **Reference video**, **Audio**, then one
+**Camera move** lane for each camera, in its colour and with its number. The
+triangle on a camera's lane opens its five axis lanes: Pan, Tilt, Zoom, Focus
+and Elevation.
+
+### Getting around
+
+| To | Do this |
+| --- | --- |
+| Move the playhead | Click the ruler |
+| Step one frame | Left and Right arrows. With Shift, ten frames. |
+| Go to the start, the end | **Home** (Cue), **End** |
+| Slide the view | Scroll |
+| Zoom | Pinch, or Cmd-scroll; or **-** and **+** in the timeline's toolbar |
+| See the whole song | **Fit**, or `\` |
+
+### Placing and moving
+
+| To | Do this |
+| --- | --- |
+| Add a move | Drag a preset from the Presets tab. It lands on the Camera move lane at the pointer's time. |
+| Slide a move | Drag it |
+| Make it longer or shorter | Drag its right edge. It switches from auto time to custom time. |
+| Change when it starts without moving its end | Drag its left edge |
+| Give it to another camera | Drag it onto that camera's lane, or change **Camera** in the Inspector |
+| Copy it | Alt-drag it, or select it and press **Cmd-D** (**Duplicate**), which copies it after the selection |
+| Delete it | Select it and press **Delete** |
+
+Edges snap to the playhead, to markers and to other clips. Hold **Shift** while
+dragging to turn snapping off. **Escape** cancels a drag.
+
+If a drop or a drag is refused (no lease, the song is armed, it would overlap
+another move), the ghost turns amber and says why.
+
+### Selecting
+
+Click a clip to select it. **Shift-click** adds to the selection. Drag across
+empty space to draw a box round several. With several selected: drag to move
+them together, **Delete** removes them, **Cmd-D** copies them after the
+selection. Click empty space to select nothing, which is also how you get the
+song and project settings in the Inspector.
+
+### The Inspector for a move
+
+| Field | Meaning |
+| --- | --- |
+| Camera | The camera that makes this move |
+| From | *Where the camera already is* when the move starts (the default), or a preset the move should start from |
+| To | The preset the move arrives at. Pick another to change it. |
+| Start, End | In timecode |
+| Duration | **Auto**: as fast as the rig's limits allow. **Custom**: the time you set. *Auto time is 7.90 s* tells you the fastest. |
+| Ease | Linear, Ease in, Ease out, Ease in-out (the default) |
+| Issues | What is wrong with this move, and the buttons that fix it |
+| Convert to keys | Replace the move with keys that trace the same path |
+
+Right-click a move for **Auto time** and **Convert to keys**. Right-click empty
+space for **Add marker at playhead**.
+
+### Markers
+
+**M**, or **Add marker**, puts a marker at the playhead. Drag a marker to move
+it; double-click it to rename it; select it and press **Delete** to remove it.
+Clip edges and the playhead snap to markers, which makes them the way to tie
+moves to musical or spoken cues: mark the cue while listening, then drop moves
+on the marks.
+
+### Timing moves to a cue
+
+A camera should usually *arrive* on the cue, not start on it. Put a marker on
+the cue, drag the move so that its **right** edge snaps to the marker, and
+leave it on auto time so it leaves as late as the rig allows; or stretch its
+left edge earlier for a slower, more deliberate arrival.
+
+---
+
+## 6. Issues
+
+An issue is a place where the timeline asks the rig for something it cannot or
+must not do. The clip turns amber, the header counts the issues, and **Arm is
+refused until every issue is fixed or accepted.** Click the count in the header
+to jump to the first one. The Inspector, with nothing selected, lists them all
+under **Issues in this song**, each with **Go there**.
+
+| The issue says | It means | Fix |
+| --- | --- | --- |
+| *Pan is too fast: 85 per second, limit 60* | The move is shorter than the rig can do it | **Use auto time**, or lengthen the move, or **Accept as programmed** |
+| *Tilt starts or stops too sharply* | The acceleration limit is exceeded | Lengthen the move or soften the ease or the curve, or **Accept as programmed** |
+| *Pan reaches 190, outside its range* | The pose is beyond the axis's Min or Max | Change the preset or the keys. Cannot be accepted. |
+| *Zoom steps by 12 at the start of this move* | The axis would have to jump instantly, usually where keys take over from another clip | Start the keys where the previous move ends, or leave room between them. Cannot be accepted. |
+| *Keep-out rule broken: ...* | Two axes together enter a forbidden combination | Change the move so it stays out. Cannot be accepted. |
+
+**Accept as programmed** is for speed and acceleration only. It says: I know
+the rig will lag behind the timeline here, and that is fine. The acceptance
+records who accepted it and when, is written to the run log when the song is
+armed, and can be withdrawn (**Withdraw acceptance**). Range, jump and keep-out
+problems can never be accepted, because they are about where the rig goes, not
+how late it gets there.
+
+The limits themselves are in the project settings (Setup Guide, 7.5). If a
+limit is wrong, fix the limit there; do not accept your way round it.
+
+---
+
+## 7. Keys and the graph editor
+
+### From a move to keys
+
+Select a preset move and press **Convert to keys** (Inspector, graph editor or
+right-click). The move becomes a keys clip that traces the same path, two keys
+per axis, ready to shape. A keys clip can drive some axes and leave the others
+to whatever came before it: **Axes this move drives** in the Inspector chooses.
+
+### On the timeline
+
+Open a camera's axis lanes with its triangle. Each key is a diamond.
+
+| To | Do this |
+| --- | --- |
+| Move a key in time | Drag it |
+| Select several | Drag a box round them |
+| Delete keys | Select them and press **Delete** |
+| Add a key at the playhead | Click a lane's name to select the lane, then **K**. With no lane selected, K keys every lane of the clip. |
+
+### In the graph editor
+
+The **Graph editor** tab shows the selected clip as one curve per axis. It
+shares the timeline's zoom, scroll and playhead. The ruler on the left measures
+the axis whose chip is outlined; click a curve to switch to it. Click an axis
+chip to show or hide its curve.
+
+| To | Do this |
+| --- | --- |
+| Change a key's time and value | Drag it. Shift keeps it to one direction. |
+| Bend the curve | Drag a handle. The opposite handle stays in line; hold Alt to break it. |
+| Choose how the curve leaves the selected keys | **Hold** (stay until the next key), **Linear**, **Bezier** |
+| Make it start or land gently | **Easy Ease**, **Ease In**, **Ease Out** |
+| Add a key without changing the shape | Double-click the curve |
+| Fit the view | **F**, or **Frame** |
+| See how fast each axis moves | **Speed** |
+
+**Speed** is the view to check before you trust a hand-shaped move. The amber
+line is the fastest that axis can go. Anything above it is filled amber and
+named, and the clip turns amber on the timeline: that is a too-fast issue.
+
+---
+
+## 8. Record
+
+Record captures a move you perform by hand, so a follow-shot or an instinctive
+push-in can be kept and replayed exactly. It works in Rehearse only.
+
+### Hand control
+
+The **Rig controller** tab drives the selected camera:
+
+- Drag the **pad** for pan and tilt.
+- Drag the three **sliders** for zoom, focus and elevation.
+- Everything springs back and the rig stops when you let go.
+- Click the pad to use the keyboard instead: arrows for pan and tilt, `[` `]`
+  for zoom, `,` `.` for elevation.
+- **Top speed** scales all of it. Turn it down for fine work.
+
+If the app stops sending (a dropped connection, a closed window) the rig stops
+within a quarter of a second. Hand control is refused while armed.
+
+### Recording a pass
+
+1. Open the camera's axis lanes and click the **red dot** on each lane Record
+   should write. Pan and Tilt are on to start with. The same choice is in the
+   Rig controller under **Record writes**.
+2. Put the playhead a little before where the move should begin.
+3. Press **Record**. The REC chip appears and the camera bar says which camera
+   Record writes.
+4. Press **Space** to play, and perform the move. The axes you enabled follow
+   your hands; the others keep playing the timeline.
+5. **Stop**, **Cue** or **Record off** ends the pass.
+
+The pass lands as one keys clip covering exactly the frames it was recorded
+on, replacing those axes over that range and nothing else. One undo removes the
+whole pass.
+
+### Cleaning it up
+
+The pass is reduced to as few keys as reproduce it closely: within 0.05 degrees
+of pan and tilt, 0.2 % of zoom and focus and 1 mm of elevation. A stretch where
+the rig stood still becomes two keys. The raw samples are kept, so with the
+clip selected, **Fewer keys** and **More keys** in the Inspector fit them again
+looser or tighter at any time. Fewer keys are easier to edit; more keys follow
+the take closer. Then shape it in the graph editor like any other keys clip.
+
+To record against the show's real clock, lock first (chapter 10): a move
+recorded while locked replays against the same code.
+
+---
+
+## 9. Several cameras
+
+A show holds up to twelve cameras. Each has its own lane, its own presets, its
+own lens and its own place on the stage.
+
+| To | Do this |
+| --- | --- |
+| Select a camera | Click its chip on the camera bar, its tile in Multiview, or the camera in the Stage tab. Or press `1` to `9`, then `0`, `-`, `=` for ten, eleven and twelve. |
+| See all of them | **Multiview**: every camera's picture, name, state and focal length |
+| See where they point | **Stage**: each camera's cone follows its pan, tilt and zoom as the song plays |
+| Program one | Select it. The Presets tab now shows its presets; drag them onto its lane. |
+| Move a clip to another camera | Drag it to that camera's lane |
+
+A preset belongs to one camera, because the same framing from a different
+position is a different pose. A preset dropped on a lane belongs to that
+lane's camera.
+
+Ways to work that keep twelve lanes manageable:
+
+- **Program one camera at a time**, start to finish, with Multiview open beside
+  the timeline to see what the others are doing at the same moment.
+- **Program by cue**: put markers on every cue first, then at each marker go
+  along the cameras (`1`, `2`, `3` ...) dropping the preset each needs.
+- **Stagger moves.** Two cameras should rarely be moving at the same instant
+  if both might be on air. Because a move's right edge is when the camera
+  settles, lining up right edges on markers shows at a glance who is steady
+  when.
+- **Keep lanes closed** except the one you are keying.
+
+The camera bar's dots show each camera's state: simulated, connected, live,
+not answering, held, or faulted. Hover a chip for the reason.
+
+---
+
+## 10. Audio, reference video and timecode
+
+### Audio
+
+Drop a WAV, AIFF or MP3 file on the window, or use **Import** in the **Media**
+tab, then drag it from Media onto the **Audio** lane. Drag the clip to move it
+and either edge to trim it; the waveform shows what is left. **Mute in
+Program** in the Inspector keeps a clip out of the mix (for a guide track, or a
+file that only carries timecode).
+
+The server plays the audio, so it comes out of the server machine. The
+waveform is the best guide for placing markers: play, listen, and press **M**
+on each cue.
+
+### Reference video
+
+Video files (QuickTime or MP4) go on the **Reference video** lane. The lane
+shows a filmstrip and the **Reference monitor** tab shows the frame under the
+playhead, so camera moves can be programmed against a recording of a rehearsal.
+The file's sound comes in with it. Video needs `ffmpeg` on the server machine.
+
+### Files that carry their own timecode
+
+On import the server looks for a start timecode in the file: a broadcast WAV's
+`bext` chunk, or a QuickTime or MP4 timecode track. If there is none, select
+the clip and type a start in the Inspector, or use **Read LTC** to decode it
+from one channel of the file. The media card then shows `starts 01:00:10:00`.
+
+A stamped file dropped on the timeline lands on its own timecode wherever the
+pointer is; the ghost says so. Hold **Alt** to place it by hand. If its code is
+outside the song, a dialog offers to move the song's start to it. The Inspector
+says whether a clip sits on its code and offers **Move to its timecode**.
+
+### Lock
+
+Free-run, the song plays on the sound card's clock. **Lock** makes it follow
+timecode instead. The Lock button lists what it can follow:
+
+| Source | What it is |
+| --- | --- |
+| LTC input | Timecode as audio on one channel of an input |
+| MTC input | MIDI timecode |
+| Art-Net timecode | From a lighting console or timecode generator on the network |
+| A file on the timeline | Any audio or video clip in the song |
+
+With an input locked, the main button reads **Play to code**. Press it and the
+transport waits for code, takes four good frames to sync, and follows. The
+chips tell you where it is:
+
+| Chip | Meaning |
+| --- | --- |
+| WAITING FOR ... | Play to code is pressed; no usable code yet |
+| LOCKED TO ... | Following |
+| FREEWHEEL | Code dropped out; carrying on for a few frames before stopping to wait again |
+
+If code jumps, the playhead jumps with it. Code from before the song's first
+frame or after its last holds the playhead at that end. Code at a different
+frame rate from the project is refused, and the bar says which rate arrived.
+
+**Lock to this file** (Inspector, or the file's entry in the Lock menu) ties
+the transport to one clip: Play starts at the clip's first frame and stops at
+its last, and Cue and the ruler work inside it. This is how to program against
+a recording that carries the show's real timecode, long before the real
+timecode source is on site. **Unlock** returns to free-run.
+
+---
+
+## 11. Save, Commit and revisions
+
+| Command | What it does |
+| --- | --- |
+| **Save** (Cmd-S) | Saves the draft. The *unsaved* chip goes away. |
+| **Revert** | Goes back to the last Save. Everything since is dropped, and this cannot be undone. |
+| **Commit** | Freezes the saved draft as the next revision. Only a committed revision can be armed. |
+| **Save As** | Makes a copy under a new name, with its own revisions, and opens it |
+| **New**, **Load** | Start or open a song. Both need the transport stopped and disarmed. |
+
+Your edits are never only in the app. Every change is sent to the server as
+you make it and kept there, saved or not, so closing the app or losing the
+connection loses nothing. *Unsaved* means "different from the last Save", which
+is what Revert would return to.
+
+The header shows the state:
+
+| Chip | Meaning |
+| --- | --- |
+| *never committed* | No revision exists yet. Cannot be armed. |
+| *revision 3* (green) | What is open is exactly revision 3. Can be armed. |
+| *revision 3 + edits* | Revision 3 with changes since. Save and Commit to make revision 4. |
+| *unsaved* (amber) | Changes since the last Save |
+
+A rhythm that works: Save whenever something is right; Commit when a song is
+ready to be shown to someone or run on the rig. Before a risky experiment, use
+**Save As** to branch a copy.
+
+**Load** lists every song with its start timecode and revision. From the list
+a song can also be deleted, which removes its draft and every revision.
+
+---
+
+## 12. Going live
+
+Everything so far has moved nothing. This chapter moves cameras. Clear the
+area first, and know where E-STOP is.
+
+### Arm
+
+**Arm (moves rig to playhead)** is refused, with the reason on the button,
+unless all of these hold:
+
+- the transport is stopped and Record is off;
+- the open song is a committed revision with no unsaved edits;
+- every timeline issue is fixed, or (speed and acceleration only) accepted;
+- every camera's devices are answering, and each AutoPod+ is on and calibrated.
+
+When you press it, every camera's rig travels to its pose at the playhead, at
+a share of its top speed (half, unless the rig settings say otherwise). The bar
+reads **ARMING**, then **ARMED** when every axis of every camera has arrived.
+While armed, the song, the presets and the project settings cannot be changed.
+
+Put the playhead where you want the cameras to be *before* you arm. Arming at
+the start of the song sends every camera to its opening position.
+
+### Play Live
+
+The main button now reads **Play Live** (or **Play to code** when locked).
+Twenty times a second the server steers each axis toward the timeline and
+compares where the rig says it is with where the timeline was at the moment of
+that reading. The Program monitor's badge reads **LIVE**, and the **Rig
+controller** tab shows how far each axis is from the timeline against its
+tolerance.
+
+| To | Press | The rig |
+| --- | --- | --- |
+| Pause the show | **Stop** | Holds where it is. Stays armed. |
+| Go back to the start | **Cue** | Stops, and travels to the pose at the start. The bar reads ARMING until it is there. |
+| Jump elsewhere while stopped | Click the ruler | Travels to the pose there, the same way |
+| Finish | **Disarm** | Returns to Rehearse. Nothing more is sent. |
+
+### When a camera is held
+
+A camera's rig is held where it is and its output is cut, with the reason in
+red on the bar and in the Rig controller tab, when:
+
+- an axis stays further from the timeline than its tolerance for longer than
+  the tracking window (2 degrees of pan and tilt for half a second, unless the
+  rig settings say otherwise);
+- the next step would take an axis past its limit or break a keep-out rule;
+- one of its devices stops answering;
+- it does not reach the playhead pose while arming.
+
+By default the other cameras carry on (**When a camera faults**, in the project
+settings, can hold them all instead). The held camera stays held until you
+**Disarm** and **Arm** again. Find out why first: the Log tab has the detail.
+
+### E-Stop
+
+**E-STOP** stops every camera and every pedestal, repeats the stop until they
+report standing still, cuts output, and latches. It works from any station, in
+any state, with or without the edit lease. While it is latched nothing can
+move the rig. When it is safe, **Reset E-Stop**; you then arm again from
+scratch.
+
+Use it without hesitating. It costs a few seconds; a camera in the wrong place
+costs more.
+
+---
+
+## 13. A show day
+
+**Before doors**
+
+1. Start the server on the show's data folder. Open the app. Take the lease.
+2. Check the camera bar: every real camera connected, none *no answer*.
+3. Load the first song. The header should read *revision N* in green, with no
+   issue count. If it says *+ edits* or *unsaved*, decide now: Commit it or
+   Revert it.
+4. If the show is locked: **Lock**, choose the source, and check code arrives.
+5. Clear the stage of people near the cameras. **Arm**. Watch every camera
+   travel to its opening position. Wait for **ARMED**.
+
+**During the show**
+
+6. **Play Live** on the cue, or **Play to code** beforehand and let the
+   timecode start the song.
+7. Watch Multiview and the camera bar. A held camera shows in red; the others
+   carry on.
+8. Between songs: **Stop**, **Disarm**, **Load** the next, check its revision,
+   **Arm**, wait for **ARMED**.
+
+**If anything looks wrong:** E-STOP first, questions afterwards.
+
+**Afterwards**
+
+9. **Disarm**. Back up the data folder. The Log tab, and `log/` in the data
+   folder, hold exactly what was armed and what the rig did.
+
+---
+
+## 14. Reference
+
+### Keyboard
+
+On a Mac, Cmd; elsewhere, Ctrl.
+
+| Key | Does |
+| --- | --- |
+| Space | The main transport button: Rehearse, Play Live, Play to code, Stop. When armed, Space is Play Live. |
+| Home | Cue to the start |
+| End | Playhead to the end of the song |
+| Left, Right | Step one frame. With Shift, ten. |
+| `1` to `9`, `0`, `-`, `=` | Select camera 1 to 12 |
+| M | Add a marker at the playhead |
+| K | Add a key at the playhead on the selected lanes |
+| Delete, Backspace | Delete the selection |
+| Cmd-D | Duplicate the selection after itself |
+| Cmd-Z, Shift-Cmd-Z | Undo, redo |
+| Cmd-S | Save |
+| `\` | Fit the song to the window |
+| F | Graph editor: fit the view |
+| Escape | Cancel a drag or close a dialog |
+| Shift while dragging | Snapping off. In the graph editor, keep to one direction. |
+| Alt while dragging | Copy a clip. In the graph editor, break a handle. Place a stamped file by hand. |
+| Arrows, `[` `]`, `,` `.` | With the Rig controller pad clicked: pan and tilt, zoom, elevation |
+
+Single keys do nothing while you are typing in a field. There is deliberately
+no key for E-Stop, Reset E-Stop, Arm or Disarm: Space runs the transport, and
+those four take a click on their own button.
+
+### State chips on the transport bar
+
+| Chip | Meaning |
+| --- | --- |
+| REHEARSE | Nothing is sent to the rig |
+| ARMING | The rig is moving to the pose at the playhead |
+| ARMED | Play moves the rig |
+| FREE RUN | The server's own clock drives the playhead |
+| WAITING FOR, LOCKED TO, FREEWHEEL | Following timecode (chapter 10) |
+| REC | Play writes the rig's movement onto the record axes |
+| E-STOP LATCHED | Nothing can move until Reset E-Stop |
+
+### Why a button is disabled
+
+Hover any disabled button and it says why. The reasons you will meet most:
+
+| Reason | What to do |
+| --- | --- |
+| Take the edit lease to control the show | **Take the lease** in the header |
+| Create or load a song first | **New** or **Load** |
+| Stop and disarm to change songs | **Stop**, **Disarm** |
+| Commit the song first | **Save**, then **Commit** |
+| Fix or accept N timeline issues first | Click the issue count in the header |
+| Stop before arming, Stop before locking | **Stop** |
+| Turn Record off before arming | **Record off** |
+| Disarm to record | Record works in Rehearse only |
+| Disarm to drive the rig by hand | Hand control is refused while armed |
+| The rig is still moving to the playhead. Wait, or Disarm | Wait for ARMED |
+| Reset E-Stop to continue | **Reset E-Stop**, when it is safe |
+
+### Glossary
+
+| Word | Meaning |
+| --- | --- |
+| Accept as programmed | Allow Arm although a move is faster than the rig; the rig will lag there |
+| Arm | Move every rig to the playhead pose and make Play move hardware |
+| Auto time | A move's length worked out from distance and the rig's limits |
+| Axis | Pan, Tilt, Zoom, Focus or Elevation |
+| Commit | Freeze the saved draft as a numbered revision |
+| Cue | Return the playhead to the start |
+| Custom time | A move's length set by hand |
+| Edit lease | The right to change the show, held by one station at a time |
+| Freewheel | Carrying on briefly when timecode drops out |
+| Held | A camera stopped where it was after a fault, while the others carry on |
+| Issue | A place where the timeline asks for something the rig cannot or must not do |
+| Keep-out rule | A forbidden combination of two axes |
+| Keys clip | A move shaped by keys on per-axis curves |
+| Lock | Follow timecode instead of the server's own clock |
+| Pass | One recorded take |
+| Preset | A stored pose for one camera |
+| Preset move | A clip that takes a camera to a preset |
+| Rehearse | Play audio and monitors without sending anything to the rig |
+| Revision | A committed, frozen state of a song. Only revisions can be armed. |
+| Stamped file | A media file that carries its own start timecode |
