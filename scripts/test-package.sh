@@ -151,13 +151,23 @@ while [ $# -gt 1 ]; do
   esac
   shift
 done
-: >"$1"
+echo product >"$1"
+STUB
+cat >"$STUBS/pkgutil" <<'STUB'
+#!/bin/sh
+# --expand <installer> <folder>: lays out what the stand-in productbuild was given.
+[ "$1" = --expand ] || exit 2
+log="$CALLS_DIR/productbuild-$(basename "$2" .pkg)"
+mkdir -p "$3"
+cp "$log.distribution.xml" "$3/Distribution"
+grep -o '>[a-z]*\.pkg<' "$log.distribution.xml" | tr -d '<>' | while read -r part; do mkdir -p "$3/$part"; done
 STUB
 cat >"$STUBS/codesign" <<'STUB'
 #!/bin/sh
 printf '%s\n' "$*" >>"$CALLS_DIR/codesign.args"
 STUB
 chmod +x "$STUBS"/*
+cp "$STUBS/pkgutil" "$STUBS/pkgutil.good"
 
 CALLS_DIR="$CALLS" PATH="$STUBS:$PATH" package macos >"$WORK/macos.log"
 APP_PKG="PTZ-Programmer-$VERSION-macos-$(uname -m)"
@@ -199,9 +209,13 @@ if command -v xmllint >/dev/null 2>&1; then
   check xmllint --noout "$APP_DIST" "$SERVER_DIST" "$BUNDLE/Contents/Info.plist" "$CALLS/pkgbuild-app.component.plist"
 fi
 check grep -q 'customize="always"' "$APP_DIST"
-check grep -q '<choice id="app" .*selected="true" enabled="false">' "$APP_DIST"
-check grep -q '<choice id="server" .*selected="true">' "$APP_DIST"
+check grep -q '<choice id="app" .*start_selected="true" enabled="false">' "$APP_DIST"
+check grep -q '<choice id="server" .*start_selected="true">' "$APP_DIST"
 check test "$(grep -c '<choice id="server" .*enabled="false"' "$APP_DIST")" -eq 0
+# "selected" would keep ticking the server again after the user cleared it.
+check test "$(grep -c ' selected=' "$APP_DIST")" -eq 0
+check grep -q 'enable_anywhere="false" enable_currentUserHome="false" enable_localSystem="true"' "$APP_DIST"
+check grep -q "hostArchitectures=" "$APP_DIST"
 check grep -q '>app.pkg</pkg-ref>' "$APP_DIST"
 check grep -q '>server.pkg</pkg-ref>' "$APP_DIST"
 check grep -qx 'app.pkg' "$CALLS/productbuild-$APP_PKG.packages"
@@ -211,6 +225,17 @@ check test "$(grep -c 'app.pkg' "$SERVER_DIST")" -eq 0
 check grep -q '<choice id="server" .*enabled="false">' "$SERVER_DIST"
 check test "$(grep -c -- '--sign' "$CALLS/productbuild-$APP_PKG.args")" -eq 0
 check grep -q 'not signed with a Developer ID' "$WORK/macos.log"
+
+# An installer that comes out without one of its parts stops the build.
+cat >"$STUBS/pkgutil" <<'STUB'
+#!/bin/sh
+mkdir -p "$3/app.pkg"
+: >"$3/Distribution"
+STUB
+refuse env CALLS_DIR="$CALLS" PATH="$STUBS:$PATH" PTZ_TARGET=package-test PTZ_SKIP_BUILD=1 PTZ_DIST="$WORK/dist-broken" \
+  PTZ_PACKAGE_OS=macos bash "$ROOT/scripts/package.sh"
+check grep -q 'is missing its server part' "$WORK/refused.log"
+mv "$STUBS/pkgutil.good" "$STUBS/pkgutil"
 
 # With an installer identity both packages are signed with it.
 rm -rf "${CALLS:?}"/*

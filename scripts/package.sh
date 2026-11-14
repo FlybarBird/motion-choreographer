@@ -5,7 +5,8 @@
 #
 #   scripts/package.sh
 #
-# On a Mac (run it on the kind of Mac it is for, Apple Silicon or Intel):
+# On a Mac (for the kind of Mac it is run on; an Apple Silicon Mac also builds the Intel
+# installers, with PTZ_TARGET=x86_64-apple-darwin):
 #   dist/PTZ-Programmer-<version>-macos-<arch>.pkg   the app. "Show server and tools" is a
 #                                                     checkbox in the installer, ticked to start with
 #   dist/PTZ-Server-<version>-macos-<arch>.pkg       the show server and tools only
@@ -65,8 +66,17 @@ VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/Cargo.toml" | head -n 1)"
 # 1. Build.
 RELEASE_DIR="$ROOT/target/$TARGET/release"
 if [ "${PTZ_SKIP_BUILD:-0}" != "1" ]; then
+  if [ "$OS" = macos ] && ! xcode-select -p >/dev/null 2>&1; then
+    fail "the Xcode command line tools are missing. Install them with: xcode-select --install"
+  fi
   command -v cargo >/dev/null 2>&1 ||
     fail "Rust is missing. Install it with: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+  NEED="$(sed -n 's/^rust-version = "\(.*\)"/\1/p' "$ROOT/Cargo.toml" | head -n 1)"
+  HAVE="$(rustc --version 2>/dev/null | sed -n 's/^rustc \([0-9]*\.[0-9]*\).*/\1/p')"
+  if [ -n "$NEED" ] && [ -n "$HAVE" ] &&
+    [ "$(printf '%s\n%s\n' "$NEED" "$HAVE" | sort -t. -k1,1n -k2,2n | head -n 1)" != "$NEED" ]; then
+    fail "Rust $HAVE is too old; this needs $NEED or newer. Update it with: rustup update stable"
+  fi
   if command -v rustup >/dev/null 2>&1; then
     rustup target add "$TARGET"
   fi
@@ -105,7 +115,7 @@ distribution() {
     printf '<?xml version="1.0" encoding="utf-8"?>\n<installer-gui-script minSpecVersion="2">\n'
     printf '  <title>%s</title>\n' "$title"
     printf '  <options customize="always" require-scripts="false" hostArchitectures="%s"/>\n' "$hosts"
-    printf '  <domains enable_localSystem="true"/>\n'
+    printf '  <domains enable_anywhere="false" enable_currentUserHome="false" enable_localSystem="true"/>\n'
     printf '  <volume-check><allowed-os-versions><os-version min="12.0"/></allowed-os-versions></volume-check>\n'
     printf '  <choices-outline>\n'
     local choice
@@ -114,10 +124,12 @@ distribution() {
     local id pkg name text required
     for choice in "$@"; do
       IFS='|' read -r id pkg name text required <<<"$choice"
+      # "selected" is an expression the Installer keeps applying, so it is not put on a choice the
+      # user may clear: that one only starts ticked.
       if [ "$required" = required ]; then
-        printf '  <choice id="%s" title="%s" description="%s" selected="true" enabled="false">\n' "$id" "$name" "$text"
+        printf '  <choice id="%s" title="%s" description="%s" start_selected="true" enabled="false">\n' "$id" "$name" "$text"
       else
-        printf '  <choice id="%s" title="%s" description="%s" selected="true">\n' "$id" "$name" "$text"
+        printf '  <choice id="%s" title="%s" description="%s" start_selected="true">\n' "$id" "$name" "$text"
       fi
       printf '    <pkg-ref id="%s"/>\n  </choice>\n' "$pkg"
       printf '  <pkg-ref id="%s" version="%s">%s.pkg</pkg-ref>\n' "$pkg" "$VERSION" "$id"
@@ -126,18 +138,28 @@ distribution() {
   } >"$out"
 }
 
+# product <out> <distribution> <part>...   Build the installer, then open it again and check its parts are in it.
 product() {
-  local out="$1" dist="$2"
+  local out="$1" dist="$2" part check
+  shift 2
   if [ -n "${PTZ_INSTALLER_SIGN:-}" ]; then
     productbuild --distribution "$dist" --package-path "$STAGE/pkgs" --sign "$PTZ_INSTALLER_SIGN" "$out"
   else
     productbuild --distribution "$dist" --package-path "$STAGE/pkgs" "$out"
   fi
+  [ -s "$out" ] || fail "productbuild wrote nothing to $out"
+  check="$STAGE/check-$(basename "$out" .pkg)"
+  pkgutil --expand "$out" "$check" || fail "$out cannot be opened again. It is not a usable installer"
+  [ -f "$check/Distribution" ] || fail "$out holds no list of what to install"
+  for part in "$@"; do
+    [ -e "$check/$part.pkg" ] || fail "$out is missing its $part part"
+  done
 }
 
 package_macos() {
   command -v pkgbuild >/dev/null 2>&1 || fail "pkgbuild is missing. It comes with macOS: run this on a Mac"
   command -v productbuild >/dev/null 2>&1 || fail "productbuild is missing. It comes with macOS: run this on a Mac"
+  command -v pkgutil >/dev/null 2>&1 || fail "pkgutil is missing. It comes with macOS: run this on a Mac"
   mkdir -p "$STAGE/pkgs"
 
   # The app, without the server: the server is its own choice.
@@ -227,10 +249,10 @@ SCRIPT
   local app_out="$DIST/PTZ-Programmer-$VERSION-macos-$ARCH.pkg"
   local server_out="$DIST/PTZ-Server-$VERSION-macos-$ARCH.pkg"
   distribution "$STAGE/app-distribution.xml" "$APP_NAME $VERSION" "$app_choice" "$server_choice"
-  product "$app_out" "$STAGE/app-distribution.xml"
+  product "$app_out" "$STAGE/app-distribution.xml" app server
   distribution "$STAGE/server-distribution.xml" "PTZ Programmer show server $VERSION" \
     "server|$SERVER_ID|Show server and tools|$server_text|required"
-  product "$server_out" "$STAGE/server-distribution.xml"
+  product "$server_out" "$STAGE/server-distribution.xml" server
 
   say "Wrote $app_out"
   say "Wrote $server_out"
