@@ -216,7 +216,7 @@ real rig, or while a show is armed or playing.
 Run it before real work starts, not during: it takes the edit lease from
 whoever holds it, presses E-Stop, and slows the Arm speed while it runs. If it
 is interrupted, a song called *Probe Scratch* and the slowed Arm speed
-(Inspector, rig settings) are left behind to put right by hand.
+(Show settings, **Rig connection**) are left behind to put right by hand.
 
 ---
 
@@ -279,18 +279,33 @@ reads *You hold the edit lease*. Everything in the rest of this guide needs it.
 
 ## 4. The project: frame rate and cameras
 
-Project settings live in the **Inspector** tab when nothing on the timeline is
-selected (click an empty part of the timeline first).
+Everything that belongs to the whole show lives in **Show settings**. Press
+**Show settings** at the right end of the camera bar (the Inspector, with
+nothing selected, has a button that goes there too). It takes the place of the
+timeline and monitors; the header, the transport with E-STOP and the camera
+bar stay on screen. **Close settings**, in the same place, or Esc brings the
+timeline back.
+
+The pages are listed down the left side, in three groups:
+
+| Group | Pages |
+| --- | --- |
+| The show | Cameras, Frame rate and faults, Stage model |
+| The selected camera | Rig connection, Lens, Position on the stage, Rig limits, Keep-out rules |
+| The server | Audio output, Timecode inputs |
+
+Settings can be changed while you hold the edit lease and the show is
+disarmed. Otherwise the page says why, and they can only be read.
 
 ### Frame rate
 
-Under **Project**, choose the **Frame rate**: 23.976, 24, 25, 29.97 drop-frame
+On the **Frame rate and faults** page, choose the **Frame rate**: 23.976, 24, 25, 29.97 drop-frame
 or 30. Set it once, before programming; it must match the timecode the show
 will be locked to. Code arriving at another rate is refused.
 
 ### Cameras
 
-Under **Cameras**:
+On the **Cameras** page:
 
 1. The project starts with one camera. Type a name for it in its name field
    (*Centre back*, *Left wall*: names you will recognise on the camera bar).
@@ -304,17 +319,19 @@ Under **Cameras**:
 
 Adding and removing cameras needs the show stopped and disarmed.
 
-**When a camera faults** chooses what the other cameras do during a live show:
+**When a camera faults**, on the **Frame rate and faults** page, chooses what
+the other cameras do during a live show:
 *Hold that camera, the others carry on* (the default), or hold them all.
 E-Stop always stops every camera whatever this says.
 
-Everything below this point in the Inspector (lens, position, rig, limits,
-keep-out rules) belongs to **the selected camera**. Select each camera in turn
-from the camera bar and set it up.
+The five pages under **The selected camera** (rig connection, lens, position,
+limits, keep-out rules) belong to one camera, named at the top of the page.
+Select each camera in turn from the camera bar, or with its number key, and
+set it up; the page stays open.
 
 ### The lens on each camera
 
-Under **Lens**:
+On the **Lens** page:
 
 | Setting | What to enter |
 | --- | --- |
@@ -323,7 +340,7 @@ Under **Lens**:
 | Aperture | The widest aperture |
 | Sensor | Full frame, Super 35, or a typed width: the width of the part of the sensor that is recorded, 16:9 |
 
-The Inspector then shows, for the zoom the camera is at now: the focal length,
+The page then shows, for the zoom the camera is at now: the focal length,
 the angle of view, where the centre of the frame lands on the stage model, how
 big the frame is there, and the range that is sharp. Tick **At a distance of**
 to get those numbers for a distance you type instead.
@@ -343,7 +360,7 @@ from where it stands.
 ### Import the model
 
 - Drop an `.obj` or `.3ds` file on the app window, or
-- in the Inspector under **Stage**, press **Import a model**, or type the
+- in Show settings on the **Stage model** page, press **Import a model**, or type the
   file's path in the field beside it and press Enter.
 
 An OBJ's `.mtl` file is read from the same folder for its colours. Textures are
@@ -353,7 +370,7 @@ sees the same model.
 
 ### Make it the right size and the right way up
 
-The Inspector shows the model's size in metres. Check it against a dimension
+The Stage model page shows the model's size in metres. Check it against a dimension
 you know (the stage width, say).
 
 | If | Change |
@@ -391,8 +408,8 @@ A practical order for each camera:
 
 1. Switch to **Top**, choose **Place**, and click where the pedestal stands.
 2. Choose **Aim** and click the centre of the stage, or use **Face the stage**
-   in the Inspector.
-3. In the Inspector under **Position on the stage**, type the exact **Floor
+   in Show settings under **Position on the stage**.
+3. On that same page, type the exact **Floor
    position** if you have measured it, and set **Lens height**: the height of
    the lens above the floor with the column fully down.
 4. If the pedestal stands on a riser or balcony, press **Drop to the surface
@@ -408,8 +425,8 @@ that nobody is pointing at a wall. Placing cameras is refused while armed.
 
 ## 6. Sound and timecode
 
-All of these are devices **on the server machine**, set in the Inspector with
-nothing selected.
+All of these are devices **on the server machine**, set in Show settings on
+the **Audio output** and **Timecode inputs** pages.
 
 ### Audio output
 
@@ -567,7 +584,7 @@ and which rig the server drives is never changed by it.
 
 ### 7.4 Point the camera at its rig
 
-Select the camera, and in the Inspector under **Rig** set **Drives** to **FR7
+Select the camera, and in Show settings under **Rig connection** set **Drives** to **FR7
 and AutoPod+**. This can only be changed while stopped and disarmed. A show can
 mix real rigs and simulated ones.
 
@@ -782,7 +799,7 @@ folder and the app's settings file stay until you delete them.
 | *Watching. ... holds the edit lease* | Another station is editing | **Take over** if it should be you |
 | A button is disabled | The server will not allow that action now | Hover it. It says why. |
 | *No audio output*, or the bar says the device could not be opened | The server found no output | `ptz-server --list-audio`, then start with `--audio-device`. Until then the show runs silent on the system clock. |
-| No sound, but the meters move | The output is routed to another channel or device | Check **Audio output** in the Inspector and the device named on the bar |
+| No sound, but the meters move | The output is routed to another channel or device | Check **Audio output** in Show settings and the device named on the bar |
 | A video import is refused | `ffmpeg` and `ffprobe` are not on the server machine | `brew install ffmpeg` on the server machine |
 | The stage model is enormous or tiny | Wrong unit | Change **One unit is** |
 | The stage model lies on its side | Wrong up axis | Change **Up** |
