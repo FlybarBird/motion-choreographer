@@ -1228,3 +1228,401 @@ fn cameras_are_added_named_and_removed_in_the_inspector_up_to_twelve() {
     r.press("Remove camera");
     assert!(projects(&r).is_empty());
 }
+
+// ---------------------------------------------------------------- stage, lens, multiview
+
+impl Rig {
+    fn projects(&self) -> Vec<Project> {
+        self.cmds.try_iter().filter_map(|c| if let Cmd::PutProject(p) = c { Some(*p) } else { None }).collect()
+    }
+
+    /// Where a point of the world is in the Stage view.
+    fn stage_point(&self, p: [f32; 3]) -> Pos2 {
+        let probe = self.harness.state().session.stage_view.probe.expect("the Stage view was drawn");
+        let at = probe.screen(p).expect("the point is in front of the viewer");
+        assert!(probe.rect.shrink(4.0).contains(at), "{p:?} is outside the Stage view at {at:?}");
+        at
+    }
+
+    fn mount(&self, id: &str) -> ptz_core::camera::Mount {
+        self.harness.state().session.project.camera(id).unwrap().mount
+    }
+}
+
+#[test]
+fn the_program_monitor_is_the_selected_cameras_view_through_its_lens() {
+    use crate::stage::view_of;
+    use egui_kittest::kittest::Queryable as _;
+    let (mut project, presets) = three_cameras();
+    // The second camera stands ahead and to the right of the first, inside its widest picture.
+    project.cameras[1].mount.x = 3.0;
+    project.cameras[1].mount.y = 6.0;
+    let mut r = rig_with(project, presets, Song::new("s", "Test Song", "01:00:00:00", 1500));
+    r.harness.state_mut().show_tab(Tab::Inspector);
+    r.harness.run_steps(3);
+
+    // Where the second camera's head lands in the first camera's picture, and how far away the picture says it is.
+    let seen = |r: &Rig| {
+        let s = &r.harness.state().session;
+        let frame = s.world.frame("program").expect("the Program monitor was drawn");
+        let view = view_of(&s.project.cameras[0], &s.monitor_pose().0);
+        let head = s.project.cameras[1].mount.lens_position(0.0).map(|v| v as f32);
+        let at = view.project(head, frame.width, frame.height);
+        let inside = at.filter(|p| (0.0..frame.width as f32).contains(&p[0]) && (0.0..frame.height as f32).contains(&p[1]));
+        (inside.and_then(|p| frame.depth_at(p[0] as usize, p[1] as usize)), frame.depth_at(frame.width / 2, frame.height / 2))
+    };
+    let (marker, centre) = seen(&r);
+    let marker = marker.expect("at 28 mm the second camera is in the picture");
+    assert!((5.6..6.1).contains(&marker), "its head is drawn 6 m away, in front of the wall: {marker}");
+    assert!((15.9..16.1).contains(&centre.unwrap()), "the centre of the picture rests on the back wall: {centre:?}");
+    r.harness.get_by_label("16.0 m away");
+    r.harness.get_by_label("28 mm at zoom 0%");
+
+    // A longer lens on the first camera narrows its picture: the second camera is no longer in it.
+    {
+        let s = &mut r.harness.state_mut().session;
+        let mut project = s.project.clone();
+        project.cameras[0].lens = ptz_core::lens::Lens::presets().into_iter().find(|l| l.wide_mm == 70.0).unwrap();
+        s.put_project(project);
+    }
+    r.harness.run_steps(3);
+    assert_eq!(seen(&r).0, None, "at 70 mm the second camera is outside the picture");
+    r.harness.get_by_label("70 mm at zoom 0%");
+    r.harness.get_by_label("16.0 m away");
+
+    // The second camera keeps its own lens and its own place: from 6 m nearer, the wall is 10 m away.
+    r.press("2 Centre");
+    let s = &r.harness.state().session;
+    let frame = s.world.frame("program").unwrap();
+    let centre = frame.depth_at(frame.width / 2, frame.height / 2).unwrap();
+    assert!((9.9..10.1).contains(&centre), "{centre}");
+    r.harness.get_by_label("28 mm at zoom 0%");
+    r.harness.get_by_label("10.0 m away");
+
+    // Looking at nothing: the figures fall back to a typed distance and say so.
+    {
+        let s = &mut r.harness.state_mut().session;
+        let mut project = s.project.clone();
+        project.stage.show_builtin = false;
+        s.put_project(project);
+    }
+    r.harness.run_steps(3);
+    r.harness.get_by_label("looks at nothing on the stage");
+}
+
+#[test]
+fn the_multiview_has_a_tile_for_each_of_twelve_cameras_and_a_click_selects() {
+    let mut project = Project::default();
+    while project.cameras.len() < 12 {
+        let id = project.free_camera_id();
+        let name = format!("Camera {}", project.cameras.len() + 1);
+        let mut camera = ptz_core::CameraConfig::new(&id, &name);
+        camera.mount.x = project.cameras.len() as f64 * 1.5 - 9.0;
+        project.cameras.push(camera);
+    }
+    project.validate().unwrap();
+    let mut r = rig_with(project, presets(), Song::new("s", "Test Song", "01:00:00:00", 1500));
+    r.harness.state_mut().show_tab(Tab::Multiview);
+    r.harness.run_steps(6);
+    let s = &r.harness.state().session;
+    assert_eq!(s.probe_tiles.len(), 12);
+    for (i, camera) in s.project.cameras.iter().enumerate() {
+        assert_eq!(s.probe_tiles[i].0, camera.id);
+        let frame = s.world.frame(&format!("multi:{}", camera.id)).unwrap_or_else(|| panic!("{} has no picture", camera.id));
+        assert!(frame.depth_at(frame.width / 2, frame.height / 2).is_some(), "{} shows the stage", camera.id);
+    }
+    // The grid is four across and three down.
+    let first_row: Vec<f32> = s.probe_tiles[..4].iter().map(|t| t.1.center().y).collect();
+    assert!(first_row.iter().all(|y| (y - first_row[0]).abs() < 0.5));
+    assert!(s.probe_tiles[4].1.center().y > first_row[0] + 20.0);
+
+    let at = s.probe_tiles[6].1.center();
+    r.click(at);
+    assert_eq!(r.harness.state().session.cam_id(), "cam7");
+
+    // Nothing is drawn again while nothing changes.
+    let before: Vec<f32> = (1..=12).map(|n| r.harness.state().session.world.timings[&format!("multi:cam{n}")]).collect();
+    r.harness.run_steps(5);
+    let after: Vec<f32> = (1..=12).map(|n| r.harness.state().session.world.timings[&format!("multi:cam{n}")]).collect();
+    assert_eq!(before, after);
+}
+
+#[test]
+fn cameras_are_selected_moved_turned_placed_and_aimed_in_the_stage_view() {
+    use crate::stage_ui::{Angle, Tool};
+    let (project, presets) = three_cameras();
+    let mut r = rig_with(project, presets, Song::new("s", "Test Song", "01:00:00:00", 1500));
+    r.harness.state_mut().show_tab(Tab::Stage);
+    r.harness.run_steps(4);
+    assert!(r.harness.state().session.world.frame("stage").is_some());
+
+    // Select: a click on a camera's marker selects it.
+    let at = r.stage_point([4.0, 0.0, 0.6]);
+    r.click(at);
+    assert_eq!(r.harness.state().session.cam_id(), "cam2");
+    assert!(r.projects().is_empty(), "selecting changes nothing in the project");
+
+    // Move: the camera follows the pointer across the floor, and the project is sent once, on release.
+    r.press("Move");
+    assert_eq!(r.harness.state().session.stage_view.tool, Tool::Move);
+    let (from, to) = (r.stage_point([8.0, 0.0, 0.0]), r.stage_point([6.0, 3.0, 0.0]));
+    r.drag(from, to);
+    let m = r.mount("cam3");
+    assert!((m.x - 6.0).abs() < 0.06 && (m.y - 3.0).abs() < 0.06 && m.z == 0.0, "{m:?}");
+    let sent = r.projects();
+    assert_eq!(sent.len(), 1, "one drag is one project update");
+    assert_eq!(sent[0].cameras[2].mount, m);
+    assert_eq!(r.harness.state().session.cam_id(), "cam3", "the camera taken hold of is selected");
+
+    // The same drag from above, in the Top view.
+    r.press("Top");
+    assert_eq!(r.harness.state().session.stage_view.angle, Angle::Top);
+    let (from, to) = (r.stage_point([6.0, 3.0, 0.0]), r.stage_point([-5.0, 2.0, 0.0]));
+    r.drag(from, to);
+    let m = r.mount("cam3");
+    assert!((m.x + 5.0).abs() < 0.08 && (m.y - 2.0).abs() < 0.08, "{m:?}");
+    assert_eq!(r.projects().len(), 1);
+
+    // Rotate: dragging from ahead of the camera round to its left turns its heading a quarter turn.
+    r.press("Rotate");
+    let (from, to) = (r.stage_point([-5.0, 4.0, 0.0]), r.stage_point([-7.0, 2.0, 0.0]));
+    r.drag(from, to);
+    let m = r.mount("cam3");
+    assert!((m.heading_deg - 90.0).abs() < 1.5, "{m:?}");
+    assert!((m.x + 5.0).abs() < 0.08, "turning does not move it");
+    assert_eq!(r.projects().len(), 1);
+
+    // Place: a click on the deck stands the selected camera there, at the deck's height.
+    r.press("Perspective");
+    r.press("Place");
+    let at = r.stage_point([2.0, 11.0, crate::stage::DECK_HEIGHT]);
+    r.click(at);
+    let m = r.mount("cam3");
+    assert!((m.x - 2.0).abs() < 0.08 && (m.y - 11.0).abs() < 0.08, "{m:?}");
+    assert!((m.z - 0.5).abs() < 0.011, "it stands on the deck: {m:?}");
+    assert_eq!(r.projects().len(), 1);
+
+    // Aim: a click turns pan 0 to face the point.
+    r.press("Aim");
+    let at = r.stage_point([2.0, 15.0, crate::stage::DECK_HEIGHT]);
+    r.click(at);
+    assert!(r.mount("cam3").heading_deg.abs() < 1.0, "{:?}", r.mount("cam3"));
+    let at = r.stage_point([-6.0, 11.0, crate::stage::DECK_HEIGHT]);
+    r.click(at);
+    assert!((r.mount("cam3").heading_deg - 90.0).abs() < 1.0, "{:?}", r.mount("cam3"));
+    assert_eq!(r.projects().len(), 2);
+
+    // Undo move puts the last change back, one step at a time.
+    r.press("Undo move");
+    assert!(r.mount("cam3").heading_deg.abs() < 1.0);
+    r.press("Undo move");
+    r.press("Undo move");
+    let m = r.mount("cam3");
+    assert!((m.x + 5.0).abs() < 0.08 && m.z == 0.0, "back on the floor where it stood before Place: {m:?}");
+    assert_eq!(r.projects().len(), 3);
+
+    // Measure: two clicks give the distance between two points of the stage.
+    r.press("Measure");
+    let (a, b) = (r.stage_point([-3.0, 2.0, 0.0]), r.stage_point([0.0, 6.0, 0.0]));
+    r.click(a);
+    r.click(b);
+    let measure = r.harness.state().session.stage_view.measure.clone();
+    assert_eq!(measure.len(), 2);
+    let d = (measure[1][0] - measure[0][0]).hypot(measure[1][1] - measure[0][1]);
+    assert!((d - 5.0).abs() < 0.1, "{measure:?}");
+    assert!(r.projects().is_empty());
+
+    // A station that is only watching can look, but cannot move a camera.
+    r.harness.state_mut().session.status.you_hold_lease = false;
+    r.press("Move");
+    let before = r.mount("cam1");
+    let (from, to) = (r.stage_point([0.0, 0.0, 0.0]), r.stage_point([1.0, 3.0, 0.0]));
+    r.drag(from, to);
+    assert_eq!(r.mount("cam1"), before);
+    assert!(r.projects().is_empty());
+    assert!(r.toasts().iter().any(|t| t.contains("lease")), "{:?}", r.toasts());
+}
+
+#[derive(Debug)]
+struct Dropped(std::path::PathBuf);
+
+impl egui::DroppedFile for Dropped {
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+
+    fn bytes(&self) -> Result<Vec<u8>, String> {
+        std::fs::read(&self.0).map_err(|e| e.to_string())
+    }
+}
+
+impl Rig {
+    /// Let go of a file over the window.
+    fn drop_file(&mut self, path: &str) {
+        self.harness.input_mut().dropped_files.push(std::sync::Arc::new(Dropped(path.into())));
+    }
+}
+
+/// A hall 40 by 9 by 25 in millimetres, Y up, as an OBJ exporter would write it.
+fn hall_mesh() -> ptz_scene::mesh::Mesh {
+    let mut hall = ptz_scene::mesh::Mesh::default();
+    hall.push_cuboid([0.0, 0.0, -25_000.0], [40_000.0, 9_000.0, 0.0], [90, 90, 100]);
+    hall
+}
+
+fn hall_settings(revision: u64) -> ptz_core::camera::StageModel {
+    ptz_core::camera::StageModel {
+        name: "hall.obj".into(),
+        revision,
+        triangles: 12,
+        min: [0.0, 0.0, -25_000.0],
+        max: [40_000.0, 9_000.0, 0.0],
+        unit: ptz_core::camera::Unit::Mm,
+        up: ptz_core::camera::UpAxis::Y,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn a_dropped_model_is_imported_shown_with_its_size_and_placed_from_the_inspector() {
+    use crate::stage::Import;
+    use egui_kittest::kittest::Queryable as _;
+    use std::path::PathBuf;
+    let mut r = rig(Song::new("s", "Test Song", "01:00:00:00", 1500));
+    r.harness.state_mut().show_tab(Tab::Inspector);
+    r.harness.run_steps(3);
+    r.harness
+        .get_by_label("The built-in stage is shown. Import the venue to see what each camera sees from where it will stand.");
+    let _ = r.cmds.try_iter().count();
+
+    // A model dropped on the window is imported; its material file is left alone; other files are media.
+    for name in ["/venues/hall.obj", "/venues/hall.mtl", "/audio/walk-on.wav", "/venues/Rig Plot.3DS"] {
+        r.drop_file(name);
+    }
+    r.harness.run_steps(3);
+    let cmds: Vec<Cmd> = r.cmds.try_iter().collect();
+    let imports: Vec<&PathBuf> = cmds.iter().filter_map(|c| if let Cmd::ImportStage(p) = c { Some(p) } else { None }).collect();
+    assert_eq!(imports, vec![&PathBuf::from("/venues/hall.obj"), &PathBuf::from("/venues/Rig Plot.3DS")]);
+    let uploads: Vec<&PathBuf> = cmds.iter().filter_map(|c| if let Cmd::Upload(p) = c { Some(p) } else { None }).collect();
+    assert_eq!(uploads, vec![&PathBuf::from("/audio/walk-on.wav")]);
+
+    // While it is read and sent the Inspector says so.
+    r.events.send(Event::StageImport(Import::Reading("hall.obj".into()))).unwrap();
+    r.harness.run_steps(3);
+    r.harness.get_by_label("Reading hall.obj");
+
+    // It arrives: the mesh, then the project that names it. Nothing is fetched, because the app already holds it.
+    let mut project = r.harness.state().session.project.clone();
+    project.stage = ptz_core::camera::Stage { show_builtin: false, model: Some(hall_settings(1)) };
+    r.events.send(Event::StageModel { revision: 1, mesh: std::sync::Arc::new(hall_mesh()) }).unwrap();
+    r.events.send(Event::Project(Box::new(project))).unwrap();
+    r.events.send(Event::StageImport(Import::Done("hall.obj".into()))).unwrap();
+    r.harness.run_steps(4);
+    assert!(!r.cmds.try_iter().any(|c| matches!(c, Cmd::FetchStageModel(_))));
+    let s = &r.harness.state().session;
+    assert_eq!(s.world.triangles(), 12, "the hall replaces the built-in stage");
+    assert_eq!(s.world.bounds().unwrap(), ([0.0, 0.0, 0.0], [40.0, 25.0, 9.0]));
+    r.harness.get_by_label("hall.obj   12 triangles");
+    r.harness.get_by_label("40.0 m wide, 25.0 m deep, 9.0 m high");
+    r.harness.get_by_label("It spans x 0.0 to 40.0, y 0.0 to 25.0, z 0.0 to 9.0 m");
+
+    // Centre moves the footprint's middle to the origin; the picture follows without another fetch.
+    r.press("Centre");
+    let sent = r.projects().pop().expect("the project was sent");
+    assert_eq!(sent.stage.model.as_ref().unwrap().offset, [-20.0, -12.5, 0.0]);
+    assert_eq!(r.harness.state().session.world.bounds().unwrap(), ([-20.0, -12.5, 0.0], [20.0, 12.5, 9.0]));
+    r.harness.get_by_label("It spans x -20.0 to 20.0, y -12.5 to 12.5, z 0.0 to 9.0 m");
+
+    // The unit decides the size: read as centimetres the hall is ten times larger, and Sit on the floor still works.
+    {
+        let s = &mut r.harness.state_mut().session;
+        let mut project = s.project.clone();
+        let model = project.stage.model.as_mut().unwrap();
+        model.unit = ptz_core::camera::Unit::Cm;
+        model.offset = [0.0, 0.0, -3.0];
+        s.put_project(project);
+    }
+    r.harness.run_steps(3);
+    let _ = r.projects();
+    r.harness.get_by_label("400.0 m wide, 250.0 m deep, 90.0 m high");
+    r.press("Sit on the floor");
+    assert_eq!(r.projects().pop().unwrap().stage.model.unwrap().offset, [0.0, 0.0, 0.0]);
+
+    // A file that cannot be read says why, and changes nothing.
+    let before = r.harness.state().session.project.clone();
+    let why = "line 4127: face refers to vertex 90211, but the file has 88410";
+    r.events.send(Event::StageImport(Import::Failed { name: "broken.obj".into(), why: why.into() })).unwrap();
+    r.harness.run_steps(3);
+    let said = format!("broken.obj was not imported: {why}");
+    assert_eq!(r.harness.query_all_by_label(said.as_str()).count(), 2, "in the Inspector and as a notice");
+    assert_eq!(r.harness.state().session.project, before);
+    assert_eq!(r.harness.state().session.world.triangles(), 12);
+
+    // Removing asks twice, because it removes the model for every station.
+    r.press("Remove the model");
+    assert!(!r.cmds.try_iter().any(|c| matches!(c, Cmd::RemoveStageModel)));
+    r.press("Remove it for every station");
+    assert!(r.cmds.try_iter().any(|c| matches!(c, Cmd::RemoveStageModel)));
+
+    // A project that names a model this window does not hold fetches it, once.
+    let mut project = r.harness.state().session.project.clone();
+    project.stage.model = Some(hall_settings(2));
+    r.events.send(Event::Project(Box::new(project))).unwrap();
+    r.harness.run_steps(6);
+    let fetches: Vec<u64> =
+        r.cmds.try_iter().filter_map(|c| if let Cmd::FetchStageModel(n) = c { Some(n) } else { None }).collect();
+    assert_eq!(fetches, vec![2]);
+    assert_eq!(r.harness.state().session.world.triangles(), 0, "the old model is not shown under the new one's settings");
+    r.harness.get_by_label("Fetching the model from the server");
+    r.events.send(Event::StageModel { revision: 2, mesh: std::sync::Arc::new(hall_mesh()) }).unwrap();
+    r.harness.run_steps(4);
+    assert_eq!(r.harness.state().session.world.triangles(), 12);
+
+    // A station that is only watching cannot import.
+    r.harness.state_mut().session.status.you_hold_lease = false;
+    r.drop_file("/venues/other.obj");
+    r.harness.run_steps(3);
+    assert!(!r.cmds.try_iter().any(|c| matches!(c, Cmd::ImportStage(_))));
+    assert!(r.toasts().iter().any(|t| t.contains("to import a stage model")), "{:?}", r.toasts());
+}
+
+#[test]
+fn a_layout_saved_before_the_stage_tabs_existed_gains_them_beside_the_program_monitor() {
+    use egui_dock::{DockState, NodeIndex};
+    let mut old = DockState::new(vec![Tab::Reference, Tab::Program]);
+    let surface = old.main_surface_mut();
+    let [top, _] = surface.split_below(NodeIndex::root(), 0.6, vec![Tab::Timeline, Tab::Graph, Tab::Log]);
+    let [centre, _] = surface.split_left(top, 0.25, vec![Tab::Presets, Tab::Media]);
+    let [_, _] = surface.split_right(centre, 0.6, vec![Tab::Rig, Tab::Inspector]);
+    let program = old.find_tab(&Tab::Program).unwrap();
+    old.set_active_tab(program).unwrap();
+    let before = serde_json::to_value(&old).unwrap();
+
+    let (link, _cmds, _events) = Link::detached();
+    let session = Session::offline(link, Project::default(), presets(), Song::new("s", "Test Song", "01:00:00:00", 1500));
+    let shell = Shell::new(session, Some(old));
+    for tab in Tab::ALL {
+        assert!(shell.dock.find_tab(&tab).is_some(), "{tab:?} is in the layout");
+    }
+    let (program, stage, multiview) = (
+        shell.dock.find_tab(&Tab::Program).unwrap(),
+        shell.dock.find_tab(&Tab::Stage).unwrap(),
+        shell.dock.find_tab(&Tab::Multiview).unwrap(),
+    );
+    assert_eq!((stage.surface, stage.node), (program.surface, program.node));
+    assert_eq!((multiview.surface, multiview.node), (program.surface, program.node));
+    let leaf = shell.dock[program.surface][program.node].get_leaf().unwrap();
+    assert_eq!(leaf.active, program.tab, "the Program monitor stays in front");
+    assert_eq!(leaf.tabs(), &[Tab::Reference, Tab::Program, Tab::Stage, Tab::Multiview]);
+    // The splits the operator made are untouched.
+    let nodes = |v: &serde_json::Value| v["surfaces"][0]["Main"]["nodes"].as_array().map(Vec::len);
+    assert_eq!(nodes(&before), nodes(&serde_json::to_value(&shell.dock).unwrap()));
+
+    // A layout that already has every tab is kept as it is.
+    let tabs = |dock: &DockState<Tab>| -> Vec<Tab> { dock.iter_all_tabs().map(|(_, tab)| *tab).collect() };
+    let (link, _cmds, _events) = Link::detached();
+    let session = Session::offline(link, Project::default(), presets(), Song::new("s", "Test Song", "01:00:00:00", 1500));
+    let again = Shell::new(session, Some(crate::app::default_layout()));
+    assert_eq!(tabs(&again.dock), tabs(&crate::app::default_layout()));
+    assert_eq!(tabs(&again.dock).len(), Tab::ALL.len());
+}
