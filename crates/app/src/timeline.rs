@@ -395,6 +395,7 @@ enum Drag {
         origin: Pos2,
         current: Pos2,
         base: BTreeSet<String>,
+        base_keys: BTreeSet<KeyRef>,
     },
     Scrub,
     Keys {
@@ -602,7 +603,12 @@ impl Timeline {
                     self.selection.clear();
                     self.key_selection.clear();
                 }
-                self.drag = Some(Drag::Marquee { origin: pos, current: pos, base: self.selection.clone() });
+                self.drag = Some(Drag::Marquee {
+                    origin: pos,
+                    current: pos,
+                    base: self.selection.clone(),
+                    base_keys: self.key_selection.clone(),
+                });
                 Outcome::None
             }
             Hit::Header { .. } | Hit::Outside => Outcome::None,
@@ -704,7 +710,7 @@ impl Timeline {
                 }
                 Outcome::None
             }
-            Drag::Marquee { origin, base, .. } => {
+            Drag::Marquee { origin, base, base_keys, .. } => {
                 let area = Rect::from_two_pos(origin, pos);
                 let mut sel = base.clone();
                 for c in layout.clips.iter().filter(|c| c.kind != ClipKind::AxisPart) {
@@ -720,7 +726,15 @@ impl Timeline {
                     }
                 }
                 self.selection = sel;
-                self.drag = Some(Drag::Marquee { origin, current: pos, base });
+                // Keys on the axis lanes: all from one clip, so they can be moved together.
+                let mut keys = base_keys.clone();
+                for k in layout.keys.iter().filter(|k| area.contains(k.pos)) {
+                    if keys.iter().all(|other| other.0 == k.clip) {
+                        keys.insert((k.clip.clone(), k.axis, k.index));
+                    }
+                }
+                self.key_selection = keys;
+                self.drag = Some(Drag::Marquee { origin, current: pos, base, base_keys });
                 Outcome::None
             }
             Drag::Keys { clip, grab_frame } => {

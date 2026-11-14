@@ -348,3 +348,281 @@ fn the_transport_bar_names_the_output_or_says_why_it_is_silent() {
     r.harness.run_steps(2);
     r.harness.get_by_label("MacBook Pro Speakers, 48000 Hz");
 }
+
+// ---- stage 3: keys, graph editor, rig controller, record ----
+
+use crate::app::Tab;
+use crate::link::Why;
+use ptz_core::api::{Jog, WorkingSong};
+use ptz_core::pose::Axis;
+use ptz_core::song::{Interp, Key};
+use ptz_core::transport::{Action, Output};
+
+/// A keys clip from frame 100: pan 0, 30, 10 degrees at 0, 100 and 200; zoom on a straight line.
+fn keys_song() -> (Song, String) {
+    let mut curves = std::collections::BTreeMap::new();
+    curves.insert(
+        Axis::Pan,
+        vec![Key::new(0, 0.0, Interp::Bezier), Key::new(100, 30.0, Interp::Bezier), Key::new(200, 10.0, Interp::Bezier)],
+    );
+    curves.insert(Axis::Zoom, vec![Key::new(0, 0.2, Interp::Linear), Key::new(200, 0.6, Interp::Linear)]);
+    let empty = Song::new("s", "Test Song", "01:00:00:00", 600);
+    ptz_core::edit::punch_keys(&empty, &Project::default(), 100, 200, curves, None).unwrap()
+}
+
+impl Rig {
+    fn plot(&self) -> crate::graph::Plot {
+        let s = &self.harness.state().session;
+        crate::graph::Plot::new(s.graph.probe.expect("the graph editor was drawn"), &s.timeline.view, s.graph.ranges)
+    }
+
+    fn click(&mut self, at: Pos2) {
+        self.harness.hover_at(at);
+        self.harness.run_steps(2);
+        self.harness.drag_at(at);
+        self.harness.run_steps(1);
+        self.harness.drop_at(at);
+        self.harness.run_steps(2);
+    }
+
+    fn jogs(&self) -> Vec<Jog> {
+        self.cmds.try_iter().filter_map(|c| if let Cmd::Jog(j) = c { Some(j) } else { None }).collect()
+    }
+
+    fn toasts(&self) -> Vec<String> {
+        self.harness.state().session.toasts.iter().map(|t| t.text.clone()).collect()
+    }
+}
+
+#[test]
+fn a_key_dragged_in_the_graph_editor_changes_time_and_value_as_one_undo_step() {
+    use egui_kittest::kittest::Queryable as _;
+    let (song, id) = keys_song();
+    let mut r = rig(song.clone());
+    r.harness.state_mut().session.timeline.selection.insert(id.clone());
+    r.harness.state_mut().show_tab(Tab::Graph);
+    r.harness.run_steps(3);
+
+    let plot = r.plot();
+    let clip = song.motion_clip(&id).unwrap().clone();
+    let ppf = r.harness.state().session.timeline.view.px_per_frame;
+    let from = plot.key_pos(&clip, Axis::Pan, &clip.keys(Axis::Pan)[1]);
+    let to = from + vec2(-30.0 * ppf, 40.0);
+    r.drag(from, to);
+
+    let moved = r.song().motion_clip(&id).unwrap().keys(Axis::Pan)[1];
+    assert!((moved.frame - 70).abs() <= 2, "the key went 30 frames earlier: {}", moved.frame);
+    let (lo, hi) = plot.ranges[Axis::Pan.index()];
+    let want = 30.0 - 40.0 * (hi - lo) / (plot.body.height() as f64 - 20.0);
+    assert!((moved.value - want).abs() < 0.6, "the key went down to about {want}: {}", moved.value);
+    assert_eq!(r.song().motion_clip(&id).unwrap().keys(Axis::Zoom), clip.keys(Axis::Zoom));
+    assert_eq!(r.puts().len(), 1, "one edit reached the server, not one per mouse move");
+    assert_eq!(r.harness.state().session.undo.len(), 1);
+    assert!(r.harness.state().session.timeline.key_selection.contains(&(id.clone(), Axis::Pan, 1)));
+
+    // The key is still selected, so the ease buttons work on it.
+    r.harness.get_by_label("Easy Ease").click();
+    r.harness.run_steps(3);
+    let eased = r.song().motion_clip(&id).unwrap().keys(Axis::Pan)[1];
+    assert_eq!(eased.in_handle[1], 0.0);
+    assert_eq!(eased.out_handle[1], 0.0);
+    assert!((eased.in_handle[0] + 0.42 * moved.frame as f64).abs() < 1e-9, "{:?}", eased.in_handle);
+    assert!((eased.out_handle[0] - 0.42 * (200 - moved.frame) as f64).abs() < 1e-9, "{:?}", eased.out_handle);
+
+    r.harness.get_by_label("Hold").click();
+    r.harness.run_steps(3);
+    assert_eq!(r.song().motion_clip(&id).unwrap().keys(Axis::Pan)[1].interp, Interp::Hold);
+
+    // Undo three times is back to the song as it was loaded.
+    for _ in 0..3 {
+        r.harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+        r.harness.run_steps(2);
+    }
+    assert_eq!(r.song(), &song);
+
+    // Speed view: the toggle is a real button and the editor stops taking key drags.
+    r.harness.get_by_label("Speed").click();
+    r.harness.run_steps(3);
+    assert!(r.harness.state().session.graph.speed);
+    r.drag(from, to);
+    assert_eq!(r.song(), &song, "nothing is editable in the speed view");
+}
+
+#[test]
+fn the_graph_editor_shares_the_timeline_zoom_and_frame_fits_the_clip() {
+    use egui_kittest::kittest::Queryable as _;
+    let (song, id) = keys_song();
+    let mut r = rig(song.clone());
+    r.harness.state_mut().session.timeline.selection.insert(id.clone());
+    let timeline_x = r.layout().x_of(200.0);
+    r.harness.state_mut().show_tab(Tab::Graph);
+    r.harness.run_steps(3);
+    assert_eq!(r.plot().x_of(200.0), timeline_x, "frame 200 is at the same x in both panels");
+
+    r.harness.get_by_label("Frame").click();
+    r.harness.run_steps(3);
+    let plot = r.plot();
+    let (x0, x1) = (plot.x_of(100.0), plot.x_of(300.0));
+    assert!(x0 > plot.body.left() && x0 < plot.body.left() + plot.body.width() * 0.15, "the clip starts near the left: {x0}");
+    assert!(x1 < plot.body.right() && x1 > plot.body.right() - plot.body.width() * 0.15, "and ends near the right: {x1}");
+    r.harness.state_mut().show_tab(Tab::Timeline);
+    r.harness.run_steps(3);
+    assert!((r.layout().x_of(100.0) - x0).abs() < 0.5, "the timeline zoomed with it");
+}
+
+#[test]
+fn the_rig_pad_sends_velocity_while_held_and_stops_on_release() {
+    let mut r = rig(Song::new("s", "Test Song", "01:00:00:00", 1500));
+    r.harness.state_mut().show_tab(Tab::Rig);
+    r.harness.run_steps(3);
+    let surface = r.harness.state().session.rig.probe.expect("the controller was drawn");
+    let speed = r.harness.state().session.rig.speed;
+    let c = surface.pad.center();
+    let right = pos2(surface.pad.right() - 8.0, c.y);
+
+    r.harness.hover_at(right);
+    r.harness.run_steps(2);
+    r.harness.drag_at(right);
+    r.harness.run_steps(4);
+    let held = r.jogs();
+    assert!(!held.is_empty(), "pressing the pad moves the rig without waiting for a drag");
+    assert!(held.iter().all(|j| (j.pan - speed).abs() < 1e-9 && j.tilt == 0.0 && j.zoom == 0.0), "{held:?}");
+
+    // Sliding up adds tilt; the message repeats while held.
+    let up_right = pos2(surface.pad.right() - 8.0, surface.pad.top() + 8.0);
+    r.harness.hover_at(up_right);
+    for _ in 0..3 {
+        std::thread::sleep(crate::rig_ui::SEND_EVERY + std::time::Duration::from_millis(5));
+        r.harness.run_steps(1);
+    }
+    let held = r.jogs();
+    assert!(held.len() >= 2, "{held:?}");
+    let last = held.last().unwrap();
+    assert!((last.pan - speed).abs() < 1e-9 && (last.tilt - speed).abs() < 1e-9, "{last:?}");
+
+    r.harness.drop_at(up_right);
+    r.harness.run_steps(3);
+    assert_eq!(r.jogs(), vec![Jog::default()], "release sends one stop");
+    r.harness.run_steps(3);
+    assert!(r.jogs().is_empty());
+
+    // The zoom slider drives zoom only, and springs back.
+    let (_, track) = surface.sliders[0];
+    let grab = pos2(track.left() + 2.0, track.center().y);
+    r.harness.hover_at(grab);
+    r.harness.run_steps(2);
+    r.harness.drag_at(grab);
+    r.harness.run_steps(3);
+    let zoom = r.jogs();
+    assert!(zoom.iter().all(|j| (j.zoom + speed).abs() < 1e-9 && j.pan == 0.0 && j.elevation == 0.0), "{zoom:?}");
+    r.harness.drop_at(grab);
+    r.harness.run_steps(3);
+    assert_eq!(r.jogs(), vec![Jog::default()]);
+
+    // With the controller focused the arrow keys drive the rig and do not move the playhead.
+    r.harness.key_down(egui::Key::ArrowLeft);
+    r.harness.run_steps(3);
+    let cmds: Vec<Cmd> = r.cmds.try_iter().collect();
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::Jog(j) if (j.pan + speed).abs() < 1e-9)), "{}", cmds.len());
+    assert!(!cmds.iter().any(|c| matches!(c, Cmd::Act(Action::Seek, _))), "the arrow did not scrub");
+    r.harness.key_up(egui::Key::ArrowLeft);
+    r.harness.run_steps(3);
+    assert_eq!(r.jogs().last(), Some(&Jog::default()));
+
+    // Armed: the controller says why and sends nothing.
+    r.harness.state_mut().session.status.transport.output = Output::Armed;
+    r.harness.run_steps(2);
+    r.harness.hover_at(right);
+    r.harness.run_steps(2);
+    r.harness.drag_at(right);
+    r.harness.run_steps(3);
+    r.harness.drop_at(right);
+    r.harness.run_steps(2);
+    assert!(r.jogs().is_empty());
+    assert!(r.toasts().iter().any(|t| t.contains("Disarm to drive the rig by hand")), "{:?}", r.toasts());
+}
+
+#[test]
+fn record_dots_on_the_axis_lanes_choose_what_record_writes_and_k_keys_the_selected_lanes() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut r = rig(Song::new("s", "Test Song", "01:00:00:00", 1500));
+    r.harness.state_mut().session.timeline.view.motion_open = true;
+    r.harness.run_steps(3);
+    assert_eq!(r.harness.state().session.record_axes, vec![Axis::Pan, Axis::Tilt]);
+
+    let dot = |r: &Rig, axis: Axis| crate::timeline_ui::record_dot(&r.layout(), axis).expect("the axis lane is open");
+    let at = dot(&r, Axis::Zoom);
+    r.click(at);
+    let at = dot(&r, Axis::Pan);
+    r.click(at);
+    assert_eq!(r.harness.state().session.record_axes, vec![Axis::Tilt, Axis::Zoom]);
+
+    r.harness.get_by_label("Record").click();
+    r.harness.run_steps(2);
+    let sent: Vec<_> =
+        r.cmds.try_iter().filter_map(|c| if let Cmd::Act(Action::RecordOn, req) = c { Some(req.axes) } else { None }).collect();
+    assert_eq!(sent, vec![Some(vec![Axis::Tilt, Axis::Zoom])]);
+
+    // While Record is on the server's axes are shown and cannot be changed.
+    {
+        let s = &mut r.harness.state_mut().session;
+        s.status.transport.record = true;
+        s.status.record.axes = vec![Axis::Tilt, Axis::Zoom];
+    }
+    r.harness.run_steps(2);
+    let at = dot(&r, Axis::Focus);
+    r.click(at);
+    assert_eq!(r.harness.state().session.record_axes, vec![Axis::Tilt, Axis::Zoom]);
+    assert!(r.toasts().iter().any(|t| t.contains("Turn Record off")), "{:?}", r.toasts());
+    r.harness.state_mut().session.status.transport.record = false;
+
+    // With no axis enabled Record explains itself instead of asking the server.
+    r.harness.state_mut().session.record_axes.clear();
+    r.harness.run_steps(2);
+    r.harness.get_by_label("Record").click();
+    r.harness.run_steps(2);
+    assert!(!r.cmds.try_iter().any(|c| matches!(c, Cmd::Act(Action::RecordOn, _))));
+    assert!(r.toasts().iter().any(|t| t.contains("Record-enable an axis first")), "{:?}", r.toasts());
+
+    // Clicking a lane's name selects it for K; K keys only that lane.
+    let l = r.layout();
+    let name = pos2(l.rect.left() + 60.0, l.lane_rect(Lane::Axis(Axis::Tilt)).unwrap().center().y);
+    r.click(name);
+    assert_eq!(r.harness.state().session.axis_lanes.iter().copied().collect::<Vec<_>>(), vec![Axis::Tilt]);
+    r.harness.key_press(egui::Key::K);
+    r.harness.run_steps(3);
+    let song = r.song().clone();
+    assert_eq!(song.motion.len(), 1, "{:?}", r.toasts());
+    assert_eq!(song.motion[0].axes, vec![Axis::Tilt]);
+    assert_eq!(song.motion[0].keys(Axis::Tilt).len(), 1);
+}
+
+#[test]
+fn a_recorded_pass_arriving_from_the_server_is_one_undo_step_and_opens_in_the_graph_editor() {
+    let before = Song::new("s", "Test Song", "01:00:00:00", 600);
+    let mut r = rig(before.clone());
+    // What the server sends after a pass: the song with a recorded keys clip punched in.
+    let mut curves = std::collections::BTreeMap::new();
+    curves.insert(Axis::Pan, vec![Key::new(0, 0.0, Interp::Bezier), Key::new(120, 40.0, Interp::Bezier)]);
+    let (recorded, clip) =
+        ptz_core::edit::punch_keys(&before, &Project::default(), 0, 120, curves, Some("pass-0001".into())).unwrap();
+    let working = WorkingSong { song: recorded.clone(), edit_counter: 1, dirty: true, revision: None, issues: Vec::new() };
+    r.events.send(Event::Working(Box::new(working), Why::Reload)).unwrap();
+    r.harness.run_steps(3);
+    assert_eq!(r.song(), &recorded);
+    assert_eq!(r.harness.state().session.undo.len(), 1);
+    assert!(r.puts().is_empty(), "the server's own change is not sent back to it");
+
+    // The playhead is inside the pass, so the graph editor shows it without a click.
+    r.harness.state_mut().show_tab(Tab::Graph);
+    r.harness.run_steps(3);
+    let s = &r.harness.state().session;
+    let shown = crate::graph::target_clip(r.song(), &s.timeline.selection, &s.timeline.key_selection, s.playhead());
+    assert_eq!(shown.map(|c| c.id.clone()), Some(clip));
+
+    // One undo restores everything the pass replaced.
+    r.harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    r.harness.run_steps(2);
+    assert_eq!(r.song(), &before);
+    assert_eq!(r.puts(), vec![before]);
+}

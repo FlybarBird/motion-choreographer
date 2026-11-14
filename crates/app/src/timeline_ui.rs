@@ -103,6 +103,18 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
     if resp.clicked() || resp.drag_started() {
         resp.request_focus();
     }
+    // Axis lane headers: the dot record-enables the axis, the name selects the lane for K.
+    if resp.clicked() {
+        if let Some(p) = pointer {
+            if let Hit::Header { lane: Lane::Axis(axis) } = timeline::hit(&base, p) {
+                if record_dot(&base, axis).is_some_and(|c| (c - p).length() <= 11.0) {
+                    s.toggle_record_axis(axis);
+                } else if !s.axis_lanes.remove(&axis) {
+                    s.axis_lanes.insert(axis);
+                }
+            }
+        }
+    }
 
     // Drops from the Presets and Media tabs.
     let mut ghost: Option<Ghost> = None;
@@ -280,6 +292,11 @@ fn toolbar(ui: &mut Ui, s: &mut Session, song: &Song) {
     ui.add_space(2.0);
 }
 
+/// Centre of an axis lane's record-enable dot.
+pub fn record_dot(l: &Layout, axis: Axis) -> Option<Pos2> {
+    l.lane_rect(Lane::Axis(axis)).map(|r| pos2(l.body.left() - 14.0, r.center().y))
+}
+
 pub fn add_marker(s: &mut Session) {
     let frame = s.playhead().round() as i64;
     let n = s.song.as_ref().map(|x| x.markers.len() + 1).unwrap_or(1);
@@ -289,9 +306,16 @@ pub fn add_marker(s: &mut Session) {
 pub fn delete_selection(s: &mut Session) {
     if !s.timeline.key_selection.is_empty() {
         let keys: Vec<_> = s.timeline.key_selection.iter().cloned().collect();
-        let clip = keys[0].0.clone();
-        let sel: Vec<(Axis, usize)> = keys.iter().filter(|k| k.0 == clip).map(|k| (k.1, k.2)).collect();
-        if s.edit(|song, project| ptz_core::edit::delete_keys(song, project, &clip, &sel)) {
+        let clips: std::collections::BTreeSet<String> = keys.iter().map(|k| k.0.clone()).collect();
+        let done = s.edit(|song, project| {
+            let mut next = song.clone();
+            for clip in &clips {
+                let sel: Vec<(Axis, usize)> = keys.iter().filter(|k| &k.0 == clip).map(|k| (k.1, k.2)).collect();
+                next = ptz_core::edit::delete_keys(&next, project, clip, &sel)?;
+            }
+            Ok(next)
+        });
+        if done {
             s.timeline.key_selection.clear();
         }
         return;
@@ -766,10 +790,28 @@ fn paint(painter: &Painter, l: &Layout, song: &Song, s: &Session, playhead: f64)
                 );
             }
             Lane::Axis(axis) => {
+                let chosen = s.axis_lanes.contains(&axis);
+                if chosen {
+                    let r = Rect::from_min_max(
+                        pos2(l.rect.left() + 22.0, lane.rect.top() + 3.0),
+                        pos2(l.body.left() - 28.0, lane.rect.bottom() - 3.0),
+                    );
+                    painter.rect_filled(r, 4.0, with_alpha(BLUE, 70));
+                }
                 painter.circle_filled(pos2(l.rect.left() + 32.0, y), 3.5, axis_color(axis));
-                painter.text(pos2(l.rect.left() + 42.0, y), Align2::LEFT_CENTER, axis.label(), FontId::proportional(11.5), MUTED);
-                if s.record_axes.contains(&axis) && s.status.transport.record {
-                    painter.circle_filled(pos2(l.body.left() - 12.0, y), 4.0, RED);
+                let ink = if chosen { OFF_WHITE } else { MUTED };
+                painter.text(pos2(l.rect.left() + 42.0, y), Align2::LEFT_CENTER, axis.label(), FontId::proportional(11.5), ink);
+                // Record-enable: a ring when off, filled when Record will write this axis, lit during a pass.
+                if let Some(c) = record_dot(l, axis) {
+                    if s.record_axes_shown().contains(&axis) {
+                        let live = s.status.transport.record;
+                        painter.circle_filled(c, 5.5, if live { RED } else { mix(RED, CHARCOAL, 0.35) });
+                        if s.status.record.active {
+                            painter.circle_stroke(c, 8.0, Stroke::new(1.5, RED));
+                        }
+                    } else {
+                        painter.circle_stroke(c, 5.0, Stroke::new(1.5, mix(RED, CHARCOAL, 0.55)));
+                    }
                 }
             }
             other => {

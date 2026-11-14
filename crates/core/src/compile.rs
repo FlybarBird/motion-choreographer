@@ -6,7 +6,7 @@ use crate::song::{ClipBody, Ease, FromPose, MotionClip, Song};
 use crate::time::FrameRate;
 use serde::{Deserialize, Serialize};
 
-const SLACK: f64 = 1.001;
+pub const SLACK: f64 = 1.001;
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 #[serde(tag = "kind", rename_all = "snake_case")]
