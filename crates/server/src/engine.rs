@@ -258,6 +258,18 @@ fn usable(mut project: Project) -> Project {
     project
 }
 
+/// A stage model that has been received and checked, waiting to replace the one in use.
+pub struct StageUpload {
+    pub name: String,
+    pub unit: ptz_core::camera::Unit,
+    pub up: ptz_core::camera::UpAxis,
+    pub triangles: u64,
+    pub min: [f64; 3],
+    pub max: [f64; 3],
+    /// The mesh file, written in the stage folder under a temporary name.
+    pub file: PathBuf,
+}
+
 /// What the live loop remembers between ticks.
 #[derive(Default)]
 struct Live {
@@ -324,7 +336,11 @@ impl Show {
         if cfg.seed && storage.is_fresh() {
             crate::seed::seed(&storage)?;
         }
-        let project = usable(storage.load_project());
+        let mut project = usable(storage.load_project());
+        if project.stage.model.is_some() && !storage.stage_model_path().is_file() {
+            eprintln!("warning: the stage model file is missing; the built-in stage is shown instead");
+            project.stage = ptz_core::camera::Stage::default();
+        }
         if storage.is_fresh() {
             storage.save_project(&project)?;
         }
@@ -854,6 +870,70 @@ impl Show {
         self.push(WsMsg::ProjectChanged);
         self.poke();
         Ok(project)
+    }
+
+    /// The lease and the state a stage model may be changed in. Checked before a large upload is read.
+    pub fn may_change_stage(&self, client: &str) -> Res<()> {
+        self.require_lease(client)?;
+        if self.transport.output != Output::Rehearse {
+            return Err(Fail::refused("Disarm to change the stage model"));
+        }
+        Ok(())
+    }
+
+    /// Take a checked mesh file, already written beside its final place, as the stage model.
+    pub fn set_stage_model(&mut self, client: &str, upload: StageUpload) -> Res<Project> {
+        if let Err(fail) = self.may_change_stage(client) {
+            let _ = std::fs::remove_file(&upload.file);
+            return Err(fail);
+        }
+        let path = self.storage.stage_model_path();
+        if let Err(e) = std::fs::rename(&upload.file, &path) {
+            let _ = std::fs::remove_file(&upload.file);
+            return Err(Fail::io(e));
+        }
+        let was = self.project.stage.model.as_ref();
+        let revision = was.map(|m| m.revision).unwrap_or(0) + 1;
+        let model = ptz_core::camera::StageModel {
+            name: upload.name,
+            revision,
+            triangles: upload.triangles,
+            min: upload.min,
+            max: upload.max,
+            unit: upload.unit,
+            up: upload.up,
+            offset: [0.0; 3],
+            rotation_deg: 0.0,
+        };
+        self.log(
+            "stage_model",
+            json!({ "name": model.name, "triangles": model.triangles, "revision": revision, "by": self.lease.as_ref().map(|l| l.name.clone()) }),
+        );
+        // A venue replaces the built-in stage until the operator asks for both.
+        self.project.stage = ptz_core::camera::Stage { show_builtin: false, model: Some(model) };
+        self.storage.save_project(&self.project).map_err(Fail::io)?;
+        self.push(WsMsg::ProjectChanged);
+        Ok(self.project.clone())
+    }
+
+    pub fn delete_stage_model(&mut self, client: &str) -> Res<Project> {
+        self.may_change_stage(client)?;
+        let Some(model) = self.project.stage.model.take() else {
+            return Err(Fail::not_found("There is no stage model to remove"));
+        };
+        self.project.stage.show_builtin = true;
+        self.storage.save_project(&self.project).map_err(Fail::io)?;
+        let _ = std::fs::remove_file(self.storage.stage_model_path());
+        self.log("stage_model_removed", json!({ "name": model.name, "by": self.lease.as_ref().map(|l| l.name.clone()) }));
+        self.push(WsMsg::ProjectChanged);
+        Ok(self.project.clone())
+    }
+
+    pub fn stage_model_file(&self) -> Res<PathBuf> {
+        match &self.project.stage.model {
+            Some(_) => Ok(self.storage.stage_model_path()),
+            None => Err(Fail::not_found("No stage model has been imported")),
+        }
     }
 
     fn unique_preset_id(&self, name: &str) -> String {

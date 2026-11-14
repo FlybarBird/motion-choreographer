@@ -2793,6 +2793,7 @@ dependencies = [
  "md-5",
  "midir",
  "ptz-core",
+ "ptz-scene",
  "rubato",
  "serde",
  "serde_json",
