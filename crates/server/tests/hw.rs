@@ -11,7 +11,7 @@ use ptz_server::hw::visca::{self, Turn};
 use ptz_server::hw::HardwareRig;
 use ptz_server::rig::{Drive, Ride, RigAdapter};
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -559,4 +559,126 @@ fn a_column_whose_position_cannot_be_read_is_still_told_to_stop() {
     assert!(pod.orders().iter().all(|c| c == autopod::STOP), "{:?}", pod.orders());
     assert_eq!(pod.height_mm(), height);
     assert!(rig.is_moving(), "a column that cannot be read is not reported as standing still");
+}
+
+/// Sits between the adapter and the stand-in camera. While `mute` is set the camera
+/// still hears every packet, but none of its answers get back.
+struct ViscaProxy {
+    addr: SocketAddr,
+    mute: Arc<AtomicBool>,
+    quit: Arc<AtomicBool>,
+}
+
+impl ViscaProxy {
+    fn start(real: SocketAddr) -> ViscaProxy {
+        let front = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let back = UdpSocket::bind("127.0.0.1:0").unwrap();
+        back.connect(real).unwrap();
+        let addr = front.local_addr().unwrap();
+        for s in [&front, &back] {
+            s.set_read_timeout(Some(Duration::from_millis(20))).unwrap();
+        }
+        let (mute, quit) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+        let client: Arc<Mutex<Option<SocketAddr>>> = Arc::new(Mutex::new(None));
+        let (f, b, c, q) = (front.try_clone().unwrap(), back.try_clone().unwrap(), client.clone(), quit.clone());
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 256];
+            while !q.load(Ordering::Relaxed) {
+                if let Ok((n, from)) = f.recv_from(&mut buf) {
+                    *c.lock().unwrap() = Some(from);
+                    let _ = b.send(&buf[..n]);
+                }
+            }
+        });
+        let (m, q) = (mute.clone(), quit.clone());
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 256];
+            while !q.load(Ordering::Relaxed) {
+                if let Ok(n) = back.recv(&mut buf) {
+                    if m.load(Ordering::Relaxed) {
+                        continue;
+                    }
+                    if let Some(to) = *client.lock().unwrap() {
+                        let _ = front.send_to(&buf[..n], to);
+                    }
+                }
+            }
+        });
+        ViscaProxy { addr, mute, quit }
+    }
+}
+
+impl Drop for ViscaProxy {
+    fn drop(&mut self) {
+        self.quit.store(true, Ordering::Relaxed);
+    }
+}
+
+/// A rig with only a camera, reached through `proxy`, on a long pan at full speed.
+fn a_panning_head(fr7: &FakeFr7, proxy: &ViscaProxy) -> HardwareRig {
+    let mut cfg = rig_config(Some(fr7), None);
+    cfg.fr7_host = proxy.addr.to_string();
+    let mut rig = HardwareRig::start(&cfg, &AxisTable::default());
+    wait_until("the camera answers", || rig.problem().is_none());
+    let drive = Drive::to(Pose { pan: 160.0, ..Pose::home() }, 1.0);
+    let began = Instant::now();
+    while began.elapsed() < Duration::from_millis(400) {
+        rig.drive(&drive);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(fr7.is_moving(), "the head is panning");
+    rig
+}
+
+#[test]
+fn a_camera_that_hears_but_cannot_be_heard_is_still_told_to_stop() {
+    for zero_first in [false, true] {
+        let fr7 = FakeFr7::start();
+        if zero_first {
+            fr7.expect_zero_after_reset();
+        }
+        let proxy = ViscaProxy::start(fr7.visca);
+        let mut rig = a_panning_head(&fr7, &proxy);
+
+        // The return path fails: the camera's answers are lost, but it still hears the server.
+        // The show goes on feeding targets, as it does until it has noticed.
+        proxy.mute.store(true, Ordering::Relaxed);
+        let drive = Drive::to(Pose { pan: 160.0, ..Pose::home() }, 1.0);
+        let began = Instant::now();
+        while fr7.is_moving() && began.elapsed() < Duration::from_secs(3) {
+            rig.drive(&drive);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let (pan, ..) = fr7.pose();
+        assert!(!fr7.is_moving(), "a head that cannot be read is still panning, now at {pan:.0} degrees");
+        assert!(rig.problem().is_some_and(|p| p.contains("not answering")), "{:?}", rig.problem());
+
+        // E-Stop while it still cannot be heard: every axis is told to stop, again.
+        fr7.clear_seen();
+        rig.stop();
+        let stops = [visca::pan_tilt_stop(), visca::zoom_stop(), visca::focus_stop()];
+        wait_until("the stops reach the camera", || stops.iter().all(|s| fr7.commands().contains(s)));
+        assert!(fr7.commands().iter().all(|c| stops.contains(c)), "only stops are sent: {:02X?}", fr7.commands());
+        assert!(rig.is_moving(), "a head that cannot be read is not reported as standing still");
+
+        // Heard again, it is read, seen to be still, and can be driven.
+        proxy.mute.store(false, Ordering::Relaxed);
+        wait_until("the camera is read again", || rig.problem().is_none());
+        wait_until("the head reads as standing still", || !rig.is_moving());
+        assert_eq!(fr7.pose().0, pan, "nothing moved it meanwhile");
+    }
+}
+
+#[test]
+fn stop_reaches_a_moving_head_whose_answers_have_just_been_lost() {
+    let fr7 = FakeFr7::start();
+    let proxy = ViscaProxy::start(fr7.visca);
+    let mut rig = a_panning_head(&fr7, &proxy);
+
+    proxy.mute.store(true, Ordering::Relaxed);
+    rig.stop();
+    // Three tries at 120 ms to find the camera gone, then the stop that does not wait for an answer.
+    let began = Instant::now();
+    wait_until("the head stops", || !fr7.is_moving());
+    assert!(began.elapsed() < Duration::from_millis(1200), "it took {:?}", began.elapsed());
 }

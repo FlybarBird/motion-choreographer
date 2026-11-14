@@ -266,6 +266,24 @@ impl Link {
     }
 }
 
+/// Tell the camera to stop every axis without waiting to be answered: for a camera that may
+/// hear this machine while nothing it says comes back. Its sequence counter is reset first, and
+/// the stops go out under each of the two numbers a camera may count from, so that one set is
+/// taken whichever it is.
+pub fn stop_unheard(cfg: &Fr7Config) {
+    let Ok(socket) = UdpSocket::bind("0.0.0.0:0") else { return };
+    if socket.connect(&cfg.visca).is_err() {
+        return;
+    }
+    let stops = [visca::pan_tilt_stop(), visca::zoom_stop(), visca::focus_stop()];
+    for first in [1u32, 0] {
+        let _ = socket.send(&Packet::new(visca::TYPE_CONTROL, 0, &visca::RESET).to_bytes());
+        for (i, stop) in stops.iter().enumerate() {
+            let _ = socket.send(&Packet::new(visca::TYPE_COMMAND, first + i as u32, stop).to_bytes());
+        }
+    }
+}
+
 pub fn zoom_counts(zoom: f64) -> u16 {
     (zoom.clamp(0.0, 1.0) * visca::ZOOM_TELE as f64).round() as u16
 }
@@ -477,6 +495,8 @@ struct Worker {
     still: u32,
     sync: Option<SyncJob>,
     was: Mode,
+    /// Not heard from since this server started: the head may be on a speed a server that died left it on.
+    unsure: bool,
 }
 
 impl Worker {
@@ -499,6 +519,7 @@ impl Worker {
             still: 0,
             sync: None,
             was: Mode::Idle,
+            unsure: true,
         }
     }
 
@@ -515,7 +536,10 @@ impl Worker {
                 }
                 return;
             }
-            if let Err(why) = self.cycle() {
+            let cycle = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.cycle()));
+            let cycle = cycle
+                .unwrap_or_else(|_| Err(format!("the FR7 at {} gave an answer the adapter could not handle", self.cfg.visca)));
+            if let Err(why) = cycle {
                 self.link = None;
                 let mut s = self.lock();
                 s.connected = false;
@@ -524,10 +548,20 @@ impl Worker {
                 if s.mode == Mode::Sync {
                     s.sync_result = Some(Err("The FR7 stopped answering during the preset sync".into()));
                     s.sync_progress = None;
-                    s.mode = Mode::Idle;
+                }
+                // A head that cannot be read cannot be steered. Whatever it was doing for this
+                // server, it is told to stop, and told again until it can be seen standing still.
+                let owed = s.mode != Mode::Idle || self.unsure;
+                if s.mode != Mode::Idle {
+                    s.mode = Mode::Stop;
                 }
                 drop(s);
                 self.sync = None;
+                self.unsure = false;
+                if owed {
+                    // The stop may reach a camera whose answers are not reaching us.
+                    stop_unheard(&self.cfg);
+                }
                 // Do not hammer an address nothing answers at.
                 std::thread::sleep(Duration::from_millis(250));
             }
@@ -547,7 +581,14 @@ impl Worker {
         self.cycle += 1;
         let cycle = self.cycle;
         let link = self.link.as_mut().expect("connected above");
+        // A stop goes out before anything is asked of the camera, so it never waits on a
+        // reading and is not lost with one.
+        let stop_first = fresh || self.state.lock().unwrap_or_else(|e| e.into_inner()).mode == Mode::Stop;
+        if stop_first {
+            link.stop_all()?;
+        }
         if fresh {
+            self.unsure = false;
             // Nothing is reported as connected until every axis has been read once.
             let head = link.read_head()?;
             let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -611,7 +652,9 @@ impl Worker {
             Mode::Drive(cmd) => self.follow(&cmd, &head, &axes)?,
             Mode::Stop => {
                 // Stop is repeated until the head reads the same twice running.
-                self.link.as_mut().expect("connected").stop_all()?;
+                if !stop_first {
+                    self.link.as_mut().expect("connected").stop_all()?;
+                }
                 self.stops_sent += 1;
                 self.still = if moved { 0 } else { self.still + 1 };
                 self.zoom_sent = None;
