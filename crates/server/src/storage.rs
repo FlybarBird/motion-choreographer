@@ -225,7 +225,16 @@ impl Storage {
     pub fn commit(&self, song: &Song, by: &str) -> std::io::Result<RevisionInfo> {
         let dir = self.song_dir(&song.id).ok_or_else(|| std::io::Error::other("bad song id"))?.join("rev");
         fs::create_dir_all(&dir)?;
-        let number = self.revisions(&song.id).last().map(|r| r.number + 1).unwrap_or(1);
+        // A commit that was cut short leaves a revision file without its record. Its number is
+        // taken: the next commit goes after it, and the file is left as it is.
+        let on_disk = fs::read_dir(&dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| e.file_name().to_string_lossy().split('.').next().and_then(|n| n.parse::<u32>().ok()))
+            .max();
+        let recorded = self.revisions(&song.id).last().map(|r| r.number);
+        let number = on_disk.max(recorded).map(|n| n + 1).unwrap_or(1);
         let path = dir.join(format!("{number:04}.json"));
         if path.exists() {
             return Err(std::io::Error::other("revision already exists"));
@@ -279,6 +288,27 @@ mod tests {
         assert_eq!(slug("  Opening Number!  "), "opening-number");
         assert_eq!(slug("///"), "song");
         assert!(!safe_id("../etc"));
+    }
+
+    /// A crash or a full disk between the two files of a commit leaves the revision without its record.
+    #[test]
+    fn a_revision_left_without_its_record_does_not_block_the_next_commit() {
+        let dir = std::env::temp_dir().join(format!("ptz-storage-orphan-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let st = Storage::open(&dir).unwrap();
+        let mut song = Song::new("finale", "Finale", "01:00:00:00", 100);
+        assert_eq!(st.commit(&song, "luke").unwrap().number, 1);
+        let rev = dir.join("songs/finale/rev");
+        fs::copy(rev.join("0001.json"), rev.join("0002.json")).unwrap();
+        let orphan = fs::read(rev.join("0002.json")).unwrap();
+
+        song.length_frames = 200;
+        let next = st.commit(&song, "luke").unwrap();
+        assert_eq!(next.number, 3, "the number the orphan holds is not used again");
+        assert_eq!(fs::read(rev.join("0002.json")).unwrap(), orphan, "and the orphan is not rewritten");
+        assert_eq!(st.latest_revision("finale").map(|(info, s)| (info.number, s.length_frames)), Some((3, 200)));
+        assert_eq!(st.revisions("finale").iter().map(|r| r.number).collect::<Vec<_>>(), [1, 3]);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
