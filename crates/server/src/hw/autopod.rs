@@ -1,14 +1,17 @@
-//! Polecam AutoPod Plus: elevation over the leg box's Panasonic-style HTTP
+//! Polecam AutoPod+: elevation over the leg box's Panasonic-style HTTP
 //! commands. Elevation is the tilt axis of those commands; pan is unused.
 //!
-//! Source: the open-source Bitfocus Companion module for the AutoPod Plus. It
-//! is a community module, not Polecam documentation, so the bring-up tool
-//! confirms each command on the unit.
+//! The request and reply forms are the ones the owner's autopod-osc-bridge
+//! recorded between a real TX (v3.30) and RX (v3.49e). That bridge never
+//! forwarded motion to a real RX, so how the column answers a speed byte is
+//! still measured by the bring-up tool.
 
 use super::{with_port, Loop, PERIOD};
 use crate::rig::Drive;
 use ptz_core::api::AdapterStatus;
 use ptz_core::pose::{AxisLimits, CalPoint, RigConfig};
+use std::io::{Read, Write};
+use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -39,10 +42,10 @@ impl Calibration {
     pub fn problem(self) -> Option<&'static str> {
         match self {
             Calibration::Calibrated => None,
-            Calibration::Uncalibrated => Some("The AutoPod is not calibrated. Run its calibration at the leg box"),
-            Calibration::Calibrating => Some("The AutoPod is still calibrating"),
-            Calibration::MotorError => Some("The AutoPod reports a motor error"),
-            Calibration::Unknown => Some("The AutoPod's calibration state was not understood"),
+            Calibration::Uncalibrated => Some("The AutoPod+ is not calibrated. Run its calibration at the leg box"),
+            Calibration::Calibrating => Some("The AutoPod+ is still calibrating"),
+            Calibration::MotorError => Some("The AutoPod+ reports a motor error"),
+            Calibration::Unknown => Some("The AutoPod+'s calibration state was not understood"),
         }
     }
 }
@@ -52,18 +55,64 @@ pub fn request_path(cmd: &str) -> String {
     format!("/cgi-bin/aw_ptz?cmd={}&res=1", cmd.replace('#', "%23"))
 }
 
-/// Velocity: `#PTS50tt`, where `tt` is 50 for stop, above 50 up and below 50 down.
+/// Velocity: `#PTS50tt`, where `tt` is 50 for stop, up to 99 up and down to 00 down.
 pub fn velocity_command(tt: u8) -> String {
-    format!("#PTS50{:02}", tt.clamp(1, 99))
+    format!("#PTS50{:02}", tt.min(99))
 }
 
 pub const STOP: &str = "#PTS5050";
 pub const POSITION_QUERY: &str = "#APC";
 pub const CALIBRATION_QUERY: &str = "#RER";
+pub const MODEL_QUERY: &str = "QID";
+pub const FIRMWARE_QUERY: &str = "#V?";
+pub const POWER_QUERY: &str = "#O";
+pub const MODEL: &str = "AUTOPOD+";
 
 /// The speed byte for a wanted speed as a share of top speed, from -1 (down) to 1 (up).
+/// The TX sends 00 for full down and 99 for full up, so down has 50 steps and up 49.
+/// A speed too small for one step still takes one, so a slow correction does not stall.
 pub fn speed_byte(share: f64) -> u8 {
-    (50.0 + share.clamp(-1.0, 1.0) * 49.0).round() as u8
+    let share = share.clamp(-1.0, 1.0);
+    if share.abs() < 1e-4 {
+        return 50;
+    }
+    let steps = if share < 0.0 { share * 50.0 } else { share * 49.0 };
+    let steps = if steps.abs() < 1.0 { steps.signum() } else { steps.round() };
+    (50.0 + steps) as u8
+}
+
+/// The code of a refusal such as `ER1:PTS5075`, which is how the leg box answers a command it does not support.
+pub fn refusal(answer: &str) -> Option<&str> {
+    let (code, _) = answer.trim().split_once(':')?;
+    let digits = code.strip_prefix("ER").or_else(|| code.strip_prefix("eR"))?;
+    (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())).then_some(code)
+}
+
+/// The model from the answer to `QID`, for example `AUTOPOD+` from `OID:AUTOPOD+`.
+pub fn parse_model(answer: &str) -> Option<&str> {
+    answer.trim().strip_prefix("OID:").map(str::trim).filter(|m| !m.is_empty())
+}
+
+/// From the answer to `#O`: `p1` is on, `p0` is standby.
+pub fn parse_power(answer: &str) -> Option<bool> {
+    match answer.trim() {
+        "p1" => Some(true),
+        "p0" => Some(false),
+        _ => None,
+    }
+}
+
+/// The bytes of one request. The real RX answers exactly this, with no headers.
+pub fn request_bytes(cmd: &str) -> Vec<u8> {
+    format!("GET {} HTTP/1.0\r\n\r\n", request_path(cmd)).into_bytes()
+}
+
+/// Status code and body of an HTTP/1.0 reply read to the end of the connection.
+pub fn parse_reply(raw: &[u8]) -> Option<(u16, String)> {
+    let text = String::from_utf8_lossy(raw);
+    let code = text.lines().next()?.split_whitespace().nth(1)?.parse().ok()?;
+    let body = text.split_once("\r\n\r\n").or_else(|| text.split_once("\n\n")).map(|(_, b)| b).unwrap_or("");
+    Some((code, body.trim().to_string()))
 }
 
 /// The raw tilt value from `aPC` plus eight hex digits (pan, then tilt).
@@ -99,44 +148,113 @@ impl PodConfig {
     }
 }
 
+const TIMEOUT: Duration = Duration::from_millis(400);
+const LONGEST_REPLY: u64 = 16 * 1024;
+
+/// What the leg box says about itself. Each part is absent when the unit does not answer that question.
+#[derive(Clone, PartialEq, Debug, Default)]
+pub struct Identity {
+    pub model: Option<String>,
+    pub firmware: Option<String>,
+}
+
+impl Identity {
+    /// "AutoPod+ V3.49e", or what the unit called itself when it is something else.
+    pub fn label(&self) -> String {
+        let model = match self.model.as_deref() {
+            None | Some(MODEL) => "AutoPod+".to_string(),
+            Some(other) => format!("{other} (not an AutoPod+)"),
+        };
+        match &self.firmware {
+            Some(v) => format!("{model} {v}"),
+            None => model,
+        }
+    }
+}
+
 /// One conversation with the leg box, used directly by the bring-up tool.
 pub struct Link {
-    agent: ureq::Agent,
     pub host: String,
     pub last_round_trip: Duration,
+    /// The last command reached the leg box and was refused, as opposed to not arriving.
+    pub last_refused: bool,
 }
 
 impl Link {
     pub fn new(host: &str) -> Link {
-        let timeout = Duration::from_millis(400);
-        let config = ureq::Agent::config_builder()
-            .http_status_as_error(false)
-            .timeout_connect(Some(timeout))
-            .timeout_global(Some(timeout))
-            .build();
-        Link { agent: ureq::Agent::new_with_config(config), host: host.to_string(), last_round_trip: Duration::ZERO }
+        Link { host: host.to_string(), last_round_trip: Duration::ZERO, last_refused: false }
+    }
+
+    fn fetch(&self, cmd: &str) -> std::io::Result<Vec<u8>> {
+        let deadline = Instant::now() + TIMEOUT;
+        let addr = self.host.to_socket_addrs()?.next().ok_or(std::io::ErrorKind::AddrNotAvailable)?;
+        let mut stream = TcpStream::connect_timeout(&addr, TIMEOUT)?;
+        stream.set_nodelay(true)?;
+        stream.set_write_timeout(Some(TIMEOUT))?;
+        stream.write_all(&request_bytes(cmd))?;
+        let mut raw = Vec::new();
+        let mut chunk = [0u8; 1024];
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(std::io::ErrorKind::TimedOut.into());
+            }
+            stream.set_read_timeout(Some(left))?;
+            match stream.read(&mut chunk)? {
+                0 => return Ok(raw),
+                n => raw.extend_from_slice(&chunk[..n]),
+            }
+            if raw.len() as u64 > LONGEST_REPLY {
+                return Err(std::io::ErrorKind::InvalidData.into());
+            }
+        }
     }
 
     pub fn send(&mut self, cmd: &str) -> Result<String, String> {
+        self.last_refused = false;
         let began = Instant::now();
-        let url = format!("http://{}{}", self.host, request_path(cmd));
-        let mut resp = self.agent.get(url).call().map_err(|e| format!("the AutoPod is not answering at {}: {e}", self.host))?;
-        let code = resp.status().as_u16();
-        let text = resp.body_mut().read_to_string().map_err(|e| e.to_string())?;
+        let gone = |why: String| format!("the AutoPod+ is not answering at {}: {why}", self.host);
+        let raw = self.fetch(cmd).map_err(|e| gone(e.to_string()))?;
+        let (code, body) = parse_reply(&raw).ok_or_else(|| gone("the reply was not HTTP".into()))?;
         self.last_round_trip = began.elapsed();
-        if !(200..300).contains(&code) {
-            return Err(format!("the AutoPod answered {code} to {cmd}"));
+        if code != 200 {
+            self.last_refused = true;
+            return Err(format!("the AutoPod+ answered {code} to {cmd}"));
         }
-        Ok(text.trim().to_string())
+        if let Some(code) = refusal(&body) {
+            self.last_refused = true;
+            return Err(format!("the AutoPod+ refused {cmd} ({code})"));
+        }
+        Ok(body)
+    }
+
+    /// The answer to a question the motion path does not depend on. A unit that refuses it simply does not say.
+    fn ask(&mut self, cmd: &str) -> Result<Option<String>, String> {
+        match self.send(cmd) {
+            Ok(answer) => Ok(Some(answer)),
+            Err(_) if self.last_refused => Ok(None),
+            Err(why) => Err(why),
+        }
     }
 
     pub fn position(&mut self) -> Result<u16, String> {
         let answer = self.send(POSITION_QUERY)?;
-        parse_position(&answer).ok_or_else(|| format!("the AutoPod's position answer was not understood: {answer}"))
+        parse_position(&answer).ok_or_else(|| format!("the AutoPod+'s position answer was not understood: {answer}"))
     }
 
     pub fn calibration(&mut self) -> Result<Calibration, String> {
         self.send(CALIBRATION_QUERY).map(|a| Calibration::parse(&a))
+    }
+
+    pub fn identity(&mut self) -> Result<Identity, String> {
+        let model = self.ask(MODEL_QUERY)?.and_then(|a| parse_model(&a).map(str::to_string));
+        let firmware = self.ask(FIRMWARE_QUERY)?.filter(|v| !v.is_empty());
+        Ok(Identity { model, firmware })
+    }
+
+    /// Whether the unit is switched on, when it says.
+    pub fn power(&mut self) -> Result<Option<bool>, String> {
+        Ok(self.ask(POWER_QUERY)?.and_then(|a| parse_power(&a)))
     }
 
     pub fn velocity(&mut self, share: f64) -> Result<(), String> {
@@ -162,6 +280,9 @@ struct State {
     connected: bool,
     detail: String,
     calibration: Calibration,
+    identity: Identity,
+    power: Option<bool>,
+    refused: Option<String>,
     round_trip_ms: f64,
     moving: bool,
     mode: Mode,
@@ -189,6 +310,9 @@ impl AutoPod {
             connected: false,
             detail: format!("Connecting to {}", cfg.host),
             calibration: Calibration::Unknown,
+            identity: Identity::default(),
+            power: None,
+            refused: None,
             round_trip_ms: 0.0,
             moving: false,
             mode: Mode::Idle,
@@ -209,7 +333,7 @@ impl AutoPod {
     pub fn status(&self) -> AdapterStatus {
         let s = self.lock();
         AdapterStatus {
-            name: "AutoPod".into(),
+            name: "AutoPod+".into(),
             connected: s.connected,
             detail: s.detail.clone(),
             calibrated: s.connected.then_some(s.calibration == Calibration::Calibrated),
@@ -221,19 +345,25 @@ impl AutoPod {
     pub fn problem(&self) -> Option<String> {
         let s = self.lock();
         if !s.connected {
-            return Some(format!("The AutoPod is not answering at {}", self.cfg.host));
+            return Some(format!("The AutoPod+ is not answering at {}", self.cfg.host));
+        }
+        if s.power == Some(false) {
+            return Some("The AutoPod+ is in standby. Switch it on at the leg box".into());
+        }
+        if let Some(why) = &s.refused {
+            return Some(format!("{}{}", why[..1].to_uppercase(), &why[1..]));
         }
         if let Some(why) = s.calibration.problem() {
             return Some(why.to_string());
         }
         if self.cfg.map.len() < CAL_POINTS_NEEDED {
             return Some(format!(
-                "The AutoPod's height map has {} of the {CAL_POINTS_NEEDED} measured heights it needs. Add them in the rig settings",
+                "The AutoPod+'s height map has {} of the {CAL_POINTS_NEEDED} measured heights it needs. Add them in the rig settings",
                 self.cfg.map.len()
             ));
         }
         if s.starved {
-            return Some("The AutoPod was stopped because the show stopped sending it targets".into());
+            return Some("The AutoPod+ was stopped because the show stopped sending it targets".into());
         }
         None
     }
@@ -294,8 +424,10 @@ fn run(cfg: PodConfig, state: Arc<Mutex<State>>) {
             let raw = link.position()? as f64;
             let read_at = Instant::now() - link.last_round_trip / 2;
             let round_trip_ms = link.last_round_trip.as_secs_f64() * 1000.0;
-            // Calibration is asked once a second, and at once after connecting.
-            let calibration = if cycle % 20 == 1 || !lock().connected { Some(link.calibration()?) } else { None };
+            // Calibration and power are asked once a second, and at once after connecting.
+            let fresh = !lock().connected;
+            let health = if cycle % 20 == 1 || fresh { Some((link.calibration()?, link.power()?)) } else { None };
+            let identity = if fresh { Some(link.identity()?) } else { None };
             let mm = height_mm(&cfg.map, raw);
             let (mode, limits, moved) = {
                 let mut s = lock();
@@ -306,10 +438,17 @@ fn run(cfg: PodConfig, state: Arc<Mutex<State>>) {
                 s.connected = true;
                 s.round_trip_ms = round_trip_ms;
                 s.moving = moved;
-                if let Some(c) = calibration {
-                    s.calibration = c;
+                if let Some((calibration, power)) = health {
+                    s.calibration = calibration;
+                    s.power = power;
                 }
-                s.detail = format!("{} answers in {:.1} ms", cfg.host, round_trip_ms);
+                if let Some(identity) = identity {
+                    s.identity = identity;
+                }
+                s.detail = match s.power {
+                    Some(false) => format!("{} at {} is in standby", s.identity.label(), cfg.host),
+                    _ => format!("{} at {} answers in {:.1} ms", s.identity.label(), cfg.host, round_trip_ms),
+                };
                 if matches!(s.mode, Mode::Drive(_)) && s.told_at.elapsed() > STARVED_AFTER {
                     s.mode = Mode::Stop;
                     s.starved = true;
@@ -338,10 +477,12 @@ fn run(cfg: PodConfig, state: Arc<Mutex<State>>) {
                         link.send(&velocity_command(byte))?;
                         last_byte = Some(byte);
                         sent_at_cycle = cycle;
+                        lock().refused = None;
                     }
                 }
                 Mode::Stop => {
                     link.stop()?;
+                    lock().refused = None;
                     stops_sent += 1;
                     still = if moved { 0 } else { still + 1 };
                     if stops_sent >= 2 && still >= 2 {
@@ -356,11 +497,17 @@ fn run(cfg: PodConfig, state: Arc<Mutex<State>>) {
         })();
         if let Err(why) = step {
             let mut s = lock();
-            s.connected = false;
-            s.moving = false;
-            s.detail = why;
-            drop(s);
-            std::thread::sleep(Duration::from_millis(250));
+            if link.last_refused && s.connected {
+                // The unit is there and said no: a setting or firmware matter, not a lost cable.
+                s.refused = Some(why);
+                last_byte = None;
+            } else {
+                s.connected = false;
+                s.moving = false;
+                s.detail = why;
+                drop(s);
+                std::thread::sleep(Duration::from_millis(250));
+            }
         }
         pace.wait();
     }
@@ -371,22 +518,73 @@ mod tests {
     use super::*;
 
     #[test]
-    fn commands_match_the_companion_module() {
+    fn commands_match_what_the_real_units_exchange() {
         assert_eq!(request_path("#PTS5075"), "/cgi-bin/aw_ptz?cmd=%23PTS5075&res=1");
+        assert_eq!(request_path("QID"), "/cgi-bin/aw_ptz?cmd=QID&res=1");
+        assert_eq!(request_bytes("#APC"), b"GET /cgi-bin/aw_ptz?cmd=%23APC&res=1 HTTP/1.0\r\n\r\n");
         assert_eq!(velocity_command(50), "#PTS5050");
         assert_eq!(velocity_command(7), "#PTS5007");
+        assert_eq!(velocity_command(0), "#PTS5000", "00 is the TX's full-down byte");
         assert_eq!(velocity_command(120), "#PTS5099", "the speed byte stays in two digits");
         assert_eq!(STOP, "#PTS5050");
+    }
+
+    #[test]
+    fn the_speed_byte_spans_00_to_99_around_50() {
         assert_eq!(speed_byte(0.0), 50);
         assert_eq!(speed_byte(1.0), 99);
-        assert_eq!(speed_byte(-1.0), 1);
-        assert_eq!(speed_byte(-7.0), 1);
+        assert_eq!(speed_byte(-1.0), 0);
+        assert_eq!(speed_byte(-7.0), 0);
+        assert_eq!(speed_byte(7.0), 99);
         assert_eq!(speed_byte(0.5), 75);
+        assert_eq!(speed_byte(-0.5), 25);
+        assert_eq!(speed_byte(0.004), 51, "a slow correction still moves");
+        assert_eq!(speed_byte(-0.004), 49);
+        assert_eq!(speed_byte(0.00001), 50, "noise does not");
+        // What the TX's byte means to the RX, by the bridge's own rule, comes back as the share asked.
+        let share_of = |raw: u8| (raw as f64 - 50.0) / if raw < 50 { 50.0 } else { 49.0 };
+        for share in [-1.0, -0.6, -0.2, 0.2, 0.6, 1.0] {
+            assert!((share_of(speed_byte(share)) - share).abs() <= 0.011, "{share}");
+        }
+    }
+
+    #[test]
+    fn replies_are_read_as_the_rx_frames_them() {
+        let raw =
+            b"HTTP/1.0 200 OK\r\nServer: AutoPod+/1.7\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\naPC80008A3C\r\n";
+        assert_eq!(parse_reply(raw), Some((200, "aPC80008A3C".to_string())));
+        assert_eq!(parse_reply(b"HTTP/1.0 404 Not Found\r\n\r\nNot Found\r\n"), Some((404, "Not Found".to_string())));
+        assert_eq!(parse_reply(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"), Some((200, String::new())));
+        assert_eq!(parse_reply(b"hello"), None);
+        assert_eq!(parse_reply(b""), None);
+    }
+
+    #[test]
+    fn refusals_identity_and_power_are_read() {
+        assert_eq!(refusal("ER1:PTS5075"), Some("ER1"));
+        assert_eq!(refusal("ER3:APC"), Some("ER3"));
+        assert_eq!(refusal("eR1:XYZ"), Some("eR1"));
+        assert_eq!(refusal("pTS5075"), None);
+        assert_eq!(refusal("OID:AUTOPOD+"), None);
+        assert_eq!(refusal("ER:"), None);
+        assert_eq!(parse_model("OID:AUTOPOD+"), Some("AUTOPOD+"));
+        assert_eq!(parse_model("V3.49e"), None);
+        assert_eq!(parse_power("p1"), Some(true));
+        assert_eq!(parse_power("p0"), Some(false));
+        assert_eq!(parse_power("rER00"), None);
+        let id = |model: Option<&str>, firmware: Option<&str>| Identity {
+            model: model.map(str::to_string),
+            firmware: firmware.map(str::to_string),
+        };
+        assert_eq!(id(Some("AUTOPOD+"), Some("V3.49e")).label(), "AutoPod+ V3.49e");
+        assert_eq!(id(None, None).label(), "AutoPod+");
+        assert_eq!(id(Some("AW-HE130"), Some("V1.0")).label(), "AW-HE130 (not an AutoPod+) V1.0");
     }
 
     #[test]
     fn answers_are_read() {
         assert_eq!(parse_position("aPC7FFF8A3C"), Some(0x8A3C));
+        assert_eq!(parse_position("aPC80008000"), Some(0x8000));
         assert_eq!(parse_position("aPC7FFF"), None);
         assert_eq!(parse_position("rER00"), None);
         assert_eq!(Calibration::parse("rER00"), Calibration::Calibrated);

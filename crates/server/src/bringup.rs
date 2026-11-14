@@ -47,7 +47,7 @@ impl Step {
             Step::Timing => "Query delay and fastest command rate",
             Step::Speeds => "Speed of each pan and tilt step",
             Step::Tracking => "Tracking a 10 degree eased pan",
-            Step::AutoPod => "AutoPod: calibration, height map and top speed",
+            Step::AutoPod => "AutoPod+: calibration, height map and top speed",
             Step::Estop => "E-Stop: time to a standstill",
         }
     }
@@ -92,7 +92,7 @@ impl Operator for Unattended {
 pub struct Options {
     /// `host:port` of the FR7's VISCA port and of its web interface, with the web login.
     pub fr7: Option<Fr7Config>,
-    /// `host:port` of the AutoPod leg box.
+    /// `host:port` of the AutoPod+ leg box.
     pub autopod: Option<String>,
     /// Steps to run; empty runs them all.
     pub steps: Vec<Step>,
@@ -152,7 +152,7 @@ impl Settings {
         set(&mut changes, "FR7 address", &mut rig.fr7_host, self.fr7_host.clone());
         set(&mut changes, "FR7 web port", &mut rig.fr7_http_port, self.fr7_http_port);
         set(&mut changes, "FR7 user", &mut rig.fr7_user, self.fr7_user.clone());
-        set(&mut changes, "AutoPod address", &mut rig.autopod_host, self.autopod_host.clone());
+        set(&mut changes, "AutoPod+ address", &mut rig.autopod_host, self.autopod_host.clone());
         set(&mut changes, "Counts per degree", &mut rig.fr7_counts_per_degree, self.fr7_counts_per_degree);
         set(&mut changes, "Pan counts inverted", &mut rig.fr7_invert_pan, self.fr7_invert_pan);
         set(&mut changes, "Tilt counts inverted", &mut rig.fr7_invert_tilt, self.fr7_invert_tilt);
@@ -170,7 +170,7 @@ impl Settings {
         set(&mut changes, "Query delay (ms)", &mut rig.query_delay_ms, self.query_delay_ms);
         if let Some(map) = &self.autopod_calibration {
             if rig.autopod_calibration != *map {
-                changes.push(format!("AutoPod height map: {} measured heights", map.len()));
+                changes.push(format!("AutoPod+ height map: {} measured heights", map.len()));
                 rig.autopod_calibration = map.clone();
             }
         }
@@ -210,6 +210,8 @@ pub struct Measured {
     pub velocity_lag_ms: Option<f64>,
     pub absolute_worst_error: Option<f64>,
     pub absolute_landing_error: Option<f64>,
+    pub autopod_model: Option<String>,
+    pub autopod_firmware: Option<String>,
     pub autopod_calibration_state: Option<String>,
     pub autopod_up_mm_s: Option<f64>,
     pub autopod_down_mm_s: Option<f64>,
@@ -517,11 +519,24 @@ impl Run<'_> {
             let state = pod.calibration()?;
             let raw = pod.position()?;
             let trip = pod.last_round_trip.as_secs_f64() * 1000.0;
-            self.note(format!("AutoPod at {} answers in {trip:.1} ms. Raw position {raw}.", pod.host));
+            let identity = pod.identity()?;
+            self.note(format!("{} at {} answers in {trip:.1} ms. Raw position {raw}.", identity.label(), pod.host));
+            if identity.model.is_none() {
+                self.note(
+                    "It did not say what model it is (no answer to QID). An original AutoPod speaks the same motion commands.",
+                );
+            }
+            self.report.measured.autopod_model = identity.model.clone();
+            self.report.measured.autopod_firmware = identity.firmware.clone();
+            match pod.power()? {
+                Some(true) => self.note("AutoPod+ is switched on."),
+                Some(false) => return Err(Halt::Failed("The AutoPod+ is in standby. Switch it on at the leg box".into())),
+                None => self.note("AutoPod+ did not say whether it is on or in standby (no answer to #O)."),
+            }
             self.report.measured.autopod_calibration_state = Some(format!("{state:?}"));
             match state.problem() {
-                None => self.note("AutoPod reports that it is calibrated."),
-                Some(why) => self.problem(format!("AutoPod: {why}")),
+                None => self.note("AutoPod+ reports that it is calibrated."),
+                Some(why) => self.problem(format!("AutoPod+: {why}")),
             }
         }
         Ok(())
@@ -717,10 +732,10 @@ impl Run<'_> {
             }
             let mid = median(&mut trips);
             let p95 = percentile(&trips, 0.95);
-            self.note(format!("AutoPod position query: {mid:.1} ms typical, {p95:.1} ms for 95 in 100."));
+            self.note(format!("AutoPod+ position query: {mid:.1} ms typical, {p95:.1} ms for 95 in 100."));
             if 2.0 * p95 > 40.0 {
                 self.problem(format!(
-                    "The AutoPod takes {p95:.0} ms to answer. A query and a command do not fit in a 50 ms cycle."
+                    "The AutoPod+ takes {p95:.0} ms to answer. A query and a command do not fit in a 50 ms cycle."
                 ));
             }
             self.report.measured.autopod_round_trip_ms = Some(round_to(mid, 0.1));
@@ -919,14 +934,14 @@ impl Run<'_> {
 
     fn autopod(&mut self) -> Result<(), Halt> {
         let Some(mut pod) = self.pod() else {
-            return Err(Halt::Skipped("No AutoPod was named".into()));
+            return Err(Halt::Skipped("No AutoPod+ was named".into()));
         };
         let state = pod.calibration()?;
         self.report.measured.autopod_calibration_state = Some(format!("{state:?}"));
         if let Some(why) = state.problem() {
-            return Err(Halt::Failed(format!("AutoPod: {why}")));
+            return Err(Halt::Failed(format!("AutoPod+: {why}")));
         }
-        self.note("AutoPod reports that it is calibrated.");
+        self.note("AutoPod+ reports that it is calibrated.");
         self.go_ahead(
             "This raises the column in three stages of a few seconds, runs it up and down at full speed for about two seconds each way, and brings it back. Is the column clear to move, with room above?",
         )?;
@@ -1105,17 +1120,17 @@ impl Run<'_> {
             match per_mm {
                 Some(per_mm) => {
                     self.note(format!(
-                        "AutoPod: standing still {ms:.0} ms after stop was sent, {:.1} mm further on.",
+                        "AutoPod+: standing still {ms:.0} ms after stop was sent, {:.1} mm further on.",
                         counts / per_mm
                     ));
                     self.report.measured.estop_elevation_overrun = Some(round_to(counts / per_mm, 0.1));
                 }
                 None => self
-                    .note(format!("AutoPod: standing still {ms:.0} ms after stop was sent, {counts:.0} raw counts further on.")),
+                    .note(format!("AutoPod+: standing still {ms:.0} ms after stop was sent, {counts:.0} raw counts further on.")),
             }
             self.report.measured.estop_autopod_ms = Some(ms.round());
             if ms > 1000.0 {
-                self.problem(format!("The AutoPod takes {ms:.0} ms to stop from half speed."));
+                self.problem(format!("The AutoPod+ takes {ms:.0} ms to stop from half speed."));
             }
         }
 

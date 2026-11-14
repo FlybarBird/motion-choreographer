@@ -1,4 +1,4 @@
-//! Real hardware: an FR7 for pan, tilt, zoom and focus, and an AutoPod Plus for
+//! Real hardware: an FR7 for pan, tilt, zoom and focus, and an AutoPod+ for
 //! elevation, presented to the show as one rig.
 
 pub mod autopod;
@@ -73,7 +73,7 @@ impl RigAdapter for HardwareRig {
 
     fn problem(&self) -> Option<String> {
         if self.fr7.is_none() && self.pod.is_none() {
-            return Some("The rig is set to hardware but no FR7 or AutoPod address is entered".into());
+            return Some("The rig is set to hardware but no FR7 or AutoPod+ address is entered".into());
         }
         self.fr7.as_ref().and_then(|f| f.problem()).or_else(|| self.pod.as_ref().and_then(|p| p.problem()))
     }

@@ -1,4 +1,4 @@
-//! On-site bring-up of the FR7 and AutoPod. Talks to the devices directly, not
+//! On-site bring-up of the FR7 and AutoPod+. Talks to the devices directly, not
 //! through the show server: stop the server, or set its rig to Simulator, first.
 
 use ptz_core::client::Api;
@@ -144,12 +144,12 @@ fn fakes(mut args: impl Iterator<Item = String>) {
     if let Some(path) = picture {
         fr7.set_picture(std::fs::read(&path).unwrap_or_else(|e| fail(&format!("{}: {e}", path.display()))));
     }
-    let pod = FakeAutoPod::start_on(&pod_at).unwrap_or_else(|e| fail(&format!("fake AutoPod on {pod_at}: {e}")));
+    let pod = FakeAutoPod::start_on(&pod_at).unwrap_or_else(|e| fail(&format!("fake AutoPod+ on {pod_at}: {e}")));
     println!(
         "Fake FR7:     VISCA over IP on {} (UDP), web interface on {} (login {} / {})",
         fr7.visca, fr7.http, fr7.user, fr7.password
     );
-    println!("Fake AutoPod: {} (calibrated; height map in raw counts: {:?})", pod.addr, FakeAutoPod::height_map());
+    println!("Fake AutoPod+: {} (calibrated; height map in raw counts: {:?})", pod.addr, FakeAutoPod::height_map());
     println!("These are stand-ins, not a rig. Ctrl-C to stop.\n");
     let mut shown = String::new();
     loop {

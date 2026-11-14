@@ -146,7 +146,7 @@ fn the_checklist_measures_what_the_rig_does_and_its_report_sets_up_the_project()
     let before = project.clone();
     let changes = loaded.settings.apply(&mut project);
     assert!(changes.iter().any(|c| c.starts_with("Pan counts inverted")), "{changes:?}");
-    assert!(changes.iter().any(|c| c.starts_with("AutoPod height map: 3")));
+    assert!(changes.iter().any(|c| c.starts_with("AutoPod+ height map: 3")));
     assert_eq!(project.rig.kind, before.rig.kind, "the rig kind is the operator's to switch");
     assert!(project.axes.pan.max_speed <= before.axes.pan.max_speed);
     assert!(project.axes.elevation.max_speed <= before.axes.elevation.max_speed);
@@ -202,7 +202,7 @@ fn declining_at_the_prompt_moves_nothing() {
     assert!(!report.failed());
     // The timing step sends stop for axes that already stand still; nothing else is a command.
     assert!(fr7.commands().iter().all(|c| *c == visca::pan_tilt_stop()), "{:02X?}", fr7.commands());
-    assert!(pod.seen().iter().all(|c| c == "#APC" || c == "#RER"), "{:?}", pod.seen());
+    assert_eq!(pod.orders(), Vec::<String>::new());
     assert_eq!(fr7.pose(), (0.0, 0.0, 0.0, fr7.pose().3));
     assert_eq!(report.settings.fr7_invert_pan, None);
     assert!(report.settings.query_delay_ms.is_some());
@@ -221,7 +221,22 @@ fn a_rig_that_is_not_there_or_not_ready_is_reported_and_nothing_else_is_tried() 
     assert_eq!(report.sections[0].lines, ["Failed: The FR7 is not answering at 127.0.0.1:9"]);
     assert!(report.sections[1..].iter().all(|s| s.outcome == "skipped"), "{:?}", outcomes(&report));
     assert!(report.sections[1].lines[0].starts_with("Skipped because connecting failed"));
-    assert!(pod.seen().iter().all(|c| c == "#APC" || c == "#RER" || c == "#PTS5050"));
+    assert!(pod.orders().iter().all(|c| c == "#PTS5050"), "{:?}", pod.orders());
+
+    // The leg box names itself at connect; in standby it is not driven at all.
+    pod.clear_seen();
+    let opts = Options { autopod: Some(pod.addr.to_string()), quick: true, steps: vec![Step::Connect], ..Options::default() };
+    let report = bringup::run(&opts, &mut Unattended { echo: false });
+    assert_eq!(outcomes(&report), [("connect", "passed")]);
+    assert_eq!(report.measured.autopod_model.as_deref(), Some("AUTOPOD+"));
+    assert_eq!(report.measured.autopod_firmware.as_deref(), Some("V3.49e"));
+    assert!(report.sections[0].lines.iter().any(|l| l.starts_with("AutoPod+ V3.49e at ")), "{:?}", report.sections[0].lines);
+    assert!(report.sections[0].lines.iter().any(|l| l == "AutoPod+ is switched on."));
+    pod.set_power(false);
+    let report = bringup::run(&opts, &mut Unattended { echo: false });
+    assert_eq!(report.sections[0].lines.last().unwrap(), "Failed: The AutoPod+ is in standby. Switch it on at the leg box");
+    assert!(pod.orders().iter().all(|c| c == "#PTS5050"), "a unit in standby is sent a stop at most: {:?}", pod.orders());
+    pod.set_power(true);
 
     // An uncalibrated pedestal is named at connect and its step refuses to move it.
     pod.set_calibration("rER53");
@@ -235,7 +250,7 @@ fn a_rig_that_is_not_there_or_not_ready_is_reported_and_nothing_else_is_tried() 
     let report = bringup::run(&opts, &mut Unattended { echo: false });
     assert_eq!(outcomes(&report), [("connect", "passed"), ("autopod", "failed")]);
     assert!(report.problems.iter().any(|p| p.contains("not calibrated")), "{:?}", report.problems);
-    assert!(pod.seen().iter().all(|c| c == "#APC" || c == "#RER" || c == "#PTS5050"), "{:?}", pod.seen());
+    assert!(pod.orders().iter().all(|c| c == "#PTS5050"), "{:?}", pod.orders());
     assert_eq!(pod.height_mm(), 0.0);
 
     // Nobody to measure: the height map is left out, the speeds are still taken, and it says so.

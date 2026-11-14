@@ -1,6 +1,6 @@
 //! Protocol fakes: a UDP responder that speaks the FR7's VISCA framing over a
 //! simulated head (with the digest-protected web interface beside it), and an
-//! HTTP responder for the AutoPod's commands.
+//! HTTP responder for the AutoPod+'s commands.
 //!
 //! The adapters are developed and regression-tested against these. They prove
 //! framing, sequencing, retries and the control loop. They do not prove the
@@ -60,15 +60,46 @@ pub struct Response {
     pub code: u16,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+    /// Framed as the AutoPod+ RX frames its replies, not as a modern web server does.
+    pub as_leg_box: bool,
 }
 
 impl Response {
     pub fn text(body: impl Into<String>) -> Response {
-        Response { code: 200, headers: vec![("Content-Type".into(), "text/plain".into())], body: body.into().into_bytes() }
+        Response {
+            code: 200,
+            headers: vec![("Content-Type".into(), "text/plain".into())],
+            body: body.into().into_bytes(),
+            as_leg_box: false,
+        }
     }
 
     pub fn status(code: u16) -> Response {
-        Response { code, headers: Vec::new(), body: Vec::new() }
+        Response { code, headers: Vec::new(), body: Vec::new(), as_leg_box: false }
+    }
+
+    /// HTTP/1.0, no length, `Connection: close`, `Content-Type` last, body ending CRLF.
+    pub fn leg_box(code: u16, body: &str) -> Response {
+        Response { code, headers: Vec::new(), body: format!("{body}\r\n").into_bytes(), as_leg_box: true }
+    }
+
+    fn head(&self) -> String {
+        let reason = match self.code {
+            401 => "Unauthorized",
+            404 => "Not Found",
+            _ => "OK",
+        };
+        if self.as_leg_box {
+            return format!(
+                "HTTP/1.0 {} {reason}\r\nServer: AutoPod+/1.7\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\n",
+                self.code
+            );
+        }
+        let mut head = format!("HTTP/1.1 {} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n", self.code, self.body.len());
+        for (k, v) in &self.headers {
+            head.push_str(&format!("{k}: {v}\r\n"));
+        }
+        head + "\r\n"
     }
 }
 
@@ -94,13 +125,7 @@ fn answer(stream: TcpStream, handler: &dyn Fn(&Request) -> Option<Response>) -> 
     // A handler that returns nothing hangs up without a word: a device that has gone away.
     let resp = handler(&Request { target, headers })?;
     let mut stream = stream;
-    let reason = if resp.code == 401 { "Unauthorized" } else { "OK" };
-    let mut head = format!("HTTP/1.1 {} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n", resp.code, resp.body.len());
-    for (k, v) in &resp.headers {
-        head.push_str(&format!("{k}: {v}\r\n"));
-    }
-    head.push_str("\r\n");
-    stream.write_all(head.as_bytes()).ok()?;
+    stream.write_all(resp.head().as_bytes()).ok()?;
     stream.write_all(&resp.body).ok()?;
     stream.flush().ok()?;
     let _ = stream.shutdown(std::net::Shutdown::Write);
@@ -408,7 +433,12 @@ impl FakeFr7 {
             });
             if !signed_in {
                 let offer = format!("Digest realm=\"FR7\", nonce=\"{nonce}\", qop=\"auth\", algorithm=MD5");
-                return Some(Response { code: 401, headers: vec![("WWW-Authenticate".into(), offer)], body: Vec::new() });
+                return Some(Response {
+                    code: 401,
+                    headers: vec![("WWW-Authenticate".into(), offer)],
+                    body: Vec::new(),
+                    as_leg_box: false,
+                });
             }
             head.web_requests.push(req.target.clone());
             head.advance(Instant::now());
@@ -436,6 +466,7 @@ impl FakeFr7 {
                             code: 200,
                             headers: vec![("Content-Type".into(), "image/jpeg".into())],
                             body: head.picture.clone(),
+                            as_leg_box: false,
                         }),
                         None => Some(Response::status(404)),
                     }
@@ -546,6 +577,11 @@ struct Column {
     silent: bool,
     speed_factor: f64,
     seen: Vec<String>,
+    model: String,
+    firmware: String,
+    power: bool,
+    /// Commands starting with this are refused with ER1, as a unit without that feature would.
+    refuses: Option<String>,
 }
 
 impl Column {
@@ -570,7 +606,7 @@ impl Column {
     }
 }
 
-/// A stand-in AutoPod Plus leg box on loopback.
+/// A stand-in AutoPod+ leg box (RX) on loopback, answering as RX v3.49e does.
 pub struct FakeAutoPod {
     pub addr: SocketAddr,
     column: Arc<Mutex<Column>>,
@@ -594,6 +630,10 @@ impl FakeAutoPod {
             silent: false,
             speed_factor: 1.0,
             seen: Vec::new(),
+            model: autopod::MODEL.into(),
+            firmware: "V3.49e".into(),
+            power: true,
+            refuses: None,
         }));
         let quit = Arc::new(AtomicBool::new(false));
         let shared = column.clone();
@@ -603,35 +643,78 @@ impl FakeAutoPod {
             if col.silent {
                 return None;
             }
-            if req.path() != "/cgi-bin/aw_ptz" {
-                return Some(Response::status(404));
+            let position = |col: &Column| format!("aPC8000{:04X}", col.raw());
+            match req.path() {
+                "/cgi-bin/aw_ptz" | "/cgi-bin/aw_cam" => {}
+                "/live/camdata.html" => {
+                    let power = if col.power { "p1" } else { "p0" };
+                    let lines = [
+                        format!("OID:{}", col.model),
+                        "TITLE:Stand-in".into(),
+                        power.into(),
+                        col.calibration.into(),
+                        position(&col),
+                    ];
+                    return Some(Response::leg_box(200, &lines.join("\r\n")));
+                }
+                // RX v3.49e has no get_state, so it is not a heartbeat.
+                _ => return Some(Response::leg_box(404, "Not Found")),
             }
             let cmd = req.query("cmd").unwrap_or_default();
             col.seen.push(cmd.clone());
-            let position = |col: &Column| format!("aPC7FFF{:04X}", col.raw());
-            if cmd == autopod::POSITION_QUERY {
-                Some(Response::text(position(&col)))
-            } else if cmd == autopod::CALIBRATION_QUERY {
-                Some(Response::text(col.calibration))
-            } else if let Some(speeds) =
-                cmd.strip_prefix("#PTS").filter(|s| s.len() == 4 && s.bytes().all(|b| b.is_ascii_digit()))
-            {
-                let tt: f64 = speeds[2..].parse().unwrap_or(50.0);
+            let digits = |text: &str, n: usize| text.len() == n && text.bytes().all(|b| b.is_ascii_digit());
+            let refused = col.refuses.as_deref().is_some_and(|prefix| cmd.starts_with(prefix));
+            let pedal = |col: &mut Column, tt: &str| {
+                let tt: f64 = tt.parse().unwrap_or(50.0);
                 col.going_to = None;
-                col.speed = (tt - 50.0) / 49.0 * POD_TOP_MM_S;
-                Some(Response::text(format!("pTS{speeds}")))
-            } else if let Some(hex) = cmd.strip_prefix("#APC").filter(|h| h.len() == 8) {
-                match u16::from_str_radix(&hex[4..], 16) {
-                    Ok(raw) => {
-                        col.speed = 0.0;
-                        col.going_to = Some(((raw as f64 - POD_RAW_ZERO) / POD_RAW_PER_MM).clamp(0.0, POD_TRAVEL_MM));
-                        Some(Response::text(format!("aPC{hex}")))
+                // 00 is full down and 99 full up, as the TX sends them.
+                col.speed = (tt - 50.0) / if tt < 50.0 { 50.0 } else { 49.0 } * POD_TOP_MM_S;
+            };
+            let body = if refused {
+                format!("ER1:{}", cmd.trim_start_matches('#'))
+            } else if cmd == autopod::POSITION_QUERY {
+                position(&col)
+            } else if cmd == autopod::CALIBRATION_QUERY {
+                col.calibration.to_string()
+            } else if cmd == autopod::MODEL_QUERY {
+                format!("OID:{}", col.model)
+            } else if cmd == autopod::FIRMWARE_QUERY {
+                col.firmware.clone()
+            } else if matches!(cmd.as_str(), "#O" | "#O0" | "#O1") {
+                if cmd.len() == 3 {
+                    col.power = cmd.ends_with('1');
+                    if !col.power {
+                        (col.speed, col.going_to) = (0.0, None);
                     }
-                    Err(_) => Some(Response::text("eR1")),
                 }
+                format!("p{}", col.power as u8)
+            } else if let Some(tt) = cmd.strip_prefix("#T").filter(|t| digits(t, 2)) {
+                if col.power {
+                    pedal(&mut col, tt);
+                }
+                format!("tS{tt}")
+            } else if let Some(speeds) = cmd.strip_prefix("#PTS").filter(|s| digits(s, 4)) {
+                if col.power {
+                    pedal(&mut col, &speeds[2..]);
+                }
+                format!("pTS{speeds}")
+            } else if let Some(hex) =
+                cmd.strip_prefix("#APC").filter(|h| h.len() == 8 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+            {
+                let raw = u16::from_str_radix(&hex[4..], 16).unwrap_or(0);
+                if col.power {
+                    col.speed = 0.0;
+                    col.going_to = Some(((raw as f64 - POD_RAW_ZERO) / POD_RAW_PER_MM).clamp(0.0, POD_TRAVEL_MM));
+                }
+                format!("aPC{}", hex.to_uppercase())
+            } else if cmd == "#D0" || cmd == "#D1" {
+                format!("d{}0", &cmd[2..])
+            } else if cmd == "#AXI" {
+                "axiAAA".to_string()
             } else {
-                Some(Response::text("eR1"))
-            }
+                format!("ER1:{}", cmd.trim_start_matches('#'))
+            };
+            Some(Response::leg_box(200, &body))
         });
         Ok(FakeAutoPod { addr, column, quit })
     }
@@ -669,9 +752,36 @@ impl FakeAutoPod {
         self.column().speed_factor = factor;
     }
 
+    /// On, or in standby, where the column answers but does not move.
+    pub fn set_power(&self, on: bool) {
+        let mut col = self.column();
+        col.power = on;
+        if !on {
+            (col.speed, col.going_to) = (0.0, None);
+        }
+    }
+
+    /// What `QID` and `#V?` answer, without the `OID:` prefix.
+    pub fn set_identity(&self, model: &str, firmware: &str) {
+        let mut col = self.column();
+        (col.model, col.firmware) = (model.to_string(), firmware.to_string());
+    }
+
+    /// Refuse every command that starts with `prefix` with ER1; `None` accepts them again.
+    pub fn refuse(&self, prefix: Option<&str>) {
+        self.column().refuses = prefix.map(str::to_string);
+    }
+
     /// Every command received since the last `clear_seen`, in order.
     pub fn seen(&self) -> Vec<String> {
         self.column().seen.clone()
+    }
+
+    /// The commands in `seen` that are not questions: the ones that could move or change the unit.
+    pub fn orders(&self) -> Vec<String> {
+        let questions =
+            [autopod::POSITION_QUERY, autopod::CALIBRATION_QUERY, autopod::MODEL_QUERY, autopod::FIRMWARE_QUERY, "#O"];
+        self.seen().into_iter().filter(|c| !questions.contains(&c.as_str())).collect()
     }
 
     pub fn clear_seen(&self) {

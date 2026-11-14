@@ -154,7 +154,7 @@ pub struct Context {
     /// A committed revision is loaded and there are no edits since.
     pub committed_clean: bool,
     pub blocking_issues: usize,
-    /// Why the rig cannot go live, for example "AutoPod is not calibrated".
+    /// Why the rig cannot go live, for example "AutoPod+ is not calibrated".
     pub adapter_problem: Option<String>,
 }
 
@@ -532,7 +532,7 @@ mod tests {
             for song_loaded in [true, false] {
                 for committed_clean in [true, false] {
                     for blocking_issues in [0, 1, 3] {
-                        for adapter_problem in [None, Some("AutoPod is not calibrated".to_string())] {
+                        for adapter_problem in [None, Some("AutoPod+ is not calibrated".to_string())] {
                             out.push(Context { has_lease, song_loaded, committed_clean, blocking_issues, adapter_problem });
                         }
                     }
@@ -689,7 +689,7 @@ mod tests {
         assert!(reason(Context { has_lease: false, ..Context::ready() }).contains("lease"));
         assert!(reason(Context { committed_clean: false, ..Context::ready() }).contains("Commit"));
         assert!(reason(Context { blocking_issues: 2, ..Context::ready() }).contains("2 timeline issues"));
-        assert!(reason(Context { adapter_problem: Some("AutoPod is not calibrated".into()), ..Context::ready() })
+        assert!(reason(Context { adapter_problem: Some("AutoPod+ is not calibrated".into()), ..Context::ready() })
             .contains("calibrated"));
         let rec = apply(&s, Action::RecordOn, false);
         assert!(check(&rec, &Context::ready(), Action::Arm).unwrap_err().text.contains("Record off"));

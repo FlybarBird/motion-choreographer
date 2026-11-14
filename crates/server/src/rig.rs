@@ -1,5 +1,5 @@
 //! The rig: whatever moves the camera. The simulator is the default; the FR7
-//! and AutoPod adapters implement the same trait. No method here blocks on the
+//! and AutoPod+ adapters implement the same trait. No method here blocks on the
 //! network: hardware adapters do their I/O on their own threads.
 
 use ptz_core::api::{AdapterStatus, Jog};
