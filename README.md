@@ -220,6 +220,149 @@ with or without the edit lease.
 
 One station at a time holds the edit lease. Others watch, and can take over.
 
+## Going live
+
+Rehearse never sends a motion command to the rig. To move it:
+
+1. **Arm (moves rig to playhead)**. The rig travels to the pose at the playhead
+   at a fraction of its top speed (**Arm moves at** in the rig settings, half
+   speed to start with). The bar reads ARMING, then ARMED when every axis has arrived.
+2. **Play Live**, or **Play to code** when locked. Twenty times a second the
+   server steers each axis toward the timeline and compares where the rig says
+   it is with where the timeline was at the moment of that reading.
+3. **Stop** holds the rig where it is and stays armed. **Disarm** returns to
+   Rehearse.
+
+Arm is refused, with the reason on the button, unless the transport is stopped,
+Record is off, the loaded song is a committed revision with no unsaved edits,
+every timeline issue is fixed (or, for speed and acceleration, accepted with
+**Accept as programmed**), both devices are answering and the AutoPod is
+calibrated. While armed the song, the presets and the project settings cannot
+be changed.
+
+The rig is held and output is cut, with the reason in red on the bar and in the
+Rig controller tab until the next Arm or Play, when:
+
+- an axis stays further from the timeline than its tolerance for longer than
+  the tracking window (2 degrees of pan and tilt and half a second, unless the
+  rig settings say otherwise);
+- the next step would take an axis past its limit or break a keep-out rule;
+- a device stops answering;
+- the rig does not reach the playhead pose while arming.
+
+**E-Stop** stops both devices, repeats the stop until they report standing
+still, cuts output and latches until **Reset E-Stop**. It works from any
+station, in any state, with or without the edit lease, and over the API as
+`POST /api/v1/estop`.
+
+While live the Rig controller tab shows how far each axis is from the timeline
+against its tolerance.
+
+## Limits and keep-out rules
+
+Project settings (the Inspector with nothing selected) hold, per axis, the
+range, top speed and top acceleration under **Rig limits**, and a
+list of **Keep-out rules** of the form "when elevation is below 200 mm, tilt
+must be above -10 degrees".
+
+Both are checked twice. On the timeline, a clip that leaves the range or breaks
+a rule turns amber, names the frame and the rule, and blocks Arm; these cannot
+be accepted. Live, the pose about to be sent is checked every cycle, so a rule
+that only the path to the playhead would break still holds the rig.
+
+## The real rig
+
+Under **Rig** in the project settings, **Drives** switches the server between
+the simulator and **FR7 and AutoPod**. It can only be changed while stopped and
+disarmed.
+
+| Setting | What it is |
+| --- | --- |
+| FR7 address | VISCA over IP, UDP port 52381 unless given. |
+| Web port, user, password | The camera's web interface, for preset names and pictures. |
+| AutoPod address | The leg box, port 80 unless given. |
+| Counts per degree, counts run backwards | How the head reports pan and tilt. |
+| Speed steps | The speed of each of the 24 VISCA steps. Assumed until bring-up measures them. |
+| Plain moves | Send a preset move as one absolute move and let the head run it, instead of steering it. |
+| Query delay | How old a position is when it arrives. |
+| Arm moves at, Tracking fault after, tolerances | As described under Going live. |
+| AutoPod height map | Raw position against measured height, at three heights or more. **Add the current height** takes the raw value from the leg box. |
+
+**Sync from rig** in the Presets tab reads the camera's presets. On the real rig
+the camera has to be recalled to each one so its pose and picture can be read,
+so the app asks first, and the sync is refused while armed or playing. E-Stop
+abandons it.
+
+To try all of this with no hardware, run stand-ins for both devices:
+
+```sh
+ptz-bringup fakes      # FR7 on 127.0.0.1:52381 (web 8088, login admin / fr7-password), AutoPod on 127.0.0.1:8089
+```
+
+and point the rig settings at them. They speak the same bytes as the adapters
+expect, move at believable speeds and can be watched in that terminal.
+
+### Bring-up on site
+
+`ptz-bringup` talks to the two devices directly and measures what the project
+needs. Stop the show server, or set its rig to the simulator, first.
+
+```sh
+ptz-bringup --fr7 192.168.0.100 --autopod 192.168.0.110 --user admin --password "..."
+```
+
+It runs seven steps, each of which says what it will move and asks before it
+does, and brings the rig back to where it stood:
+
+| Step | What it settles |
+| --- | --- |
+| `connect` | Both devices answer; the web login works; the AutoPod is calibrated. |
+| `moves` | Which way the counts run on each axis, counts per degree, zoom and focus reach a position. |
+| `timing` | How long a position query takes, how fast commands can be sent, the query delay. |
+| `speeds` | The real speed of each VISCA step. |
+| `tracking` | Steers a 10 degree eased pan and runs the same pan as a plain move, then decides between **velocity tracking** and **absolute moves**, and suggests a tolerance. |
+| `autopod` | The height map (you measure the column at three heights), whether the speed byte is linear, top speed. |
+| `estop` | How long each device takes to stand still after a stop, and how far it travels. |
+
+`--only tracking,estop --from report.json` repeats chosen steps; `--quick`
+shortens the runs. The report is written as JSON and printed in words. Then:
+
+```sh
+ptz-bringup --apply bringup-2026-11-14.json     # into the running server's project
+```
+
+Top speeds are only ever lowered by a report, and which rig the server drives
+is never changed by it.
+
+### What is assumed until bring-up confirms it
+
+The adapters were written from Sony's published VISCA and CGI documents and the
+community Companion module for the AutoPod, and tested against stand-ins built
+from the same reading. None of it has met the real devices. Each of these is
+measured or shown by a bring-up step and is a setting, not a constant:
+
+- The speed of each VISCA pan and tilt step (assumed: 24 steps spread evenly
+  by ratio from 0.02 to 60 degrees per second).
+- 236 counts per degree, and which way the pan and tilt counts run.
+- Zoom reported over 0 to 0x4000 and focus over 0 to 0xFFFF.
+- Preset recall as `81 01 04 3F 02 pp FF` with `pp` one less than the preset
+  number, and the shape of the web interface's answers (`PresetName=1,Wide,2,Lectern`).
+- The VISCA sequence number after a reset (the link tries 1, then 0).
+- The AutoPod commands `#PTS50tt` (speed), `#APC` (position) and `#RER`
+  (calibrated), and that the speed byte `tt` is linear.
+
+## The run log
+
+Everything the server does to the show is written to `log/<date>.jsonl` in the
+data folder and shown in the **Log** tab: each transport action and who asked
+for it, each refusal with its reason, what was armed (song, revision, its
+SHA-256, any accepted issues, the rig), the rig's pose and error once a second
+while live, faults, how long an E-Stop took to bring the rig to a standstill,
+devices connecting and dropping, preset syncs, lock and chase events.
+
+Each record carries the hash of the one before it. `ptz-server --verify-log`
+walks the chain and names the first record that was changed or removed.
+
 ## Checks
 
 ```sh
@@ -231,7 +374,8 @@ make probe    # starts a server on a temp folder and tries every transport actio
 `ptz-probe` can also be pointed at a running server (`ptz-probe --server URL`).
 It refuses to run unless the rig is the simulator and the show is idle.
 
-`ptz-server --verify-log` checks the hash chain of the run log.
+The tests that go live (`crates/server/tests/live.rs`, `hw.rs`, `bringup.rs`)
+run the real server and adapters against the stand-in devices over loopback.
 
 ## Layout
 
