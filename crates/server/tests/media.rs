@@ -45,8 +45,8 @@ fn the_seeded_click_plays_at_two_and_a_half_seconds_and_status_agrees() {
     api.take_lease("Luke-MacBook", false).unwrap();
 
     let library = api.media().unwrap();
-    assert_eq!(library.len(), 1);
-    let click = &library[0];
+    assert_eq!(library.len(), 2);
+    let click = library.iter().find(|m| m.id == "click-12-4s").unwrap();
     assert_eq!((click.name.as_str(), click.channels, click.sample_rate, click.samples), ("Click 12.4s.wav", 1, 48_000, 595_200));
     assert_eq!(click.duration_frames, 310);
     assert!((click.duration_s - 12.4).abs() < 1e-9);
@@ -138,7 +138,7 @@ fn import_place_trim_and_delete() {
         .all(|e| !e.file_name().to_string_lossy().contains("upload")));
     // The same name again gets its own id.
     assert_eq!(upload(&api, &t, "Awards Bed (final).wav", &click_wav()).unwrap().id, "awards-bed-final-2");
-    assert_eq!(api.media().unwrap().len(), 3);
+    assert_eq!(api.media().unwrap().len(), 4);
 
     // Waveform: zoomed in gets the finest level, zoomed out a coarser one, and the burst is at one second in both.
     let fine = api.peaks(&bed.id, 100).unwrap();
@@ -178,14 +178,14 @@ fn import_place_trim_and_delete() {
     let cleared = edit::delete(&now.song, &project, &[clip]).unwrap();
     api.put_working(&PutWorking { expected_counter: now.edit_counter, song: cleared }).unwrap();
     let left = api.delete_media(&bed.id).unwrap();
-    assert_eq!(left.len(), 2);
+    assert_eq!(left.len(), 3);
     assert!(!dir.exists());
 
     // The library survives a restart.
     let dir = t.stop_keeping_data();
     let t = TestServer::reopen(&dir);
     let ids: Vec<String> = t.client("a").media().unwrap().into_iter().map(|m| m.id).collect();
-    assert_eq!(ids, ["awards-bed-final-2", "click-12-4s"]);
+    assert_eq!(ids, ["awards-bed-final-2", "awards-bed-walk-on", "click-12-4s"]);
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -207,9 +207,10 @@ fn files_that_cannot_be_used_are_refused_and_nothing_is_added() {
     assert!(msg.starts_with("silent.wav was not imported:"), "{msg}");
 
     assert_eq!(api.media().unwrap(), before);
-    let folders: Vec<String> =
+    let mut folders: Vec<String> =
         std::fs::read_dir(t.dir.join("media")).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
-    assert_eq!(folders, ["click-12-4s"], "no folder or temporary file is left");
+    folders.sort();
+    assert_eq!(folders, ["awards-bed-walk-on", "click-12-4s"], "no folder or temporary file is left");
     // The name is free again after a refusal.
     assert_eq!(upload(&api, &t, "notes.wav", &click_wav()).unwrap().id, "notes");
 }
