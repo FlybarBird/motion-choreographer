@@ -1050,6 +1050,8 @@ pub struct PtzApp {
     screen: Screen,
     repaint: Arc<dyn Fn() + Send + Sync>,
     last_layout_save: std::time::Instant,
+    /// Whether the show server is installed on this computer, and when that was last looked at.
+    have_server: Option<(std::time::Instant, bool)>,
 }
 
 impl PtzApp {
@@ -1058,8 +1060,13 @@ impl PtzApp {
         let ctx = cc.egui_ctx.clone();
         let repaint: Arc<dyn Fn() + Send + Sync> = Arc::new(move || ctx.request_repaint());
         let settings = Settings::load();
-        let mut app =
-            PtzApp { settings, screen: Screen::Connect { error: None }, repaint, last_layout_save: std::time::Instant::now() };
+        let mut app = PtzApp {
+            settings,
+            screen: Screen::Connect { error: None },
+            repaint,
+            last_layout_save: std::time::Instant::now(),
+            have_server: None,
+        };
         app.connect();
         app
     }
@@ -1072,6 +1079,11 @@ impl PtzApp {
     }
 
     fn connect_screen(&mut self, ui: &mut Ui, error: Option<String>, busy: bool) {
+        // The app can be installed without the server. Looked for again now and then, in case it is installed meanwhile.
+        if self.have_server.is_none_or(|(at, _)| at.elapsed() > std::time::Duration::from_secs(2)) {
+            self.have_server = Some((std::time::Instant::now(), link::local_server().is_some()));
+        }
+        let have_server = self.have_server.is_some_and(|(_, found)| found);
         let mut go = false;
         let mut start_local = false;
         egui::CentralPanel::default().frame(egui::Frame::new().fill(BASE)).show(ui, |ui| {
@@ -1133,8 +1145,12 @@ impl PtzApp {
                                 go = true;
                             }
                             if ui
-                                .add(egui::Button::new("Start a server on this computer").min_size(vec2(0.0, 32.0)))
+                                .add_enabled(
+                                    have_server,
+                                    egui::Button::new("Start a server on this computer").min_size(vec2(0.0, 32.0)),
+                                )
                                 .on_hover_text("Runs ptz-server here on the show folder in your home folder, then connects to it. It drives the rig that project names, the simulator on a new folder, and keeps running after the app quits")
+                                .on_disabled_hover_text(link::NO_LOCAL_SERVER)
                                 .clicked()
                             {
                                 start_local = true;
