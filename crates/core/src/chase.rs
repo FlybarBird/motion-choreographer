@@ -153,12 +153,12 @@ impl Chase {
     /// Advance time without a reading: detects dropouts.
     pub fn tick(&mut self, t: f64) {
         let silent_frames = (t - self.last_time) * self.rate.fps();
+        if self.state == ChaseState::Locked && silent_frames > self.interval_frames + 1.0 {
+            self.state = ChaseState::Freewheel;
+        }
+        // Checked in the same call: after a long gap between calls the freewheel is already spent.
         match self.state {
-            ChaseState::Locked => {
-                if silent_frames > self.interval_frames + 1.0 {
-                    self.state = ChaseState::Freewheel;
-                }
-            }
+            ChaseState::Locked => {}
             ChaseState::Freewheel => {
                 if silent_frames > self.interval_frames + self.freewheel_frames {
                     self.state = ChaseState::NoCode;
@@ -369,5 +369,22 @@ mod tests {
         c.on_reading(reading(1029.0), t);
         assert_eq!(c.state(), ChaseState::Syncing);
         assert!(c.take_jump());
+    }
+
+    #[test]
+    fn code_is_not_carried_on_after_a_silence_longer_than_the_freewheel() {
+        // The engine stalls (a slow disk, a suspended laptop) and looks again ten seconds later,
+        // with no reading in between. Old code is not carried across the gap for even one look.
+        let mut c = Chase::new(R, 8, 1.0);
+        let t = roll(&mut c, 1000.0, 10, 0.0);
+        assert_eq!(c.state(), ChaseState::Locked);
+        c.tick(t + 10.0);
+        assert_eq!(c.state(), ChaseState::NoCode);
+        assert_eq!(c.code_at(t + 10.0), None);
+        // A silence inside the freewheel is still carried.
+        let mut c = Chase::new(R, 8, 1.0);
+        let t = roll(&mut c, 1000.0, 10, 0.0);
+        c.tick(t + 7.0 / 25.0);
+        assert_eq!(c.state(), ChaseState::Freewheel);
     }
 }
