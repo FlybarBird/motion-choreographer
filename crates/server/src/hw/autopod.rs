@@ -182,11 +182,17 @@ pub struct Link {
     pub last_round_trip: Duration,
     /// The last command reached the leg box and was refused, as opposed to not arriving.
     pub last_refused: bool,
+    /// The last command asked the leg box something, as opposed to telling the column to move or stop.
+    pub last_was_question: bool,
+}
+
+fn is_question(cmd: &str) -> bool {
+    [POSITION_QUERY, CALIBRATION_QUERY, MODEL_QUERY, FIRMWARE_QUERY, POWER_QUERY].contains(&cmd)
 }
 
 impl Link {
     pub fn new(host: &str) -> Link {
-        Link { host: host.to_string(), last_round_trip: Duration::ZERO, last_refused: false }
+        Link { host: host.to_string(), last_round_trip: Duration::ZERO, last_refused: false, last_was_question: false }
     }
 
     fn fetch(&self, cmd: &str) -> std::io::Result<Vec<u8>> {
@@ -216,8 +222,8 @@ impl Link {
 
     pub fn send(&mut self, cmd: &str) -> Result<String, String> {
         self.last_refused = false;
-        let question = [POSITION_QUERY, CALIBRATION_QUERY, MODEL_QUERY, FIRMWARE_QUERY, POWER_QUERY].contains(&cmd);
-        if super::only_stops_now() && cmd != STOP && !question {
+        self.last_was_question = is_question(cmd);
+        if super::only_stops_now() && cmd != STOP && !self.last_was_question {
             return Err("this tool is being ended, and sends the AutoPod+ nothing but stops".into());
         }
         let began = Instant::now();
@@ -291,6 +297,9 @@ struct State {
     identity: Identity,
     power: Option<bool>,
     refused: Option<String>,
+    /// What was refused was a question. It is forgotten when the questions are answered again;
+    /// a refused speed or stop command stands until one is accepted.
+    refused_question: bool,
     round_trip_ms: f64,
     moving: bool,
     mode: Mode,
@@ -331,6 +340,7 @@ impl AutoPod {
             identity: Identity::default(),
             power: None,
             refused: None,
+            refused_question: false,
             round_trip_ms: 0.0,
             moving: false,
             mode: Mode::Idle,
@@ -511,6 +521,9 @@ fn run(cfg: PodConfig, state: Arc<Mutex<State>>) {
                 if let Some((calibration, power)) = health {
                     s.calibration = calibration;
                     s.power = power;
+                    if s.refused_question {
+                        s.refused = None;
+                    }
                 }
                 if let Some(identity) = identity {
                     s.identity = identity;
@@ -589,6 +602,7 @@ fn run(cfg: PodConfig, state: Arc<Mutex<State>>) {
             } else {
                 // The unit is there and said no: a setting or firmware matter, not a lost cable.
                 s.refused = Some(why);
+                s.refused_question = link.last_was_question;
             }
             drop(s);
             last_byte = None;

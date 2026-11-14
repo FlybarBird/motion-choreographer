@@ -796,3 +796,24 @@ fn a_preset_sync_stopped_while_the_camera_is_slow_to_list_its_presets_recalls_no
     assert!(!fr7.is_moving());
     assert_eq!(rig.take_preset_sync(), None);
 }
+
+#[test]
+fn a_question_the_leg_box_refused_is_forgotten_once_it_answers_it_again() {
+    let pod = FakeAutoPod::start();
+    let rig = HardwareRig::start(&rig_config(None, Some(&pod)), &AxisTable::default());
+    wait_until("the leg box answers", || rig.problem().is_none());
+    pod.settle_after_connect();
+
+    // For a moment the leg box refuses the calibration question, which is asked once a second.
+    pod.refuse(Some(autopod::CALIBRATION_QUERY));
+    wait_until("the refusal is reported", || rig.problem().is_some());
+    let why = rig.problem().unwrap();
+    assert!(why.starts_with("The AutoPod+ refused #RER"), "{why}");
+    assert!(rig.status()[0].connected, "a refusal is not a lost connection");
+
+    // It answers again. Nothing is sent to an idle column that could clear the refusal by
+    // being accepted, so the answer itself has to: or the rig could never be armed again.
+    pod.refuse(None);
+    wait_until("the refusal is forgotten", || rig.problem().is_none());
+    assert_eq!(pod.orders(), Vec::<String>::new(), "and the idle column was sent nothing");
+}
