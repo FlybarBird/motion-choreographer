@@ -20,6 +20,14 @@ Two programs:
 Until hardware is configured the server drives a built-in simulator rig, so
 everything can be programmed and rehearsed with nothing plugged in.
 
+Two longer documents go with this one:
+
+- **[Setup Guide](docs/setup-guide.md)**: from a new machine to a system that is
+  ready to program, including bringing up each real rig and a checklist for
+  the first show.
+- **[Programming Manual](docs/programming-manual.md)**: how to build, shape,
+  rehearse and play a show, with a first-song walkthrough and a reference.
+
 ## Run it
 
 Rust 1.88 or newer.
