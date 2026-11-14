@@ -127,7 +127,9 @@ impl Lens {
         let f = self.focal_mm(zoom) / 1000.0;
         let h = self.hyperfocal_m(zoom);
         let s = subject_m.max(f);
-        let near = s * (h - f) / (h + s - 2.0 * f);
+        // Stopped down without limit the hyperfocal distance comes down to the focal length, and
+        // a subject there too leaves nothing over nothing: the near limit is then the subject.
+        let near = if h + s - 2.0 * f > 0.0 { s * (h - f) / (h + s - 2.0 * f) } else { s };
         let far = (s < h).then(|| s * (h - f) / (h - s));
         (near, far)
     }
@@ -227,5 +229,25 @@ mod tests {
     fn an_old_or_partial_lens_reads_with_defaults() {
         let lens: Lens = serde_json::from_str(r#"{ "wide_mm": 24, "tele_mm": 70 }"#).unwrap();
         assert_eq!((lens.wide_mm, lens.tele_mm, lens.sensor_width_mm, lens.f_number), (24.0, 70.0, 35.6, 4.0));
+    }
+
+    #[test]
+    fn every_lens_that_passes_validate_gives_numbers_to_show() {
+        // Typed into the project file, not chosen from the list: any aperture above zero is valid.
+        for f_number in [0.95, 4.0, 64.0, 1e20, 1e300] {
+            let lens = Lens { f_number, ..Lens::default() };
+            assert!(lens.validate().is_ok());
+            for zoom in [0.0, 0.5, 1.0] {
+                for subject in [0.0, 0.028, 1.0, 10.0, 1e9] {
+                    let (near, far) = lens.sharp_range_m(zoom, subject);
+                    assert!(near.is_finite() && near >= 0.0, "f/{f_number} zoom {zoom} subject {subject}: near {near}");
+                    assert!(
+                        far.is_none_or(|far| far + 1e-9 >= near),
+                        "f/{f_number} zoom {zoom} subject {subject}: {near} to {far:?}"
+                    );
+                    assert!(lens.hyperfocal_m(zoom).is_finite());
+                }
+            }
+        }
     }
 }
