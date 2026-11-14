@@ -714,12 +714,29 @@ fn ws_loop(api: Api, events: Sender<Event>, cmds: Sender<Cmd>, stop: Arc<AtomicB
     }
 }
 
-/// Launch `ptz-server` detached, from beside this executable or from PATH.
-pub fn start_local_server() -> Result<String, String> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+/// Where the show server is on this computer, if it is installed: beside this
+/// executable (a source build, or the app bundle that carries it), in the folders
+/// the installers use, or on PATH. An app opened from the Finder has a short PATH
+/// that leaves those folders out, so they are looked in by name.
+pub fn local_server() -> Option<PathBuf> {
     let name = if cfg!(windows) { "ptz-server.exe" } else { "ptz-server" };
-    let beside = exe.with_file_name(name);
-    let program = if beside.exists() { beside } else { PathBuf::from(name) };
+    let beside = std::env::current_exe().ok().map(|exe| exe.with_file_name(name));
+    let mut dirs = vec![PathBuf::from("/usr/local/ptz-programmer/bin"), PathBuf::from("/usr/local/bin")];
+    dirs.extend(dirs::home_dir().map(|home| home.join(".local").join("bin")));
+    dirs.extend(std::env::var_os("PATH").map(|path| std::env::split_paths(&path).collect::<Vec<_>>()).unwrap_or_default());
+    find_server(beside, &dirs, name)
+}
+
+fn find_server(beside: Option<PathBuf>, dirs: &[PathBuf], name: &str) -> Option<PathBuf> {
+    beside.into_iter().chain(dirs.iter().map(|dir| dir.join(name))).find(|path| path.is_file())
+}
+
+pub const NO_LOCAL_SERVER: &str =
+    "The show server is not installed on this computer. Install it, or enter the address of a server on another machine";
+
+/// Launch `ptz-server` detached.
+pub fn start_local_server() -> Result<String, String> {
+    let program = local_server().ok_or_else(|| NO_LOCAL_SERVER.to_string())?;
     let mut cmd = std::process::Command::new(&program);
     cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
     #[cfg(unix)]
@@ -735,6 +752,32 @@ pub fn start_local_server() -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_server_is_found_beside_the_app_first_then_where_the_installers_put_it() {
+        let root = std::env::temp_dir().join(format!("ptz-find-server-{}", std::process::id()));
+        let (bundle, system, user) = (root.join("bundle"), root.join("usr-local-bin"), root.join("home-local-bin"));
+        for dir in [&bundle, &system, &user] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let dirs = [system.clone(), user.clone()];
+        let beside = Some(bundle.join("ptz-server"));
+        // An app installed without the server finds none, and says so instead of failing to launch a name.
+        assert_eq!(find_server(beside.clone(), &dirs, "ptz-server"), None);
+        // A folder with that name is not the server.
+        std::fs::create_dir_all(system.join("ptz-server")).unwrap();
+        assert_eq!(find_server(beside.clone(), &dirs, "ptz-server"), None);
+
+        std::fs::write(user.join("ptz-server"), b"").unwrap();
+        assert_eq!(find_server(beside.clone(), &dirs, "ptz-server"), Some(user.join("ptz-server")));
+        std::fs::remove_dir(system.join("ptz-server")).unwrap();
+        std::fs::write(system.join("ptz-server"), b"").unwrap();
+        assert_eq!(find_server(beside.clone(), &dirs, "ptz-server"), Some(system.join("ptz-server")));
+        std::fs::write(bundle.join("ptz-server"), b"").unwrap();
+        assert_eq!(find_server(beside, &dirs, "ptz-server"), Some(bundle.join("ptz-server")));
+        assert_eq!(find_server(None, &dirs, "ptz-server"), Some(system.join("ptz-server")));
+        let _ = std::fs::remove_dir_all(&root);
+    }
     use crate::stage::Import;
     use ptz_scene::mesh::Mesh;
 
