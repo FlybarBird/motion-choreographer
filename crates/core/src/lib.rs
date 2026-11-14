@@ -11,6 +11,7 @@ pub mod compile;
 pub mod edit;
 pub mod eval;
 pub mod fit;
+pub mod lens;
 pub mod ltc;
 pub mod pose;
 pub mod song;
