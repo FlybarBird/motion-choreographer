@@ -271,28 +271,43 @@ fn compile_camera(
 }
 
 /// True when an eased move of `frames` stays inside the speed and acceleration
-/// limits, sampled per frame the same way `compile` does.
+/// limits, sampled per frame the same way `compile` does. The rig stands still
+/// before the move and after it.
 fn move_fits(from: f64, to: f64, ease: Ease, frames: i64, lim: &AxisLimits, fps: f64) -> bool {
     if from == to {
         return true;
     }
     let [k0, k1] = ease_keys(from, to, frames, ease);
     let at = |f: i64| segment_value(&k0, &k1, f.clamp(0, frames) as f64);
+    let over = |before: f64, here: f64, after: f64| {
+        (after - here).abs() * fps > lim.max_speed * SLACK
+            || (after - 2.0 * here + before).abs() * fps * fps > lim.max_accel * SLACK
+    };
+    // A move that is too short fails where it starts, where it stops or where it is
+    // fastest, so those frames and a spread of the rest are looked at first. A candidate
+    // that is far too short is then turned down without walking its whole length.
+    let probe = |f: i64| over(at(f - 1), at(f), at(f + 1));
+    const SPREAD: i64 = 64;
+    if probe(0) || probe(frames) || (frames > 4 * SPREAD && (1..SPREAD).any(|i| probe(frames / SPREAD * i))) {
+        return false;
+    }
+    let (mut before, mut here) = (at(-1), at(0));
     for f in 0..=frames {
-        let speed = (at(f + 1) - at(f)).abs() * fps;
-        if speed > lim.max_speed * SLACK {
+        let after = at(f + 1);
+        if over(before, here, after) {
             return false;
         }
-        let accel = (at(f + 1) - 2.0 * at(f) + at(f - 1)).abs() * fps * fps;
-        if accel > lim.max_accel * SLACK {
-            return false;
-        }
+        (before, here) = (here, after);
     }
     true
 }
 
 /// Shortest whole-frame duration that every axis can make: the slowest axis's
 /// travel at its top speed through the ease, plus that axis's settle time.
+///
+/// Never longer than the longest song. A move the limits cannot be met for inside
+/// that (a pose far outside any rig, or an ease that stops dead on an axis that may
+/// hardly accelerate) gets that length, and shows as an issue when it is compiled.
 pub fn auto_duration(from: &Pose, to: &Pose, axes: &[Axis], ease: Ease, limits: &AxisTable, rate: FrameRate) -> i64 {
     let fps = rate.fps();
     let peak = peak_factor(ease);
@@ -308,12 +323,21 @@ pub fn auto_duration(from: &Pose, to: &Pose, axes: &[Axis], ease: Ease, limits: 
         // Nothing moves. One second keeps the clip visible and grabbable.
         return rate.nominal();
     }
-    let mut frames = ((seconds * fps) - 1e-9).ceil().max(1.0) as i64;
+    let longest = Song::max_length_frames(rate);
+    let first = ((seconds * fps) - 1e-9).ceil().max(1.0);
+    // Also true of a time that is not a number.
+    if !(first < longest as f64) {
+        return longest;
+    }
+    let mut frames = first as i64;
     let fits =
         |frames: i64| axes.iter().all(|&axis| move_fits(from.get(axis), to.get(axis), ease, frames, limits.get(axis), fps));
     let mut guard = 0;
     while !fits(frames) && guard < 400 {
         frames += (frames / 20).max(1);
+        if frames >= longest {
+            return longest;
+        }
         guard += 1;
     }
     frames
@@ -345,8 +369,8 @@ pub fn suggested_duration(song: &Song, clip: &MotionClip, project: &Project) -> 
 }
 
 /// Recompute every auto-timed move, earliest first. A move that has no room
-/// before the next clip of its camera on its axes is clamped to the room, which then shows as
-/// a too-fast issue instead of an overlap.
+/// before the next clip of its camera on its axes, or before the end of the longest song,
+/// is clamped to the room, which then shows as a too-fast issue instead of an overlap.
 pub fn refresh_auto(song: &mut Song, project: &Project) {
     let mut order: Vec<usize> = (0..song.motion.len()).collect();
     order.sort_by_key(|i| song.motion[*i].start_frame);
@@ -370,6 +394,8 @@ pub fn refresh_auto(song: &mut Song, project: &Project) {
             .map(|o| o.start_frame - clip.start_frame)
             .min()
             .unwrap_or(i64::MAX);
+        // Nor past the end of the longest song there can be.
+        let room = room.min(Song::max_length_frames(project.rate).saturating_sub(clip.start_frame));
         song.motion[i].duration_frames = want.min(room).max(1);
     }
     let end = song.content_end();
@@ -388,7 +414,7 @@ pub fn speed_profile(poses: &[Pose], axis: Axis, rate: FrameRate) -> Vec<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pose::{Cmp, KeepOutRule};
+    use crate::pose::{AxisLimits, Cmp, KeepOutRule};
     use crate::song::{LinkedTag, PresetRef};
 
     use crate::camera::{CameraConfig, FIRST_CAMERA};
@@ -605,5 +631,115 @@ mod tests {
         let issues: Vec<Issue> = serde_json::from_str(old).unwrap();
         let song = Song::new("s", "S", "01:00:00:00", 10);
         assert!(issues.iter().all(|i| i.camera(&song) == FIRST_CAMERA));
+    }
+
+    /// The search as it was first written: every candidate length is walked frame by frame.
+    fn plain_search(from: &Pose, to: &Pose, axes: &[Axis], ease: Ease, limits: &AxisTable, rate: FrameRate) -> i64 {
+        let fps = rate.fps();
+        let fits_axis = |from: f64, to: f64, frames: i64, lim: &AxisLimits| {
+            if from == to {
+                return true;
+            }
+            let [k0, k1] = ease_keys(from, to, frames, ease);
+            let at = |f: i64| segment_value(&k0, &k1, f.clamp(0, frames) as f64);
+            (0..=frames).all(|f| {
+                (at(f + 1) - at(f)).abs() * fps <= lim.max_speed * SLACK
+                    && (at(f + 1) - 2.0 * at(f) + at(f - 1)).abs() * fps * fps <= lim.max_accel * SLACK
+            })
+        };
+        let mut seconds: f64 = 0.0;
+        for &axis in axes {
+            let lim = limits.get(axis);
+            let travel = (to.get(axis) - from.get(axis)).abs();
+            if travel > 1e-9 && lim.max_speed > 0.0 {
+                seconds = seconds.max(travel * peak_factor(ease) / lim.max_speed + lim.settle_s);
+            }
+        }
+        if seconds == 0.0 {
+            return rate.nominal();
+        }
+        let mut frames = ((seconds * fps) - 1e-9).ceil().max(1.0) as i64;
+        while !axes.iter().all(|&a| fits_axis(from.get(a), to.get(a), frames, limits.get(a))) {
+            frames += (frames / 20).max(1);
+        }
+        frames
+    }
+
+    #[test]
+    fn auto_time_is_what_walking_every_frame_of_every_candidate_finds() {
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut rnd = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let limits = AxisTable::default();
+        for case in 0..40 {
+            let rate = FrameRate::ALL[case % 5];
+            let ease = Ease::ALL[case % 4];
+            // Short travels as well as long ones, so the start, the middle and the stop each decide some.
+            let reach = if case % 3 == 0 { 0.15 } else { 1.0 };
+            let mut pose = || {
+                Pose::from_fn(|a| {
+                    let l = limits.get(a);
+                    l.min + rnd() * (l.max - l.min) * reach
+                })
+            };
+            let (from, to) = (pose(), pose());
+            let axes: Vec<Axis> = Axis::ALL.into_iter().filter(|a| case % 7 != 0 || *a != Axis::Elevation).collect();
+            assert_eq!(
+                auto_duration(&from, &to, &axes, ease, &limits, rate),
+                plain_search(&from, &to, &axes, ease, &limits, rate),
+                "case {case}: {ease:?} at {} from {from:?} to {to:?}",
+                rate.label()
+            );
+        }
+    }
+
+    #[test]
+    fn auto_time_gives_up_at_a_day_when_the_limits_can_never_be_met() {
+        // A legal project whose pedestal may hardly accelerate at all: an ease that stops
+        // dead would need years. The answer is the longest a song can be, and it comes at once.
+        let mut p = Project::default();
+        p.first_mut().axes.elevation.max_accel = 1e-6;
+        assert!(p.validate().is_ok());
+        let day = p.rate.frames_per_day();
+        let to = Pose { elevation: 670.0, ..Pose::home() };
+        for ease in [Ease::EaseIn, Ease::EaseOut, Ease::Linear] {
+            assert_eq!(auto(&Pose::home(), &to, &[Axis::Elevation], ease, &p), day, "{ease:?}");
+        }
+        // The same when the travel is what cannot be met.
+        let far = Pose { pan: 1e12, ..Pose::home() };
+        assert_eq!(auto(&Pose::home(), &far, &Axis::ALL, Ease::EaseInOut, &Project::default()), day);
+    }
+
+    #[test]
+    fn a_pose_no_rig_could_reach_does_not_overflow_auto_time() {
+        let p = Project::default();
+        let day = p.rate.frames_per_day();
+        for pan in [1e300, -1e300, f64::MAX, f64::INFINITY] {
+            let far = Pose { pan, ..Pose::home() };
+            assert_eq!(auto(&Pose::home(), &far, &Axis::ALL, Ease::EaseInOut, &p), day, "pan {pan}");
+            assert_eq!(auto(&far, &Pose::home(), &Axis::ALL, Ease::Linear, &p), day, "pan {pan}");
+        }
+    }
+
+    #[test]
+    fn an_auto_move_that_can_never_be_made_stays_inside_the_longest_song() {
+        let mut p = Project::default();
+        p.first_mut().axes.elevation.max_accel = 1e-6;
+        let day = p.rate.frames_per_day();
+        let mut song = Song::new("s", "S", "01:00:00:00", 500);
+        let mut clip = pan_move(100, 10, 0.0, true);
+        clip.axes = vec![Axis::Elevation];
+        if let ClipBody::PresetMove { to, ease, .. } = &mut clip.body {
+            to.pose.elevation = 670.0;
+            *ease = Ease::EaseIn;
+        }
+        song.motion.push(clip);
+        refresh_auto(&mut song, &p);
+        assert_eq!(song.motion[0].end_frame(), day, "clamped to the end of the longest song, where it shows as an issue");
+        assert!(song.validate(p.rate).is_ok());
     }
 }
