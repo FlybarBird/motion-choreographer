@@ -96,8 +96,15 @@ show without a screen.
   `--uninstall` removes what it installed.
 
 An app installed without the server greys out **Start a server on this
-computer** and says why. A Mac installer has to be built on a Mac, and one for
-Apple Silicon on an Apple Silicon Mac.
+computer** and says why.
+
+A Mac installer has to be built on a Mac: macOS programs cannot be compiled
+anywhere else. An Apple Silicon Mac builds the Intel pair as well:
+
+```sh
+make package                                    # for this Mac
+PTZ_TARGET=x86_64-apple-darwin make package     # for Intel Macs, from an Apple Silicon one
+```
 
 ### A remote operator station
 
