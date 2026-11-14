@@ -274,12 +274,24 @@ pub enum Invalid {
     TooShort(String),
     OutsideSong(String),
     NoAxes(String),
-    Overlap { a: String, b: String, axis: Axis },
+    Overlap {
+        a: String,
+        b: String,
+        axis: Axis,
+    },
     BadCamera(String),
-    BadKeys { clip: String, axis: Axis },
+    BadKeys {
+        clip: String,
+        axis: Axis,
+    },
     BadStart(String),
     BadMedia(String),
-    MediaOverlap { a: String, b: String },
+    MediaOverlap {
+        a: String,
+        b: String,
+    },
+    /// The song is longer than a day of timecode.
+    TooLong,
 }
 
 impl fmt::Display for Invalid {
@@ -299,6 +311,7 @@ impl fmt::Display for Invalid {
             Invalid::BadStart(s) => write!(f, "'{s}' is not a valid start timecode"),
             Invalid::BadMedia(_) => write!(f, "The media clip trim is outside its source"),
             Invalid::MediaOverlap { .. } => write!(f, "Overlaps another clip on that track"),
+            Invalid::TooLong => write!(f, "A song cannot be longer than 24 hours"),
         }
     }
 }
@@ -384,10 +397,24 @@ impl Song {
         m.max(a).max(k)
     }
 
+    /// The longest a song can be. Timecode labels repeat after 24 hours, so a frame
+    /// further on could not be told from an earlier one; and every frame of a song
+    /// is compiled, so the length has to be one that fits in memory.
+    pub fn max_length_frames(rate: FrameRate) -> i64 {
+        rate.frames_per_day()
+    }
+
+    /// Every frame number is checked without arithmetic that can overflow: the
+    /// file may hold any number, and a song that passes is safe to add up.
     pub fn validate(&self, rate: FrameRate) -> Result<(), Invalid> {
         if Timecode::parse_at(&self.start_tc, rate).is_none() {
             return Err(Invalid::BadStart(self.start_tc.clone()));
         }
+        if self.length_frames > Song::max_length_frames(rate) {
+            return Err(Invalid::TooLong);
+        }
+        let inside =
+            |start: i64, duration: i64| start >= 0 && start.checked_add(duration).is_some_and(|end| end <= self.length_frames);
         let mut ids = HashSet::new();
         for id in
             self.motion.iter().map(|c| &c.id).chain(self.media.iter().map(|c| &c.id)).chain(self.markers.iter().map(|m| &m.id))
@@ -402,13 +429,16 @@ impl Song {
             }
         }
         for c in &self.media {
-            if c.duration() < 1 {
+            let Some(duration) = c.out_frame.checked_sub(c.in_frame) else {
+                return Err(Invalid::BadMedia(c.id.clone()));
+            };
+            if duration < 1 {
                 return Err(Invalid::TooShort(c.id.clone()));
             }
             if c.in_frame < 0 || c.out_frame > c.media_frames {
                 return Err(Invalid::BadMedia(c.id.clone()));
             }
-            if c.start_frame < 0 || c.end_frame() > self.length_frames {
+            if !inside(c.start_frame, duration) {
                 return Err(Invalid::OutsideSong(c.id.clone()));
             }
         }
@@ -423,7 +453,7 @@ impl Song {
             if c.duration_frames < 1 {
                 return Err(Invalid::TooShort(c.id.clone()));
             }
-            if c.start_frame < 0 || c.end_frame() > self.length_frames {
+            if !inside(c.start_frame, c.duration_frames) {
                 return Err(Invalid::OutsideSong(c.id.clone()));
             }
             if c.axes.is_empty() {
@@ -549,5 +579,47 @@ mod tests {
         song.motion[0].duration_frames = 96;
         song.motion[1].start_frame = 4400;
         assert!(matches!(song.validate(FrameRate::F25), Err(Invalid::OutsideSong(_))));
+    }
+
+    #[test]
+    fn a_song_longer_than_a_day_is_refused() {
+        let rate = FrameRate::F25;
+        let mut song = Song::new("s", "S", "01:00:00:00", rate.frames_per_day());
+        assert!(song.validate(rate).is_ok(), "a day is as far as timecode can label");
+        song.length_frames += 1;
+        assert_eq!(song.validate(rate).unwrap_err().to_string(), "A song cannot be longer than 24 hours");
+        song.length_frames = i64::MAX;
+        assert!(song.validate(rate).is_err());
+    }
+
+    #[test]
+    fn frame_numbers_no_song_could_hold_are_refused_without_overflowing() {
+        let rate = FrameRate::F25;
+        let sample: Song = serde_json::from_str(SAMPLE).unwrap();
+
+        let mut song = sample.clone();
+        song.motion[1].start_frame = i64::MAX;
+        assert!(matches!(song.validate(rate), Err(Invalid::OutsideSong(_))));
+        let mut song = sample.clone();
+        song.motion[0].duration_frames = i64::MAX;
+        assert!(matches!(song.validate(rate), Err(Invalid::OutsideSong(_))));
+
+        let mut song = sample.clone();
+        song.media[0].start_frame = i64::MAX;
+        assert!(matches!(song.validate(rate), Err(Invalid::OutsideSong(_))));
+        let mut song = sample.clone();
+        song.media[0].in_frame = i64::MIN;
+        assert!(matches!(song.validate(rate), Err(Invalid::BadMedia(_))));
+        let mut song = sample.clone();
+        (song.media[0].in_frame, song.media[0].out_frame) = (-2, i64::MAX);
+        assert!(matches!(song.validate(rate), Err(Invalid::BadMedia(_))));
+
+        // As it arrives from a file or a client.
+        let text = r#"{ "id": "s", "name": "S", "start_tc": "01:00:00:00", "length_frames": 100,
+            "home_pose": { "pan": 0, "tilt": 0, "zoom": 0, "focus": 0.5, "elevation": 0 },
+            "motion": [ { "id": "c1", "kind": "keys", "start_frame": 9223372036854775807, "duration_frames": 1,
+                          "axes": ["pan"], "curves": {} } ] }"#;
+        let song: Song = serde_json::from_str(text).unwrap();
+        assert!(matches!(song.validate(rate), Err(Invalid::OutsideSong(_))));
     }
 }

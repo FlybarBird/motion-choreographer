@@ -1221,4 +1221,15 @@ mod tests {
         assert_eq!(moved.motion_clip(&c).unwrap().camera, CAM);
         assert_eq!(move_clips_to(&song, &p, &[a], 0, Some("cam9")).unwrap_err(), Refusal::NoSuchCamera);
     }
+
+    #[test]
+    fn a_song_cannot_be_made_longer_than_a_day() {
+        let (song, p) = base();
+        let day = p.rate.frames_per_day();
+        assert_eq!(set_song_length(&song, &p, day).unwrap().length_frames, day);
+        for frames in [day + 1, i64::MAX] {
+            let refused = set_song_length(&song, &p, frames).unwrap_err();
+            assert_eq!(refused.to_string(), "A song cannot be longer than 24 hours");
+        }
+    }
 }
