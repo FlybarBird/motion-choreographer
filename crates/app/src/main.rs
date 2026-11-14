@@ -1,8 +1,5 @@
 //! PTZ Programmer desktop app.
 
-// Link commands for media, jog and thumbnails are wired up by the tabs that use them.
-#![allow(dead_code)]
-
 mod app;
 mod camera_ui;
 mod frames;
