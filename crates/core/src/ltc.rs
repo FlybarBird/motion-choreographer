@@ -109,6 +109,8 @@ pub struct LtcDecoder {
     period: f64,
     prev_interval: f64,
     half_pending: bool,
+    /// Length of the first half of a one bit, while its second half is awaited.
+    first_half: f64,
     bits: u128,
     bit_count: u32,
     last_sync_end: Option<u64>,
@@ -130,6 +132,7 @@ impl LtcDecoder {
             period: 0.0,
             prev_interval: 0.0,
             half_pending: false,
+            first_half: 0.0,
             bits: 0,
             bit_count: 0,
             last_sync_end: None,
@@ -159,9 +162,11 @@ impl LtcDecoder {
             drop_frame: bit_at(10) == 1,
         };
         let end = self.sample_index;
+        // The distance between sync words is the frame length, unless frames were missed in between.
+        let by_bits = self.period * 80.0;
         let spf = match self.last_sync_end {
-            Some(prev) if end > prev => (end - prev) as f64,
-            _ => self.period * 80.0,
+            Some(prev) if end > prev && ((end - prev) as f64 - by_bits).abs() < by_bits * 0.25 => (end - prev) as f64,
+            _ => by_bits,
         };
         self.last_sync_end = Some(end);
         if tc.h < 24 && tc.m < 60 && tc.s < 60 && tc.f < 30 {
@@ -211,10 +216,12 @@ impl LtcDecoder {
             if d < self.period * 0.75 {
                 if self.half_pending {
                     self.half_pending = false;
-                    self.period = self.period * 0.9 + (d * 2.0) * 0.1;
+                    // Both halves together: doubling one of them would carry its rounding into the period.
+                    self.period = self.period * 0.9 + (self.first_half + d) * 0.1;
                     self.push_bit(1, &mut out);
                 } else {
                     self.half_pending = true;
+                    self.first_half = d;
                 }
             } else {
                 if self.half_pending {

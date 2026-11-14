@@ -228,6 +228,32 @@ impl SongClock {
     pub fn locate_tc(&self, tc: Timecode) -> SongPos {
         self.locate(tc.to_frames(self.rate))
     }
+
+    /// Frames from the song start to a code, taking the short way round midnight.
+    /// Negative when the code is before the song.
+    pub fn offset_of(&self, code_frames: f64) -> f64 {
+        let day = self.rate.frames_per_day() as f64;
+        let rel = (code_frames - self.start_frames as f64).rem_euclid(day);
+        if rel > day / 2.0 {
+            rel - day
+        } else {
+            rel
+        }
+    }
+
+    /// The song frame a file's first sample belongs on, given the file's start timecode.
+    pub fn frame_of_stamp(&self, start_tc: &str) -> Option<i64> {
+        let tc = Timecode::parse_at(start_tc, self.rate)?;
+        Some(self.offset_of(tc.to_frames(self.rate) as f64).round() as i64)
+    }
+}
+
+/// Start timecode for a time of day counted in audio samples since midnight,
+/// which is how a broadcast WAV carries it. The nearest frame is taken.
+pub fn timecode_of_samples(samples: u64, sample_rate: u32, rate: FrameRate) -> Timecode {
+    let n = samples as i128 * rate.num() as i128 * 2;
+    let d = sample_rate.max(1) as i128 * rate.den() as i128;
+    Timecode::from_frames(((n + d) / (2 * d)) as i64, rate)
 }
 
 /// First audio sample at or after the start of `frame`. Integer math only.
@@ -299,6 +325,34 @@ mod tests {
         assert_eq!(clock.locate_tc(early), SongPos::Before);
         let late = Timecode::parse_at("01:10:00:00", rate).unwrap();
         assert_eq!(clock.locate_tc(late), SongPos::After);
+    }
+
+    #[test]
+    fn a_file_stamp_lands_on_its_code_either_side_of_the_song_start() {
+        let rate = FrameRate::F25;
+        let clock = SongClock::new(rate, Timecode::parse_at("01:00:00:00", rate).unwrap(), 4500);
+        assert_eq!(clock.frame_of_stamp("01:00:10:00"), Some(250));
+        assert_eq!(clock.frame_of_stamp("00:59:58:00"), Some(-50));
+        assert_eq!(clock.frame_of_stamp("01:00:10:25"), None);
+        // A song that starts just before midnight and a file stamped just after it.
+        let late = SongClock::new(rate, Timecode::parse_at("23:59:50:00", rate).unwrap(), 4500);
+        assert_eq!(late.frame_of_stamp("00:00:10:00"), Some(500));
+        assert_eq!(late.offset_of(Timecode::parse_at("23:59:40:00", rate).unwrap().to_frames(rate) as f64), -250.0);
+    }
+
+    #[test]
+    fn a_broadcast_wav_time_reference_reads_as_the_code_it_was_stamped_with() {
+        for rate in FrameRate::ALL {
+            let tc = Timecode::parse_at("01:00:10:00", rate).unwrap();
+            for sr in [44_100u32, 48_000, 96_000] {
+                // Writers round the frame boundary up or down; both read back as the frame.
+                let exact = frame_to_sample(tc.to_frames(rate), sr, rate) as u64;
+                assert_eq!(timecode_of_samples(exact, sr, rate), tc, "{} at {sr}", rate.label());
+                assert_eq!(timecode_of_samples(exact - 1, sr, rate), tc, "{} at {sr}", rate.label());
+            }
+        }
+        assert_eq!(timecode_of_samples(173_280_000, 48_000, FrameRate::F25).to_string(), "01:00:10:00");
+        assert_eq!(timecode_of_samples(173_280_308, 48_000, FrameRate::F2997Df).to_string(), "01:00:10;00");
     }
 
     #[test]

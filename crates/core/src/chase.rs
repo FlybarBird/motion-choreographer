@@ -68,6 +68,10 @@ impl Chase {
         self.state
     }
 
+    pub fn set_freewheel(&mut self, frames: u32) {
+        self.freewheel_frames = frames as f64;
+    }
+
     pub fn announced(&self) -> Option<CodeRate> {
         self.announced
     }
