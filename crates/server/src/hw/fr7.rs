@@ -43,6 +43,8 @@ pub struct Fr7Config {
     pub pan_sign: f64,
     pub tilt_sign: f64,
     pub absolute_moves: bool,
+    /// Degrees per second of each speed step; empty uses `visca::speed_table`.
+    pub speed_steps: Vec<f64>,
 }
 
 impl Fr7Config {
@@ -58,6 +60,7 @@ impl Fr7Config {
             pan_sign: if rig.fr7_invert_pan { -1.0 } else { 1.0 },
             tilt_sign: if rig.fr7_invert_tilt { -1.0 } else { 1.0 },
             absolute_moves: rig.fr7_absolute_moves,
+            speed_steps: rig.fr7_speed_steps.clone(),
         }
     }
 }
@@ -91,6 +94,7 @@ impl Link {
             table: visca::speed_table(),
             zero_first: false,
         };
+        link.set_speed_table(cfg.speed_steps.clone());
         link.reset()?;
         Ok(link)
     }
@@ -559,7 +563,7 @@ impl Worker {
         let round_trip_ms = link.last_round_trip.as_secs_f64() * 1000.0;
         // Zoom and focus change slowly; they share the cycles between them.
         let mut head = Head { pan, tilt, ..before };
-        if cycle % 2 == 0 {
+        if cycle.is_multiple_of(2) {
             head.zoom = link.read_zoom()?;
             read_at.zoom = Instant::now() - link.last_round_trip / 2;
         } else {

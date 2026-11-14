@@ -1413,7 +1413,7 @@ impl Show {
                 self.log("estop_still_moving", json!({ "pose": self.rig.pose() }));
             }
         }
-        if self.ticks % 15 == 0 {
+        if self.ticks.is_multiple_of(15) {
             let seen: Vec<(String, bool, String)> =
                 self.rig.status().into_iter().map(|a| (a.name, a.connected, a.detail)).collect();
             for (name, connected, detail) in &seen {

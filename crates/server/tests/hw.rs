@@ -22,6 +22,7 @@ fn fr7_config(fake: &FakeFr7) -> Fr7Config {
         pan_sign: 1.0,
         tilt_sign: 1.0,
         absolute_moves: false,
+        speed_steps: Vec::new(),
     }
 }
 
