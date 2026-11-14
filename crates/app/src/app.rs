@@ -273,7 +273,8 @@ impl egui_dock::TabViewer for Viewer<'_> {
 fn action_button(ui: &mut Ui, s: &mut Session, action: Action, glyph: &str, label: &str, look: Look, min_w: f32) -> bool {
     let g = &s.status.guidance;
     let enabled = s.offers(action);
-    let resp = icon_button(ui, enabled, glyph, label, look, vec2(min_w, 30.0));
+    // Space is the transport's one key. Its buttons take a click, and never have the keyboard.
+    let resp = click_only_button(ui, enabled, glyph, label, look, vec2(min_w, 30.0));
     let reason = if s.lost.is_some() { Some("The server is not reachable") } else { g.reason(action) };
     let resp = match reason {
         Some(r) if !enabled => resp.on_disabled_hover_text(r),
@@ -359,6 +360,10 @@ impl Flow {
     }
 }
 
+fn e_stop_has_keyboard_id() -> egui::Id {
+    egui::Id::new("e_stop_has_keyboard")
+}
+
 /// E-STOP has a layer of its own above every dialog, menu and tip the window can show, over the place kept
 /// for it in the transport bar. Whatever else is open it is drawn whole, in its own colour, and it takes
 /// the click: a dialog stops clicks only on what lies beneath it, and nothing is laid out above this.
@@ -377,9 +382,12 @@ fn e_stop(ui: &mut Ui, s: &mut Session) {
         .fade_in(false)
         .sense(egui::Sense::hover())
         .show(&ctx, |ui| {
-            icon_button(ui, true, icon::WARNING_OCTAGON, "E-STOP", Look::Solid(RED), ESTOP_SIZE)
-                .on_hover_text("Stop all motion now. Works from any station, with or without the lease")
-                .clicked()
+            // Unlike the rest of the transport bar it can be reached with Tab and pressed with Space or
+            // Enter: there is no shortcut key for it, but no way of stopping is taken away either.
+            let button = icon_button(ui, true, icon::WARNING_OCTAGON, "E-STOP", Look::Solid(RED), ESTOP_SIZE);
+            let has_keyboard = button.has_focus();
+            ui.data_mut(|d| d.insert_temp(e_stop_has_keyboard_id(), has_keyboard));
+            button.on_hover_text("Stop all motion now. Works from any station, with or without the lease").clicked()
         })
         .inner;
     if pressed {
@@ -798,7 +806,18 @@ impl Shell {
         if pressed(Key::Escape) {
             s.timeline.cancel();
         }
-        if pressed(Key::Space) {
+        // With the keyboard on E-STOP, Space presses E-STOP and does nothing else.
+        let on_e_stop = ctx.data(|d| d.get_temp::<bool>(e_stop_has_keyboard_id())).unwrap_or(false);
+        if pressed(Key::Space) && !on_e_stop {
+            // Otherwise Space is the transport's key and nothing else's. A button that Tab left the
+            // keyboard on is not pressed as well: it gives the keyboard up before it can take the key.
+            if !s.rig.keyboard {
+                ctx.memory_mut(|m| {
+                    if let Some(id) = m.focused() {
+                        m.surrender_focus(id);
+                    }
+                });
+            }
             let g = &s.status.guidance;
             // Space runs the transport. Releasing the E-Stop latch takes a click on its own button.
             // A key does what its button would: nothing, while the button is off.
