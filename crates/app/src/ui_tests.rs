@@ -271,7 +271,8 @@ fn space_does_not_release_a_latched_e_stop() {
         assert_eq!(s.status.guidance.primary, Some(ptz_core::transport::Action::ResetEstop));
     }
     r.harness.run_steps(2);
-    let acts = |r: &Rig| -> Vec<_> { r.cmds.try_iter().filter_map(|c| if let Cmd::Act(a, _) = c { Some(a) } else { None }).collect() };
+    let acts =
+        |r: &Rig| -> Vec<_> { r.cmds.try_iter().filter_map(|c| if let Cmd::Act(a, _) = c { Some(a) } else { None }).collect() };
 
     r.harness.key_press(egui::Key::Space);
     r.harness.run_steps(2);
