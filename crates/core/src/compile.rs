@@ -351,8 +351,7 @@ pub fn auto_duration(from: &Pose, to: &Pose, axes: &[Axis], ease: Ease, limits: 
     }
     let longest = Song::max_length_frames(rate);
     let first = ((seconds * fps) - 1e-9).ceil().max(1.0);
-    // Also true of a time that is not a number.
-    if !(first < longest as f64) {
+    if first.is_nan() || first >= longest as f64 {
         return longest;
     }
     let mut frames = first as i64;
