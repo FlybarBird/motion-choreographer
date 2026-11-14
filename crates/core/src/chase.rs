@@ -86,8 +86,16 @@ impl Chase {
         std::mem::take(&mut self.jumped)
     }
 
+    /// Where the code should be at `t`, in frames since midnight.
     fn expected(&self, t: f64) -> f64 {
-        self.last_frames + (t - self.last_time) * self.rate.fps()
+        let day = self.rate.frames_per_day() as f64;
+        (self.last_frames + (t - self.last_time) * self.rate.fps()).rem_euclid(day)
+    }
+
+    /// How far `a` is ahead of `b`, the short way round midnight.
+    fn ahead(&self, a: f64, b: f64) -> f64 {
+        let day = self.rate.frames_per_day() as f64;
+        (a - b + day / 2.0).rem_euclid(day) - day / 2.0
     }
 
     pub fn on_reading(&mut self, r: CodeReading, t: f64) {
@@ -103,8 +111,8 @@ impl Chase {
         // Rolling code advances; a source that repeats one frame is parked.
         let in_sequence = self.have_reading
             && !r.locate
-            && r.frames - self.last_frames > 0.25
-            && (r.frames - self.expected(t)).abs() <= JUMP_FRAMES;
+            && self.ahead(r.frames, self.last_frames) > 0.25
+            && self.ahead(r.frames, self.expected(t)).abs() <= JUMP_FRAMES;
         match self.state {
             ChaseState::NoCode | ChaseState::RateMismatch => {
                 self.state = ChaseState::Syncing;
@@ -299,5 +307,38 @@ mod tests {
         // A locate while rolling is a jump.
         c.on_reading(CodeReading { frames: 9000.0, rate: CodeRate::F25, locate: true }, t);
         assert_eq!(c.state(), ChaseState::Syncing);
+    }
+
+    #[test]
+    fn code_that_runs_through_midnight_stays_locked() {
+        // Time-of-day code: 23:59:58:20 rolls on to 00:00:00:09.
+        let day = R.frames_per_day() as f64;
+        let mut c = Chase::new(R, 8, 1.0);
+        let mut t = roll(&mut c, day - 30.0, 30, 0.0);
+        assert_eq!(c.state(), ChaseState::Locked);
+        for i in 0..10 {
+            c.tick(t);
+            c.on_reading(reading(i as f64), t);
+            assert_eq!(c.state(), ChaseState::Locked, "{i} frames after midnight");
+            assert!(!c.take_jump(), "midnight is not a relocation");
+            t += 1.0 / 25.0;
+        }
+        // Between readings the code is still frames since midnight.
+        assert!((c.code_at(t - 0.02).unwrap() - 9.5).abs() < 1e-6);
+        // Freewheeling over midnight carries on from zero as well.
+        let mut c = Chase::new(R, 8, 1.0);
+        let t = roll(&mut c, day - 10.0, 10, 0.0);
+        c.tick(t + 3.0 / 25.0);
+        assert_eq!(c.state(), ChaseState::Freewheel);
+        assert!((c.code_at(t + 3.0 / 25.0).unwrap() - 3.0).abs() < 1e-6);
+        c.on_reading(reading(3.0), t + 3.0 / 25.0);
+        assert_eq!(c.state(), ChaseState::Locked);
+
+        // Code that starts just after midnight having stopped just before it is still a jump.
+        let mut c = Chase::new(R, 8, 1.0);
+        let t = roll(&mut c, day - 500.0, 10, 0.0);
+        c.on_reading(reading(20.0), t);
+        assert_eq!(c.state(), ChaseState::Syncing);
+        assert!(c.take_jump());
     }
 }
