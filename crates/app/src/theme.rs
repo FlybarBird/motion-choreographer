@@ -214,13 +214,37 @@ pub fn filled(label: impl Into<String>, fill: Color32) -> egui::Button<'static> 
     egui::Button::new(egui::RichText::new(label).font(semibold(13.0)).color(ink_on(fill))).fill(fill).stroke(Stroke::NONE)
 }
 
+const CHIP_PADDING: egui::Vec2 = egui::vec2(14.0, 6.0);
+
+fn chip_font() -> FontId {
+    semibold(10.5)
+}
+
+/// How wide a chip with this word on it is.
+pub fn chip_width(ui: &egui::Ui, text: &str) -> f32 {
+    ui.painter().layout_no_wrap(text.to_string(), chip_font(), Color32::PLACEHOLDER).size().x + CHIP_PADDING.x
+}
+
+/// How high every chip is.
+pub fn chip_height(ui: &egui::Ui) -> f32 {
+    ui.ctx().fonts_mut(|f| f.row_height(&chip_font())) + CHIP_PADDING.y
+}
+
 /// A chip of state: a short word on a plate, solid when the state is one to act on.
 pub fn chip(ui: &mut egui::Ui, text: &str, color: Color32, solid: bool) -> egui::Response {
+    chip_within(ui, text, color, solid, f32::INFINITY)
+}
+
+/// A chip no wider than `max_width`: words that do not fit are cut short with an ellipsis.
+/// A screen reader, and a test, still find all of them.
+pub fn chip_within(ui: &mut egui::Ui, text: &str, color: Color32, solid: bool, max_width: f32) -> egui::Response {
     let (fill, ink, edge) =
         if solid { (color, ink_on(color), color) } else { (with_alpha(color, 30), color, with_alpha(color, 110)) };
-    let galley = ui.painter().layout_no_wrap(text.to_string(), semibold(10.5), ink);
+    let mut job = egui::text::LayoutJob::simple_singleline(text.to_string(), chip_font(), ink);
+    job.wrap = egui::text::TextWrapping::truncate_at_width((max_width - CHIP_PADDING.x).max(0.0));
+    let galley = ui.painter().layout_job(job);
     // Sized to its word, whatever the height of the row it sits in.
-    let (rect, response) = ui.allocate_exact_size(galley.size() + egui::vec2(14.0, 6.0), egui::Sense::hover());
+    let (rect, response) = ui.allocate_exact_size(galley.size() + CHIP_PADDING, egui::Sense::hover());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, text));
     if ui.is_rect_visible(rect) {
         ui.painter().rect(rect, 5.0, fill, Stroke::new(1.0, edge), egui::StrokeKind::Inside);
