@@ -6,8 +6,7 @@ use crate::compile::{refresh_auto, suggested_duration};
 use crate::eval::{ease_keys, split_keys, Evaluator};
 use crate::pose::{Axis, Preset, Project};
 use crate::song::{
-    Accepted, ClipBody, Ease, FromPose, Interp, Invalid, Key, Marker, MediaClip, MotionClip,
-    PresetRef, Song, Track,
+    Accepted, ClipBody, Ease, FromPose, Interp, Invalid, Key, Marker, MediaClip, MotionClip, PresetRef, Song, Track,
 };
 use crate::time::Timecode;
 use std::collections::BTreeMap;
@@ -33,11 +32,9 @@ impl fmt::Display for Refusal {
             Refusal::Invalid(i) => write!(f, "{i}"),
             Refusal::NotAPresetMove => write!(f, "Only a preset move has this setting"),
             Refusal::NotKeys => write!(f, "Only a keys clip has keys"),
-            Refusal::ConvertFirst(a) => write!(
-                f,
-                "A preset move drives {} here. Convert it to keys to add a key",
-                a.label().to_lowercase()
-            ),
+            Refusal::ConvertFirst(a) => {
+                write!(f, "A preset move drives {} here. Convert it to keys to add a key", a.label().to_lowercase())
+            }
             Refusal::KeysBeyondTrim => write!(f, "The clip cannot be trimmed past its keys"),
             Refusal::NoRoom => write!(f, "There is no room here"),
             Refusal::Empty => write!(f, "Nothing is selected"),
@@ -70,12 +67,7 @@ fn grow(song: &mut Song, end: i64) {
 
 /// Drop a preset on a frame. The move ends on the preset and starts from the
 /// pose already programmed there. Returns the new clip's id.
-pub fn insert_preset_move(
-    song: &Song,
-    project: &Project,
-    preset: &Preset,
-    frame: i64,
-) -> Result<(Song, String), Refusal> {
+pub fn insert_preset_move(song: &Song, project: &Project, preset: &Preset, frame: i64) -> Result<(Song, String), Refusal> {
     let mut next = song.clone();
     let frame = frame.max(0);
     let id = next.next_id("c");
@@ -104,21 +96,12 @@ pub fn drop_preview(song: &Song, project: &Project, preset: &Preset, frame: i64)
     let (next, id) = insert_preset_move(song, project, preset, frame)?;
     let clip = next.motion_clip(&id).ok_or(Refusal::NotFound)?;
     let wanted = suggested_duration(&next, clip, project).unwrap_or(clip.duration_frames);
-    let from_name = song
-        .motion
-        .iter()
-        .filter(|c| c.end_frame() <= frame.max(0))
-        .max_by_key(|c| c.start_frame)
-        .and_then(|c| match &c.body {
+    let from_name =
+        song.motion.iter().filter(|c| c.end_frame() <= frame.max(0)).max_by_key(|c| c.start_frame).and_then(|c| match &c.body {
             ClipBody::PresetMove { to, .. } => Some(to.name.clone()),
             _ => None,
         });
-    Ok(DropPreview {
-        start_frame: clip.start_frame,
-        duration_frames: clip.duration_frames,
-        wanted_frames: wanted,
-        from_name,
-    })
+    Ok(DropPreview { start_frame: clip.start_frame, duration_frames: clip.duration_frames, wanted_frames: wanted, from_name })
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -396,10 +379,7 @@ pub fn add_key(song: &Song, project: &Project, axes: &[Axis], frame: i64) -> Edi
             .cloned();
         let extended = prev.is_some_and(|p| {
             let blocked = next.motion.iter().any(|o| {
-                o.id != p.id
-                    && o.axes.iter().any(|a| p.has_axis(*a))
-                    && o.start_frame < frame
-                    && o.end_frame() > p.start_frame
+                o.id != p.id && o.axes.iter().any(|a| p.has_axis(*a)) && o.start_frame < frame && o.end_frame() > p.start_frame
             });
             if blocked {
                 return false;
@@ -473,14 +453,7 @@ pub fn add_key_at(song: &Song, project: &Project, clip: &str, axis: Axis, local:
 
 /// Move selected keys by a frame and value offset. Keys keep their order: each
 /// is clamped between its unselected neighbours and inside the clip.
-pub fn shift_keys(
-    song: &Song,
-    project: &Project,
-    clip: &str,
-    selection: &[(Axis, usize)],
-    dframe: i64,
-    dvalue: f64,
-) -> Edit {
+pub fn shift_keys(song: &Song, project: &Project, clip: &str, selection: &[(Axis, usize)], dframe: i64, dvalue: f64) -> Edit {
     if selection.is_empty() {
         return Err(Refusal::Empty);
     }
@@ -515,15 +488,7 @@ pub fn shift_keys(
     finish(next, project)
 }
 
-pub fn move_key(
-    song: &Song,
-    project: &Project,
-    clip: &str,
-    axis: Axis,
-    index: usize,
-    new_local: i64,
-    new_value: f64,
-) -> Edit {
+pub fn move_key(song: &Song, project: &Project, clip: &str, axis: Axis, index: usize, new_local: i64, new_value: f64) -> Edit {
     let k = *song.motion_clip(clip).ok_or(Refusal::NotFound)?.keys(axis).get(index).ok_or(Refusal::NotFound)?;
     shift_keys(song, project, clip, &[(axis, index)], new_local - k.frame, new_value - k.value)
 }
@@ -586,7 +551,7 @@ pub fn delete_keys(song: &Song, project: &Project, clip: &str, selection: &[(Axi
     }
     let mut next = song.clone();
     let mut sorted = selection.to_vec();
-    sorted.sort_by(|a, b| b.1.cmp(&a.1));
+    sorted.sort_by_key(|a| std::cmp::Reverse(a.1));
     for (axis, idx) in sorted {
         let keys = keys_mut(&mut next, clip, axis)?;
         if idx < keys.len() {
@@ -721,8 +686,8 @@ pub fn set_song_name(song: &Song, project: &Project, name: &str) -> Edit {
 }
 
 pub fn set_song_start(song: &Song, project: &Project, start_tc: &str) -> Edit {
-    let tc = Timecode::parse_at(start_tc, project.rate)
-        .ok_or_else(|| Refusal::Invalid(Invalid::BadStart(start_tc.to_string())))?;
+    let tc =
+        Timecode::parse_at(start_tc, project.rate).ok_or_else(|| Refusal::Invalid(Invalid::BadStart(start_tc.to_string())))?;
     let mut next = song.clone();
     next.start_tc = tc.to_string();
     finish(next, project)
@@ -738,8 +703,7 @@ pub fn set_song_length(song: &Song, project: &Project, frames: i64) -> Edit {
 /// Record who accepted a too-fast move. Any later change to the clip clears it.
 pub fn accept_issues(song: &Song, project: &Project, clip: &str, by: &str, at: &str) -> Edit {
     let mut next = song.clone();
-    next.motion_clip_mut(clip).ok_or(Refusal::NotFound)?.accepted =
-        Some(Accepted { by: by.into(), at: at.into() });
+    next.motion_clip_mut(clip).ok_or(Refusal::NotFound)?.accepted = Some(Accepted { by: by.into(), at: at.into() });
     finish(next, project)
 }
 
@@ -1059,7 +1023,8 @@ mod tests {
         };
         let mut applied = 0;
         for _ in 0..3000 {
-            let pick = if song.motion.is_empty() { None } else { Some(song.motion[rnd(song.motion.len() as i64) as usize].id.clone()) };
+            let pick =
+                if song.motion.is_empty() { None } else { Some(song.motion[rnd(song.motion.len() as i64) as usize].id.clone()) };
             let result = match (rnd(9), pick) {
                 (0, _) | (_, None) => insert_preset_move(&song, &p, &presets[rnd(3) as usize], rnd(1400)).map(|r| r.0),
                 (1, Some(id)) => move_clip(&song, &p, &id, rnd(1400)),

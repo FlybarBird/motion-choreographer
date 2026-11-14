@@ -355,9 +355,7 @@ impl Song {
 
     /// The motion clip on `axis` that covers `frame`, if any.
     pub fn clip_on_axis_at(&self, axis: Axis, frame: i64) -> Option<&MotionClip> {
-        self.motion
-            .iter()
-            .find(|c| c.has_axis(axis) && c.start_frame <= frame && frame < c.end_frame())
+        self.motion.iter().find(|c| c.has_axis(axis) && c.start_frame <= frame && frame < c.end_frame())
     }
 
     /// End of the last clip or marker; the song can never be shorter than this.
@@ -373,12 +371,8 @@ impl Song {
             return Err(Invalid::BadStart(self.start_tc.clone()));
         }
         let mut ids = HashSet::new();
-        for id in self
-            .motion
-            .iter()
-            .map(|c| &c.id)
-            .chain(self.media.iter().map(|c| &c.id))
-            .chain(self.markers.iter().map(|m| &m.id))
+        for id in
+            self.motion.iter().map(|c| &c.id).chain(self.media.iter().map(|c| &c.id)).chain(self.markers.iter().map(|m| &m.id))
         {
             if !ids.insert(id.as_str()) {
                 return Err(Invalid::DuplicateId(id.clone()));
@@ -425,10 +419,9 @@ impl Song {
                 for (axis, keys) in curves {
                     let ordered = keys.windows(2).all(|w| w[0].frame < w[1].frame);
                     let inside = keys.iter().all(|k| k.frame >= 0 && k.frame <= c.duration_frames);
-                    let finite = keys.iter().all(|k| {
-                        k.value.is_finite()
-                            && k.in_handle.iter().chain(k.out_handle.iter()).all(|v| v.is_finite())
-                    });
+                    let finite = keys
+                        .iter()
+                        .all(|k| k.value.is_finite() && k.in_handle.iter().chain(k.out_handle.iter()).all(|v| v.is_finite()));
                     if !ordered || !inside || !finite || !c.has_axis(*axis) {
                         return Err(Invalid::BadKeys { clip: c.id.clone(), axis: *axis });
                     }

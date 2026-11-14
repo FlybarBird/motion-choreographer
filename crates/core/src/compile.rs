@@ -21,9 +21,7 @@ pub enum Issue {
 impl Issue {
     pub fn clip_id(&self) -> Option<&str> {
         match self {
-            Issue::TooFast { clip, .. }
-            | Issue::TooMuchAcceleration { clip, .. }
-            | Issue::Jump { clip, .. } => Some(clip),
+            Issue::TooFast { clip, .. } | Issue::TooMuchAcceleration { clip, .. } | Issue::Jump { clip, .. } => Some(clip),
             Issue::OutOfRange { clip, .. } => clip.as_deref(),
             Issue::KeepOut { .. } => None,
         }
@@ -47,23 +45,18 @@ impl Issue {
 
     pub fn message(&self) -> String {
         match self {
-            Issue::TooFast { axis, speed, limit, .. } => format!(
-                "{} is too fast: {} per second, limit {}",
-                axis.label(),
-                axis.format(*speed),
-                axis.format(*limit)
-            ),
+            Issue::TooFast { axis, speed, limit, .. } => {
+                format!("{} is too fast: {} per second, limit {}", axis.label(), axis.format(*speed), axis.format(*limit))
+            }
             Issue::TooMuchAcceleration { axis, .. } => {
                 format!("{} starts or stops too sharply", axis.label())
             }
             Issue::OutOfRange { axis, value, .. } => {
                 format!("{} reaches {}, outside its range", axis.label(), axis.format(*value))
             }
-            Issue::Jump { axis, distance, .. } => format!(
-                "{} steps by {} at the start of this move",
-                axis.label(),
-                axis.format(*distance)
-            ),
+            Issue::Jump { axis, distance, .. } => {
+                format!("{} steps by {} at the start of this move", axis.label(), axis.format(*distance))
+            }
             Issue::KeepOut { rule, .. } => format!("Keep-out rule broken: {rule}"),
         }
     }
@@ -80,10 +73,7 @@ impl Compiled {
     /// Issues that stop Arm: everything except overruns on clips the operator accepted.
     pub fn blocking<'a>(&'a self, song: &'a Song) -> impl Iterator<Item = &'a Issue> {
         self.issues.iter().filter(move |i| {
-            let accepted = i
-                .clip_id()
-                .and_then(|id| song.motion_clip(id))
-                .is_some_and(|c| c.accepted.is_some());
+            let accepted = i.clip_id().and_then(|id| song.motion_clip(id)).is_some_and(|c| c.accepted.is_some());
             !(i.acceptable() && accepted)
         })
     }
@@ -107,12 +97,7 @@ pub fn compile(song: &Song, project: &Project) -> Compiled {
         for (clip, frame, distance) in &jumps {
             // A step on frame 0 is covered by the positioning move on Arm.
             if *frame > 0 {
-                issues.push(Issue::Jump {
-                    clip: song.motion[*clip].id.clone(),
-                    axis,
-                    frame: *frame,
-                    distance: *distance,
-                });
+                issues.push(Issue::Jump { clip: song.motion[*clip].id.clone(), axis, frame: *frame, distance: *distance });
             }
         }
 
@@ -240,11 +225,8 @@ pub fn auto_duration(from: &Pose, to: &Pose, axes: &[Axis], ease: Ease, project:
         return rate.nominal();
     }
     let mut frames = ((seconds * fps) - 1e-9).ceil().max(1.0) as i64;
-    let fits = |frames: i64| {
-        axes.iter().all(|&axis| {
-            move_fits(from.get(axis), to.get(axis), ease, frames, project.axes.get(axis), fps)
-        })
-    };
+    let fits =
+        |frames: i64| axes.iter().all(|&axis| move_fits(from.get(axis), to.get(axis), ease, frames, project.axes.get(axis), fps));
     let mut guard = 0;
     while !fits(frames) && guard < 400 {
         frames += (frames / 20).max(1);
@@ -295,11 +277,7 @@ pub fn refresh_auto(song: &mut Song, project: &Project) {
         let room = song
             .motion
             .iter()
-            .filter(|o| {
-                o.id != clip.id
-                    && o.start_frame >= clip.start_frame
-                    && o.axes.iter().any(|a| clip.has_axis(*a))
-            })
+            .filter(|o| o.id != clip.id && o.start_frame >= clip.start_frame && o.axes.iter().any(|a| clip.has_axis(*a)))
             .map(|o| o.start_frame - clip.start_frame)
             .min()
             .unwrap_or(i64::MAX);
@@ -404,11 +382,8 @@ mod tests {
         let mut song = Song::new("s", "S", "01:00:00:00", 500);
         let mut pinned = pan_move(50, 200, 30.0, false);
         if let ClipBody::PresetMove { from, .. } = &mut pinned.body {
-            *from = FromPose::Pinned(PresetRef {
-                preset_id: "x".into(),
-                name: "X".into(),
-                pose: Pose { pan: 15.0, ..Pose::home() },
-            });
+            *from =
+                FromPose::Pinned(PresetRef { preset_id: "x".into(), name: "X".into(), pose: Pose { pan: 15.0, ..Pose::home() } });
         }
         song.motion.push(pinned);
         let c = compile(&song, &p);

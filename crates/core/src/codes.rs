@@ -188,13 +188,7 @@ pub fn artnet_parse(packet: &[u8]) -> Option<CodeReading> {
         0..=3 => CodeRate::from_wire(packet[18]),
         _ => return None,
     };
-    let tc = Timecode {
-        f: packet[14],
-        s: packet[15],
-        m: packet[16],
-        h: packet[17],
-        drop_frame: rate == CodeRate::F30Df,
-    };
+    let tc = Timecode { f: packet[14], s: packet[15], m: packet[16], h: packet[17], drop_frame: rate == CodeRate::F30Df };
     tc.is_valid(rate.counting_rate()).then(|| CodeReading {
         frames: tc.to_frames(rate.counting_rate()) as f64,
         rate,
@@ -222,7 +216,12 @@ mod tests {
 
     #[test]
     fn mtc_quarter_frames_decode_with_the_two_frame_correction() {
-        for (rate, wire) in [(FrameRate::F25, CodeRate::F25), (FrameRate::F2997Df, CodeRate::F30Df), (FrameRate::F30, CodeRate::F30), (FrameRate::F24, CodeRate::F24)] {
+        for (rate, wire) in [
+            (FrameRate::F25, CodeRate::F25),
+            (FrameRate::F2997Df, CodeRate::F30Df),
+            (FrameRate::F30, CodeRate::F30),
+            (FrameRate::F24, CodeRate::F24),
+        ] {
             let mut d = MtcDecoder::new();
             let start = Timecode::parse_at("01:00:10:00", rate).unwrap().to_frames(rate);
             // Quarter frames advance the code by two frames per group of eight.
@@ -277,7 +276,12 @@ mod tests {
 
     #[test]
     fn artnet_round_trip_and_rejects() {
-        for (rate, wire) in [(FrameRate::F24, CodeRate::F24), (FrameRate::F25, CodeRate::F25), (FrameRate::F2997Df, CodeRate::F30Df), (FrameRate::F30, CodeRate::F30)] {
+        for (rate, wire) in [
+            (FrameRate::F24, CodeRate::F24),
+            (FrameRate::F25, CodeRate::F25),
+            (FrameRate::F2997Df, CodeRate::F30Df),
+            (FrameRate::F30, CodeRate::F30),
+        ] {
             let tc = Timecode::parse_at("01:00:10:07", rate).unwrap();
             let p = artnet_build(tc, wire);
             let r = artnet_parse(&p).unwrap();

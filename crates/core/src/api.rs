@@ -284,10 +284,16 @@ pub struct LogRecord {
 pub enum WsMsg {
     Status(Box<Status>),
     /// The working song changed on the server (another client, or a record pass).
-    SongChanged { song_id: String, edit_counter: u64, reason: String },
+    SongChanged {
+        song_id: String,
+        edit_counter: u64,
+        reason: String,
+    },
     SongListChanged,
     PresetsChanged,
     MediaChanged,
     ProjectChanged,
-    Log { record: LogRecord },
+    Log {
+        record: LogRecord,
+    },
 }

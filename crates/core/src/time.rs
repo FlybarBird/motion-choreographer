@@ -16,13 +16,7 @@ pub enum FrameRate {
 }
 
 impl FrameRate {
-    pub const ALL: [FrameRate; 5] = [
-        FrameRate::F23976,
-        FrameRate::F24,
-        FrameRate::F25,
-        FrameRate::F2997Df,
-        FrameRate::F30,
-    ];
+    pub const ALL: [FrameRate; 5] = [FrameRate::F23976, FrameRate::F24, FrameRate::F25, FrameRate::F2997Df, FrameRate::F30];
 
     /// Real frames per second as a fraction `num / den`.
     pub fn num(self) -> i64 {
@@ -102,8 +96,7 @@ impl Serialize for FrameRate {
 impl<'de> Deserialize<'de> for FrameRate {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let s = String::deserialize(d)?;
-        FrameRate::parse(&s)
-            .ok_or_else(|| serde::de::Error::custom(format!("unknown frame rate '{s}'")))
+        FrameRate::parse(&s).ok_or_else(|| serde::de::Error::custom(format!("unknown frame rate '{s}'")))
     }
 }
 
@@ -156,7 +149,7 @@ impl Timecode {
         if self.h > 23 || self.m > 59 || self.s > 59 || self.f as i64 >= rate.nominal() {
             return false;
         }
-        if rate.drop_frame() && self.s == 0 && self.f < 2 && self.m % 10 != 0 {
+        if rate.drop_frame() && self.s == 0 && self.f < 2 && !self.m.is_multiple_of(10) {
             return false;
         }
         true
