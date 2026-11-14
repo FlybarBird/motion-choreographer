@@ -1,6 +1,6 @@
 //! REST for commands and edits, WebSocket for status. All under `/api/v1`.
 
-use crate::engine::{spawn_tick, Config, Fail, MediaTicket, Push, Shared, Show, StageUpload, Stamp};
+use crate::engine::{halt_for_exit, spawn_tick, Config, Fail, MediaTicket, Push, Shared, Show, StageUpload, Stamp};
 use crate::media::{self, Ingested};
 use crate::video;
 use axum::body::Bytes;
@@ -631,6 +631,39 @@ impl Drop for Running {
     }
 }
 
+/// How long a stopping server waits for the rigs to report standing still.
+const HALT_ON_EXIT: Duration = Duration::from_secs(3);
+
+/// Resolves when the server is told to stop: by its owner, Ctrl-C, or the signals
+/// a terminal closing, `kill` and a system shutdown send.
+async fn asked_to_stop(owner: tokio::sync::oneshot::Receiver<()>) {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let (mut term, mut hup) = match (signal(SignalKind::terminate()), signal(SignalKind::hangup())) {
+            (Ok(term), Ok(hup)) => (term, hup),
+            _ => {
+                tokio::select! {
+                    _ = owner => {}
+                    _ = tokio::signal::ctrl_c() => {}
+                }
+                return;
+            }
+        };
+        tokio::select! {
+            _ = owner => {}
+            _ = tokio::signal::ctrl_c() => {}
+            _ = term.recv() => {}
+            _ = hup.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    tokio::select! {
+        _ = owner => {}
+        _ = tokio::signal::ctrl_c() => {}
+    }
+}
+
 /// Open the data folder and serve it on `bind`.
 pub fn start(cfg: &Config, bind: &str, access_key: Option<String>) -> Result<Running, String> {
     let addr: SocketAddr = bind.parse().map_err(|_| format!("{bind} is not an address like 127.0.0.1:8787"))?;
@@ -652,9 +685,11 @@ pub fn start(cfg: &Config, bind: &str, access_key: Option<String>) -> Result<Run
             rt.block_on(async move {
                 let listener = tokio::net::TcpListener::from_std(listener).expect("listener");
                 let shutdown = async move {
-                    tokio::select! {
-                        _ = stop_rx => {}
-                        _ = tokio::signal::ctrl_c() => {}
+                    asked_to_stop(stop_rx).await;
+                    // The rigs are stopped before anything else is wound down.
+                    let stopped = tokio::task::spawn_blocking(move || halt_for_exit(&halting, HALT_ON_EXIT)).await;
+                    if !matches!(stopped, Ok(true)) {
+                        eprintln!("ptz-server: a rig did not confirm that it stopped. Use its own stop control");
                     }
                 };
                 let service = router(app).into_make_service();

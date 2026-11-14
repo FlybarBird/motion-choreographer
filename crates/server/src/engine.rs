@@ -1275,6 +1275,7 @@ impl Show {
 
     fn who(&self, client: &str) -> String {
         match &self.lease {
+            _ if client == STOPPING => "the server, stopping".to_string(),
             Some(l) if l.client == client => l.name.clone(),
             _ => format!("watcher {client}"),
         }
@@ -2317,6 +2318,41 @@ impl SteadyClock {
 
     fn reset(&mut self) {
         self.last = None;
+    }
+}
+
+/// Who the run log names for the E-Stop a stopping server presses. No client has this id.
+const STOPPING: &str = "";
+
+/// The server is about to exit. Stop every rig the way E-Stop does and wait, up to
+/// `timeout`, until each reports standing still. A rig keeps its last speed command
+/// when its controller goes away, so this has to finish before the process does.
+/// Returns false when a rig had not confirmed in time.
+pub fn halt_for_exit(show: &Shared, timeout: Duration) -> bool {
+    {
+        let mut s = show.lock().unwrap_or_else(|e| e.into_inner());
+        let quiet = s.transport.output == Output::Rehearse && s.units.iter().all(|u| u.rig.is_simulator());
+        if quiet {
+            return true;
+        }
+        let was = s.transport;
+        if was.estop || s.act(STOPPING, Action::Estop, &TransportRequest::default()).is_err() {
+            for u in &mut s.units {
+                u.rig.stop();
+            }
+        }
+        s.log("server_stopping", json!({ "output": was.output, "run": was.run }));
+    }
+    let deadline = Instant::now() + timeout;
+    loop {
+        let moving = show.lock().unwrap_or_else(|e| e.into_inner()).units.iter().any(|u| u.rig.is_moving());
+        if !moving {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
     }
 }
 

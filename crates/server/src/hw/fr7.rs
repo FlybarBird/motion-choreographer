@@ -554,6 +554,10 @@ impl Worker {
             s.head = head;
             let now = Instant::now();
             s.read_at = ReadTimes { pan_tilt: now, zoom: now, focus: now };
+            // A server that died while live leaves the head on its last speed command.
+            if s.mode == Mode::Idle {
+                s.mode = Mode::Stop;
+            }
         }
         let before = self.state.lock().unwrap_or_else(|e| e.into_inner()).head;
 

@@ -67,6 +67,11 @@ fn connect(api: &Api, rigs: &[Rig]) -> Project {
         c.hardware && c.adapters.len() == 2 && c.adapters.iter().all(|a| a.connected) && c.adapters[1].calibrated == Some(true)
     };
     wait_for(api, |s| s.cameras.len() == rigs.len() && s.cameras.iter().all(ready));
+    // On connecting the server sends each device a stop. After that, nothing until Arm.
+    for rig in rigs {
+        rig.fr7.settle_after_connect();
+        rig.pod.settle_after_connect();
+    }
     project
 }
 
