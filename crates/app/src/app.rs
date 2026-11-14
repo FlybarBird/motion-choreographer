@@ -237,6 +237,7 @@ impl Shell {
         }
 
         let before = serde_json::to_string(&self.dock).unwrap_or_default();
+        self.session.rig.keyboard = false;
         egui::CentralPanel::default().frame(egui::Frame::new().fill(NAVY)).show(ui, |ui| {
             let style = dock_style(ui.style());
             let mut viewer = Viewer { session: &mut self.session };
@@ -546,7 +547,8 @@ impl Shell {
             s.act(Action::Cue);
         }
         let step = if shift { 10 } else { 1 };
-        let can_seek = s.status.guidance.allows(Action::Seek);
+        // While the rig controller has the keyboard, the arrows drive the rig.
+        let can_seek = s.status.guidance.allows(Action::Seek) && !s.rig.keyboard;
         if pressed(Key::ArrowLeft) && can_seek {
             let f = s.playhead().round() as i64 - step;
             s.seek(f);

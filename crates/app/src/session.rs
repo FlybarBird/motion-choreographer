@@ -49,7 +49,12 @@ pub struct Session {
     pub peaks_requested: HashMap<String, u32>,
     pub frames: HashMap<(String, i64), Option<egui::TextureHandle>>,
     pub frame_jpegs: Vec<(String, i64, Vec<u8>)>,
+    /// Axes Record writes, chosen on the axis lane headers.
     pub record_axes: Vec<ptz_core::Axis>,
+    /// Axis lanes selected for `K`.
+    pub axis_lanes: std::collections::BTreeSet<ptz_core::Axis>,
+    pub graph: crate::graph::Graph,
+    pub rig: crate::rig_ui::Controller,
     /// Where things were drawn last frame, for the UI tests.
     pub probe_timeline: Option<egui::Rect>,
     pub probe_presets: Vec<(String, egui::Rect)>,
@@ -115,6 +120,9 @@ impl Session {
             frames: HashMap::new(),
             frame_jpegs: Vec::new(),
             record_axes: vec![ptz_core::Axis::Pan, ptz_core::Axis::Tilt],
+            axis_lanes: Default::default(),
+            graph: Default::default(),
+            rig: Default::default(),
             probe_timeline: None,
             probe_presets: Vec::new(),
             probe_media: Vec::new(),
@@ -410,7 +418,34 @@ impl Session {
 
     // ---- transport ----
 
+    /// The axes Record writes: the server's while Record is on, this window's choice otherwise.
+    pub fn record_axes_shown(&self) -> &[ptz_core::Axis] {
+        if self.status.transport.record {
+            &self.status.record.axes
+        } else {
+            &self.record_axes
+        }
+    }
+
+    pub fn toggle_record_axis(&mut self, axis: ptz_core::Axis) {
+        if self.status.transport.record {
+            self.toast("Turn Record off to change which axes it writes", true);
+            return;
+        }
+        if self.record_axes.contains(&axis) {
+            self.record_axes.retain(|a| *a != axis);
+        } else {
+            self.record_axes.push(axis);
+            self.record_axes.sort();
+        }
+    }
+
     pub fn act(&mut self, action: Action) {
+        if action == Action::RecordOn && self.record_axes.is_empty() {
+            self.timeline.view.motion_open = true;
+            self.toast("Record-enable an axis first: click the red dot on an axis lane", true);
+            return;
+        }
         let req = match action {
             Action::RecordOn => TransportRequest { axes: Some(self.record_axes.clone()), ..Default::default() },
             _ => TransportRequest::default(),
