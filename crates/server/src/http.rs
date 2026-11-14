@@ -1,6 +1,6 @@
 //! REST for commands and edits, WebSocket for status. All under `/api/v1`.
 
-use crate::engine::{spawn_tick, Config, Fail, MediaTicket, Push, Shared, Show, Stamp};
+use crate::engine::{spawn_tick, Config, Fail, MediaTicket, Push, Shared, Show, StageUpload, Stamp};
 use crate::media::{self, Ingested};
 use crate::video;
 use axum::body::Bytes;
@@ -224,6 +224,73 @@ async fn get_project(State(app): State<App>) -> Json<Project> {
 
 async fn put_project(State(app): State<App>, Client(c): Client, Json(project): Json<Project>) -> Reply<Project> {
     Ok(Json(lock(&app.show).put_project(&c, project)?))
+}
+
+#[derive(Deserialize)]
+struct StageQuery {
+    #[serde(default)]
+    name: String,
+    unit: Option<ptz_core::camera::Unit>,
+    up: Option<ptz_core::camera::UpAxis>,
+}
+
+/// The largest mesh file accepted: the triangle limit with every vertex its own, and room to spare.
+const STAGE_MODEL_LIMIT: usize = 96 * 1024 * 1024;
+
+/// Check an uploaded mesh and write it beside the stage model, off the async threads and outside the show's lock.
+fn check_stage_model(bytes: &[u8], q: StageQuery, into: std::path::PathBuf) -> Result<StageUpload, String> {
+    let mesh = ptz_scene::mesh::Mesh::from_bytes(bytes)?;
+    if mesh.triangles.len() > ptz_scene::MAX_TRIANGLES {
+        return Err(format!(
+            "it has {} triangles; the most that can be shown is {}",
+            mesh.triangles.len(),
+            ptz_scene::MAX_TRIANGLES
+        ));
+    }
+    let bounds = mesh.bounds().ok_or("it has no triangles")?;
+    let (min, max) = (bounds.min.map(f64::from), bounds.max.map(f64::from));
+    let largest = (0..3).map(|i| max[i] - min[i]).fold(0.0, f64::max);
+    if !(largest.is_finite() && largest > 0.0) {
+        return Err("it has no size".into());
+    }
+    let name = q.name.rsplit(['/', '\\']).next().unwrap_or("").trim().to_string();
+    let name: String = name.chars().filter(|c| !c.is_control()).take(120).collect();
+    let dir = into.parent().ok_or("the stage folder could not be found")?;
+    std::fs::create_dir_all(dir).map_err(|e| format!("the stage folder could not be made: {e}"))?;
+    let file = dir.join(format!("upload-{}.tmp", std::process::id()));
+    std::fs::write(&file, bytes).map_err(|e| format!("it could not be written: {e}"))?;
+    Ok(StageUpload {
+        name: if name.is_empty() { "Stage model".into() } else { name },
+        unit: q.unit.unwrap_or_else(|| ptz_core::camera::Unit::guess(largest)),
+        up: q.up.unwrap_or_default(),
+        triangles: mesh.triangles.len() as u64,
+        min,
+        max,
+        file,
+    })
+}
+
+async fn post_stage_model(State(app): State<App>, Client(c): Client, Query(q): Query<StageQuery>, body: Bytes) -> Reply<Project> {
+    let into = {
+        let s = lock(&app.show);
+        s.may_change_stage(&c)?;
+        s.storage.stage_model_path()
+    };
+    let checked = tokio::task::spawn_blocking(move || check_stage_model(&body, q, into))
+        .await
+        .map_err(|_| Fail::invalid("The stage model was not imported: the importer stopped unexpectedly"))?
+        .map_err(|why| Fail::invalid(format!("The stage model was not imported: {why}")))?;
+    Ok(Json(lock(&app.show).set_stage_model(&c, checked)?))
+}
+
+async fn get_stage_model(State(app): State<App>) -> Result<Response, Fail> {
+    let path = lock(&app.show).stage_model_file()?;
+    let bytes = tokio::fs::read(&path).await.map_err(Fail::io)?;
+    Ok(([(axum::http::header::CONTENT_TYPE, "application/octet-stream")], bytes).into_response())
+}
+
+async fn delete_stage_model(State(app): State<App>, Client(c): Client) -> Reply<Project> {
+    Ok(Json(lock(&app.show).delete_stage_model(&c)?))
 }
 
 async fn get_inputs() -> Json<InputChoices> {
@@ -521,6 +588,13 @@ pub fn router(app: App) -> Router {
         .route("/media/{id}/peaks", get(media_peaks))
         .route("/media/{id}/start_tc", post(media_start_tc))
         .route("/media/{id}/frames/{file}", get(media_frame))
+        .route(
+            "/stage/model",
+            get(get_stage_model)
+                .post(post_stage_model)
+                .delete(delete_stage_model)
+                .layer(axum::extract::DefaultBodyLimit::max(STAGE_MODEL_LIMIT)),
+        )
         .route("/log", get(get_log));
     Router::new().nest(API, api).layer(axum::middleware::from_fn_with_state(app.clone(), gate)).with_state(app)
 }

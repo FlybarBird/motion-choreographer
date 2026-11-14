@@ -248,6 +248,11 @@ impl Storage {
     pub fn log_dir(&self) -> PathBuf {
         self.root.join("log")
     }
+
+    /// The imported stage model, in the compact mesh form the app uploads.
+    pub fn stage_model_path(&self) -> PathBuf {
+        self.root.join("stage").join("model.ptzmesh")
+    }
 }
 
 #[cfg(test)]

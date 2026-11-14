@@ -160,6 +160,11 @@ impl Api {
         Self::json(Self::finish(req.send(file)))
     }
 
+    pub fn post_bytes<T: DeserializeOwned>(&self, path: &str, bytes: &[u8]) -> ApiResult<T> {
+        let req = self.with_headers(self.agent.post(self.url(path))).content_type("application/octet-stream");
+        Self::json(Self::finish(req.send(bytes)))
+    }
+
     // ---- typed calls ----
 
     pub fn status(&self) -> ApiResult<Status> {
@@ -254,6 +259,28 @@ impl Api {
 
     pub fn delete_media(&self, id: &str) -> ApiResult<Vec<MediaInfo>> {
         self.delete(&format!("/media/{id}"))
+    }
+
+    /// Replace the stage model with a mesh file. `name` is the file it was read from.
+    pub fn upload_stage_model(
+        &self,
+        name: &str,
+        unit: crate::camera::Unit,
+        up: crate::camera::UpAxis,
+        mesh_file: &[u8],
+    ) -> ApiResult<Project> {
+        let word = |v: serde_json::Value| v.as_str().unwrap_or_default().to_string();
+        let (unit, up) = (word(serde_json::json!(unit)), word(serde_json::json!(up)));
+        self.post_bytes(&format!("/stage/model?name={}&unit={unit}&up={up}", encode_query(name)), mesh_file)
+    }
+
+    /// The stage model's mesh file.
+    pub fn stage_model(&self) -> ApiResult<Vec<u8>> {
+        self.get_bytes("/stage/model")
+    }
+
+    pub fn delete_stage_model(&self) -> ApiResult<Project> {
+        self.delete("/stage/model")
     }
 
     /// The waveform overview level that suits `samples_per_pixel`.
