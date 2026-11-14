@@ -1,0 +1,475 @@
+//! `pose_at` is the single definition of where the rig should be. The monitor,
+//! the compiler, the recorder and the hardware loop all use it.
+
+use crate::pose::{Axis, Pose};
+use crate::song::{ClipBody, Ease, FromPose, Interp, Key, MotionClip, Song};
+
+/// Value of the segment between two keys at `frame` (same units as key frames).
+pub fn segment_value(k0: &Key, k1: &Key, frame: f64) -> f64 {
+    let f0 = k0.frame as f64;
+    let f1 = k1.frame as f64;
+    let len = f1 - f0;
+    if len <= 0.0 || frame <= f0 {
+        return k0.value;
+    }
+    if frame >= f1 {
+        return k1.value;
+    }
+    match k0.interp {
+        Interp::Hold => k0.value,
+        Interp::Linear => k0.value + (k1.value - k0.value) * ((frame - f0) / len),
+        Interp::Bezier => {
+            let (p0, p1, p2, p3) = control_points(k0, k1);
+            let t = solve_t(p0.0, p1.0, p2.0, p3.0, frame);
+            cubic(p0.1, p1.1, p2.1, p3.1, t)
+        }
+    }
+}
+
+/// Control points of the bezier between two keys. Handle times are clamped so
+/// time never runs backwards.
+pub fn control_points(k0: &Key, k1: &Key) -> ((f64, f64), (f64, f64), (f64, f64), (f64, f64)) {
+    let f0 = k0.frame as f64;
+    let f1 = k1.frame as f64;
+    let len = (f1 - f0).max(0.0);
+    let out_x = k0.out_handle[0].clamp(0.0, len);
+    let in_x = k1.in_handle[0].clamp(-len, 0.0);
+    (
+        (f0, k0.value),
+        (f0 + out_x, k0.value + k0.out_handle[1]),
+        (f1 + in_x, k1.value + k1.in_handle[1]),
+        (f1, k1.value),
+    )
+}
+
+pub fn cubic(a: f64, b: f64, c: f64, d: f64, t: f64) -> f64 {
+    let u = 1.0 - t;
+    u * u * u * a + 3.0 * u * u * t * b + 3.0 * u * t * t * c + t * t * t * d
+}
+
+/// Solve `x(t) = x` for a monotonic cubic by bisection. Cannot diverge.
+pub fn solve_t(x0: f64, x1: f64, x2: f64, x3: f64, x: f64) -> f64 {
+    let (mut lo, mut hi) = (0.0f64, 1.0f64);
+    for _ in 0..60 {
+        let mid = 0.5 * (lo + hi);
+        if cubic(x0, x1, x2, x3, mid) < x {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    0.5 * (lo + hi)
+}
+
+/// Value of a key list at a clip-local frame. Holds before the first key and
+/// after the last. `None` when there are no keys.
+pub fn keys_value(keys: &[Key], local: f64) -> Option<f64> {
+    let first = keys.first()?;
+    if local <= first.frame as f64 {
+        return Some(first.value);
+    }
+    let last = keys.last()?;
+    if local >= last.frame as f64 {
+        return Some(last.value);
+    }
+    let i = keys.partition_point(|k| (k.frame as f64) <= local);
+    Some(segment_value(&keys[i - 1], &keys[i], local))
+}
+
+/// The two keys that reproduce a preset move's ease exactly.
+pub fn ease_keys(from: f64, to: f64, duration: i64, ease: Ease) -> [Key; 2] {
+    let d = duration as f64;
+    let delta = to - from;
+    match ease {
+        Ease::Linear => [Key::new(0, from, Interp::Linear), Key::new(duration, to, Interp::Linear)],
+        _ => {
+            let (x1, y1, x2, y2) = ease.bezier();
+            let mut k0 = Key::new(0, from, Interp::Bezier);
+            k0.out_handle = [x1 * d, y1 * delta];
+            let mut k1 = Key::new(duration, to, Interp::Bezier);
+            k1.in_handle = [(x2 - 1.0) * d, (y2 - 1.0) * delta];
+            [k0, k1]
+        }
+    }
+}
+
+/// Eased progress 0..1 at normalised time `t`.
+pub fn ease_value(ease: Ease, t: f64) -> f64 {
+    let [k0, k1] = ease_keys(0.0, 1.0, 1_000_000, ease);
+    segment_value(&k0, &k1, t.clamp(0.0, 1.0) * 1_000_000.0)
+}
+
+/// Steepest slope of the ease curve: how much faster than a linear move the
+/// peak speed is.
+pub fn peak_factor(ease: Ease) -> f64 {
+    use std::sync::OnceLock;
+    static CACHE: OnceLock<[f64; 4]> = OnceLock::new();
+    let table = CACHE.get_or_init(|| {
+        let mut out = [1.0; 4];
+        for (i, e) in Ease::ALL.into_iter().enumerate() {
+            const N: usize = 4000;
+            let mut prev = 0.0;
+            let mut peak: f64 = 0.0;
+            for s in 1..=N {
+                let v = ease_value(e, s as f64 / N as f64);
+                peak = peak.max((v - prev) * N as f64);
+                prev = v;
+            }
+            out[i] = peak;
+        }
+        out
+    });
+    table[Ease::ALL.iter().position(|e| *e == ease).unwrap_or(0)]
+}
+
+enum SegKind<'a> {
+    Move([Key; 2]),
+    Keys(&'a [Key]),
+}
+
+struct Seg<'a> {
+    start: i64,
+    duration: i64,
+    clip: usize,
+    /// Value the axis holds before the clip.
+    before: f64,
+    /// Value the axis holds once the clip has ended.
+    end: f64,
+    kind: SegKind<'a>,
+}
+
+impl Seg<'_> {
+    fn value(&self, local: f64) -> f64 {
+        match &self.kind {
+            SegKind::Move(keys) => segment_value(&keys[0], &keys[1], local),
+            SegKind::Keys(keys) => keys_value(keys, local).unwrap_or(self.before),
+        }
+    }
+}
+
+/// Resolved, per-axis view of a song for repeated evaluation.
+pub struct Evaluator<'a> {
+    song: &'a Song,
+    lanes: [Vec<Seg<'a>>; 5],
+}
+
+impl<'a> Evaluator<'a> {
+    pub fn new(song: &'a Song) -> Evaluator<'a> {
+        let mut order: Vec<usize> = (0..song.motion.len()).collect();
+        order.sort_by_key(|i| (song.motion[*i].start_frame, *i));
+        let lanes = Axis::ALL.map(|axis| {
+            let mut lane = Vec::new();
+            let mut prev_end = song.home_pose.get(axis);
+            for &i in &order {
+                let c = &song.motion[i];
+                if !c.has_axis(axis) {
+                    continue;
+                }
+                let seg = match &c.body {
+                    ClipBody::PresetMove { from, to, ease, .. } => {
+                        let start = match from {
+                            FromPose::Linked(_) => prev_end,
+                            FromPose::Pinned(p) => p.pose.get(axis),
+                        };
+                        let end = to.pose.get(axis);
+                        Seg {
+                            start: c.start_frame,
+                            duration: c.duration_frames,
+                            clip: i,
+                            before: prev_end,
+                            end,
+                            kind: SegKind::Move(ease_keys(start, end, c.duration_frames, *ease)),
+                        }
+                    }
+                    ClipBody::Keys { curves } => {
+                        let keys = curves.get(&axis).map(|v| v.as_slice()).unwrap_or(&[]);
+                        let end = keys.last().map(|k| k.value).unwrap_or(prev_end);
+                        Seg {
+                            start: c.start_frame,
+                            duration: c.duration_frames,
+                            clip: i,
+                            before: prev_end,
+                            end,
+                            kind: SegKind::Keys(keys),
+                        }
+                    }
+                };
+                prev_end = seg.end;
+                lane.push(seg);
+            }
+            lane
+        });
+        Evaluator { song, lanes }
+    }
+
+    fn seg_at(&self, axis: Axis, frame: f64) -> Option<&Seg<'a>> {
+        let lane = &self.lanes[axis.index()];
+        let i = lane.partition_point(|s| (s.start as f64) <= frame);
+        if i == 0 {
+            None
+        } else {
+            Some(&lane[i - 1])
+        }
+    }
+
+    pub fn axis_at(&self, axis: Axis, frame: f64) -> f64 {
+        match self.seg_at(axis, frame) {
+            None => self.song.home_pose.get(axis),
+            Some(s) => {
+                let local = frame - s.start as f64;
+                if local >= s.duration as f64 {
+                    s.end
+                } else {
+                    s.value(local)
+                }
+            }
+        }
+    }
+
+    pub fn pose_at(&self, frame: f64) -> Pose {
+        Pose::from_fn(|a| self.axis_at(a, frame))
+    }
+
+    /// Index into `song.motion` of the clip driving `axis` at `frame`.
+    pub fn clip_index_at(&self, axis: Axis, frame: i64) -> Option<usize> {
+        self.seg_at(axis, frame as f64)
+            .filter(|s| frame < s.start + s.duration)
+            .map(|s| s.clip)
+    }
+
+    /// Index of the clip that most recently started driving `axis` at or before
+    /// `frame`, whether or not it has ended.
+    pub fn last_clip_index(&self, axis: Axis, frame: i64) -> Option<usize> {
+        self.seg_at(axis, frame as f64).map(|s| s.clip)
+    }
+
+    /// Value the axis holds just before the given clip begins.
+    pub fn value_before(&self, clip: &MotionClip, axis: Axis) -> f64 {
+        self.lanes[axis.index()]
+            .iter()
+            .find(|s| self.song.motion[s.clip].id == clip.id)
+            .map(|s| s.before)
+            .unwrap_or_else(|| self.axis_at(axis, clip.start_frame as f64))
+    }
+
+    /// Value of the axis on the clip's first frame.
+    pub fn value_at_start(&self, clip: &MotionClip, axis: Axis) -> f64 {
+        self.lanes[axis.index()]
+            .iter()
+            .find(|s| self.song.motion[s.clip].id == clip.id)
+            .map(|s| s.value(0.0))
+            .unwrap_or_else(|| self.axis_at(axis, clip.start_frame as f64))
+    }
+
+    /// Clip starts on `axis` where the value steps: `(clip index, frame, distance)`.
+    pub fn jumps(&self, axis: Axis) -> Vec<(usize, i64, f64)> {
+        self.lanes[axis.index()]
+            .iter()
+            .filter_map(|s| {
+                let d = (s.value(0.0) - s.before).abs();
+                (d > 1e-9).then_some((s.clip, s.start, d))
+            })
+            .collect()
+    }
+}
+
+/// Where the rig should be on a whole frame.
+pub fn pose_at(song: &Song, frame: i64) -> Pose {
+    Evaluator::new(song).pose_at(frame as f64)
+}
+
+/// Where the rig should be between frames, for smooth output above the frame rate.
+pub fn pose_at_f(song: &Song, frame: f64) -> Pose {
+    Evaluator::new(song).pose_at(frame)
+}
+
+/// Split a key list at a clip-local frame so both halves reproduce the original
+/// curve exactly. The left half ends with a key at `at`; the right half starts
+/// with one. Right-half frames stay in the original clip-local numbering.
+pub fn split_keys(keys: &[Key], at: i64) -> (Vec<Key>, Vec<Key>) {
+    if keys.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    if let Some(i) = keys.iter().position(|k| k.frame == at) {
+        let mut left = keys[..=i].to_vec();
+        let right = keys[i..].to_vec();
+        if let Some(l) = left.last_mut() {
+            l.out_handle = [0.0, 0.0];
+        }
+        return (left, right);
+    }
+    let first = keys[0];
+    let last = keys[keys.len() - 1];
+    if at < first.frame {
+        let edge = Key::new(at, first.value, Interp::Hold);
+        let mut right = vec![edge];
+        right.extend_from_slice(keys);
+        return (vec![Key::new(at, first.value, Interp::Hold)], right);
+    }
+    if at > last.frame {
+        let mut left = keys.to_vec();
+        if let Some(l) = left.last_mut() {
+            l.interp = Interp::Hold;
+        }
+        left.push(Key::new(at, last.value, Interp::Hold));
+        return (left, vec![Key::new(at, last.value, Interp::Hold)]);
+    }
+    let i = keys.partition_point(|k| k.frame < at);
+    let k0 = keys[i - 1];
+    let k1 = keys[i];
+    let mut left = keys[..i].to_vec();
+    let mut right = keys[i..].to_vec();
+    match k0.interp {
+        Interp::Hold => {
+            left.push(Key::new(at, k0.value, Interp::Hold));
+            right.insert(0, Key::new(at, k0.value, Interp::Hold));
+        }
+        Interp::Linear => {
+            let v = segment_value(&k0, &k1, at as f64);
+            left.push(Key::new(at, v, Interp::Linear));
+            right.insert(0, Key::new(at, v, Interp::Linear));
+        }
+        Interp::Bezier => {
+            let (p0, p1, p2, p3) = control_points(&k0, &k1);
+            let t = solve_t(p0.0, p1.0, p2.0, p3.0, at as f64);
+            let lerp = |a: (f64, f64), b: (f64, f64)| (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t);
+            let q0 = lerp(p0, p1);
+            let q1 = lerp(p1, p2);
+            let q2 = lerp(p2, p3);
+            let r0 = lerp(q0, q1);
+            let r1 = lerp(q1, q2);
+            let s = lerp(r0, r1);
+            let at_f = at as f64;
+            if let Some(l) = left.last_mut() {
+                l.out_handle = [q0.0 - p0.0, q0.1 - p0.1];
+            }
+            let mut mid_l = Key::new(at, s.1, Interp::Bezier);
+            mid_l.in_handle = [r0.0 - at_f, r0.1 - s.1];
+            left.push(mid_l);
+            let mut mid_r = Key::new(at, s.1, Interp::Bezier);
+            mid_r.out_handle = [r1.0 - at_f, r1.1 - s.1];
+            right.insert(0, mid_r);
+            right[1].in_handle = [q2.0 - p3.0, q2.1 - p3.1];
+        }
+    }
+    (left, right)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pose::Preset;
+    use crate::song::{LinkedTag, PresetRef};
+
+    fn preset(name: &str, pan: f64) -> Preset {
+        Preset {
+            id: name.to_lowercase(),
+            name: name.into(),
+            pose: Pose { pan, tilt: 1.0, zoom: 0.2, focus: 0.5, elevation: 100.0 },
+            camera_number: None,
+            has_thumbnail: false,
+        }
+    }
+
+    fn mv(id: &str, start: i64, dur: i64, to: &Preset) -> MotionClip {
+        MotionClip {
+            id: id.into(),
+            start_frame: start,
+            duration_frames: dur,
+            axes: Axis::ALL.to_vec(),
+            body: ClipBody::PresetMove {
+                auto_duration: false,
+                from: FromPose::Linked(LinkedTag::Linked),
+                to: PresetRef::of(to),
+                ease: Ease::EaseInOut,
+            },
+            accepted: None,
+            recorded_pass: None,
+        }
+    }
+
+    #[test]
+    fn gaps_hold_and_home_applies_before_the_first_clip() {
+        let mut song = Song::new("s", "S", "01:00:00:00", 1000);
+        song.motion.push(mv("a", 100, 50, &preset("A", 30.0)));
+        assert_eq!(pose_at(&song, 0).pan, 0.0);
+        assert_eq!(pose_at(&song, 100).pan, 0.0);
+        assert!((pose_at(&song, 125).pan - 15.0).abs() < 1e-9);
+        assert_eq!(pose_at(&song, 150).pan, 30.0);
+        assert_eq!(pose_at(&song, 900).pan, 30.0);
+        assert_eq!(pose_at(&song, 900).focus, 0.5);
+    }
+
+    #[test]
+    fn linked_from_follows_an_earlier_edit() {
+        let mut song = Song::new("s", "S", "01:00:00:00", 1000);
+        song.motion.push(mv("a", 100, 50, &preset("A", 30.0)));
+        song.motion.push(mv("b", 300, 50, &preset("B", -10.0)));
+        assert_eq!(pose_at(&song, 300).pan, 30.0);
+        if let ClipBody::PresetMove { to, .. } = &mut song.motion[0].body {
+            to.pose.pan = 50.0;
+        }
+        assert_eq!(pose_at(&song, 300).pan, 50.0);
+        assert_eq!(pose_at(&song, 350).pan, -10.0);
+        // Pinning From stops it following.
+        if let ClipBody::PresetMove { from, .. } = &mut song.motion[1].body {
+            *from = FromPose::Pinned(PresetRef::of(&preset("C", 5.0)));
+        }
+        assert_eq!(pose_at(&song, 300).pan, 5.0);
+    }
+
+    #[test]
+    fn ease_shapes() {
+        assert!((ease_value(Ease::Linear, 0.3) - 0.3).abs() < 1e-9);
+        assert!((ease_value(Ease::EaseInOut, 0.5) - 0.5).abs() < 1e-9);
+        assert!(ease_value(Ease::EaseIn, 0.25) < 0.25);
+        assert!(ease_value(Ease::EaseOut, 0.25) > 0.25);
+        assert!((peak_factor(Ease::Linear) - 1.0).abs() < 1e-6);
+        assert!((peak_factor(Ease::EaseInOut) - 1.72).abs() < 0.01);
+    }
+
+    #[test]
+    fn bezier_time_is_monotonic_for_random_handles() {
+        let mut seed = 0x1234_5678_9abc_def0u64;
+        let mut rnd = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        for _ in 0..300 {
+            let mut k0 = Key::new(0, rnd() * 10.0, Interp::Bezier);
+            let mut k1 = Key::new(40, rnd() * 10.0, Interp::Bezier);
+            // Handles far outside the legal range on purpose.
+            k0.out_handle = [rnd() * 200.0 - 50.0, rnd() * 40.0 - 20.0];
+            k1.in_handle = [rnd() * 200.0 - 150.0, rnd() * 40.0 - 20.0];
+            let (p0, p1, p2, p3) = control_points(&k0, &k1);
+            let mut prev = -1.0;
+            for f in 0..=400 {
+                let frame = f as f64 / 10.0;
+                let t = solve_t(p0.0, p1.0, p2.0, p3.0, frame);
+                assert!(t >= prev, "time ran backwards");
+                assert!(segment_value(&k0, &k1, frame).is_finite());
+                prev = t;
+            }
+        }
+    }
+
+    #[test]
+    fn split_keeps_the_curve() {
+        let mut k0 = Key::new(0, -12.0, Interp::Bezier);
+        k0.out_handle = [30.0, 4.0];
+        let mut k1 = Key::new(100, 20.0, Interp::Bezier);
+        k1.in_handle = [-45.0, -9.0];
+        let k2 = Key::new(160, 5.0, Interp::Linear);
+        let keys = vec![k0, k1, k2];
+        for at in [37, 100, 130] {
+            let (l, r) = split_keys(&keys, at);
+            for f in 0..=160 {
+                let orig = keys_value(&keys, f as f64).unwrap();
+                let got = if f <= at { keys_value(&l, f as f64) } else { keys_value(&r, f as f64) }.unwrap();
+                assert!((orig - got).abs() < 1e-7, "frame {f} at split {at}: {orig} vs {got}");
+            }
+        }
+    }
+}

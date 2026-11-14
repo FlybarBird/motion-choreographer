@@ -1,0 +1,50 @@
+[workspace]
+resolver = "2"
+members = ["crates/core", "crates/server", "crates/app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.88"
+
+[workspace.dependencies]
+ptz-core = { path = "crates/core" }
+ptz-server = { path = "crates/server" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "fs", "process", "signal"] }
+axum = { version = "0.8", features = ["ws"] }
+futures-util = "0.3"
+cpal = "0.18"
+symphonia = { version = "0.6", default-features = false, features = ["wav", "aiff", "mp3", "pcm"] }
+rubato = "5"
+midir = "0.11"
+ureq = { version = "3", default-features = false, features = ["json"] }
+tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+md-5 = "0.10"
+eframe = { version = "0.36", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
+egui = "0.36"
+egui_dock = { version = "0.21", features = ["serde"] }
+egui_kittest = "0.36"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+rfd = "0.18"
+dirs = "6"
+
+[workspace.lints.clippy]
+too_many_arguments = "allow"
+type_complexity = "allow"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+
+[profile.dev.package.ptz-core]
+opt-level = 2
