@@ -1,7 +1,6 @@
-//! Project settings shown in the Inspector when nothing is selected.
+//! The Show settings area: everything that belongs to the whole show and not to one song.
 
 use crate::link::Cmd;
-use crate::panels::section;
 use crate::session::Session;
 use crate::theme::*;
 use egui::{RichText, Ui};
@@ -94,7 +93,6 @@ fn unit_suffix(axis: Axis) -> String {
 
 /// Keep-out rules: poses this camera's rig must never take, whatever the timeline says.
 fn keep_out(ui: &mut Ui, camera: &mut CameraConfig, editable: bool) {
-    section(ui, "Keep-out rules");
     ui.label(
         RichText::new(
             "A pose that breaks a rule is an issue on the timeline that cannot be accepted, and holds the rig if it is ever commanded live.",
@@ -151,7 +149,6 @@ fn keep_out(ui: &mut Ui, camera: &mut CameraConfig, editable: bool) {
 
 /// Which rig the server drives for this camera, how to reach it, and how closely it must follow.
 fn rig(ui: &mut Ui, s: &mut Session, camera: &mut CameraConfig, editable: bool) {
-    section(ui, "Rig");
     let t = s.status.transport;
     let parked = t.run == Run::Stopped && t.output == Output::Rehearse && !t.estop;
     if !parked {
@@ -300,11 +297,205 @@ fn rig(ui: &mut Ui, s: &mut Session, camera: &mut CameraConfig, editable: bool) 
     });
 }
 
-pub fn project(ui: &mut Ui, s: &mut Session) {
+/// A page of the Show settings area.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Hash)]
+pub enum Page {
+    #[default]
+    Cameras,
+    General,
+    Stage,
+    Rig,
+    Lens,
+    Position,
+    Limits,
+    KeepOut,
+    Audio,
+    Timecode,
+}
+
+impl Page {
+    /// What the show has and how it runs.
+    pub const SHOW: [Page; 3] = [Page::Cameras, Page::General, Page::Stage];
+    /// What belongs to the camera selected on the camera bar.
+    pub const CAMERA: [Page; 5] = [Page::Rig, Page::Lens, Page::Position, Page::Limits, Page::KeepOut];
+    /// Devices on the server machine.
+    pub const SERVER: [Page; 2] = [Page::Audio, Page::Timecode];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Page::Cameras => "Cameras",
+            Page::General => "Frame rate and faults",
+            Page::Stage => "Stage model",
+            Page::Rig => "Rig connection",
+            Page::Lens => "Lens",
+            Page::Position => "Position on the stage",
+            Page::Limits => "Rig limits",
+            Page::KeepOut => "Keep-out rules",
+            Page::Audio => "Audio output",
+            Page::Timecode => "Timecode inputs",
+        }
+    }
+
+    pub fn of_one_camera(self) -> bool {
+        Page::CAMERA.contains(&self)
+    }
+}
+
+pub const TITLE: &str = "Show settings";
+
+/// The Show settings area. It takes the place of the timeline and monitors while it is open; the
+/// header, the transport with E-STOP and the camera bar stay where they are, and the button at the
+/// end of the camera bar, or Esc, closes it.
+pub fn area(ui: &mut Ui, s: &mut Session, page: &mut Page) {
+    use egui::{Frame, Margin};
+    egui::Panel::left("settings_nav")
+        .resizable(false)
+        .exact_size(236.0)
+        .frame(Frame::new().fill(PANEL_DARK).inner_margin(Margin::symmetric(8, 10)))
+        .show(ui, |ui| nav(ui, s, page));
+    egui::CentralPanel::default().frame(Frame::new().fill(PANEL).inner_margin(Margin::symmetric(24, 16))).show(ui, |ui| {
+        egui::ScrollArea::vertical().id_salt(("settings_page", *page)).auto_shrink([false, false]).show(ui, |ui| {
+            ui.set_max_width(720.0);
+            body(ui, s, *page);
+            ui.add_space(24.0);
+        });
+    });
+}
+
+/// Why nothing here can be changed just now, from why the song cannot be edited.
+pub fn read_only(why: &str) -> String {
+    let why = why.replace("to edit the song", "to change settings").replace("to edit", "to change settings");
+    format!("{why}. Until then the settings can only be read.")
+}
+
+/// The selected camera, as the camera bar shows it.
+fn camera_tag(ui: &mut Ui, s: &Session) {
+    let at = s.cam_index();
+    let name = s.project.cameras.get(at).map(|c| c.name.clone()).unwrap_or_default();
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(22.0, 18.0), egui::Sense::hover());
+        ui.painter().rect_filled(rect, 4.0, camera_color(at));
+        ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, format!("{}", at + 1), semibold(12.0), BASE);
+        ui.add(egui::Label::new(RichText::new(name).font(semibold(13.0))).truncate());
+    });
+}
+
+fn nav(ui: &mut Ui, s: &Session, page: &mut Page) {
+    let group = |ui: &mut Ui, title: &str| {
+        ui.add_space(8.0);
+        ui.label(RichText::new(title.to_uppercase()).small().color(MUTED));
+        ui.add_space(2.0);
+    };
+    let items = |ui: &mut Ui, page: &mut Page, pages: &[Page]| {
+        ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), |ui| {
+            ui.spacing_mut().button_padding = egui::vec2(10.0, 5.0);
+            for p in pages {
+                if ui.selectable_label(*page == *p, p.title()).clicked() {
+                    *page = *p;
+                }
+            }
+        });
+    };
+    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            ui.label(RichText::new(icon::GEAR_SIX).font(icon_font(17.0)).color(ACCENT));
+            ui.label(RichText::new(TITLE).font(semibold(15.0)));
+        });
+        group(ui, "The show");
+        items(ui, page, &Page::SHOW);
+        group(ui, "The selected camera");
+        camera_tag(ui, s);
+        items(ui, page, &Page::CAMERA);
+        group(ui, "The server");
+        items(ui, page, &Page::SERVER);
+    });
+}
+
+fn body(ui: &mut Ui, s: &mut Session, page: Page) {
     let editable = s.can_edit().is_ok();
     let mut project = s.project.clone();
+    if let Err(why) = s.can_edit() {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            ui.label(RichText::new(icon::LOCK_SIMPLE).font(icon_font(14.0)).color(AMBER));
+            ui.label(RichText::new(read_only(&why)).color(AMBER));
+        });
+        ui.add_space(8.0);
+    }
+    ui.label(RichText::new(page.title()).font(semibold(18.0)));
+    if page.of_one_camera() {
+        ui.add_space(2.0);
+        camera_tag(ui, s);
+        ui.label(
+            RichText::new("These are this camera's. Choose another on the camera bar, or with its number key.")
+                .color(MUTED)
+                .small(),
+        );
+    }
+    ui.add_space(8.0);
+    match page {
+        Page::Cameras => cameras(ui, s, &mut project, editable),
+        Page::General => general(ui, s, &mut project, editable),
+        Page::Stage => stage_model(ui, s, &mut project, editable),
+        Page::Audio => audio_output(ui, s, &mut project, editable),
+        Page::Timecode => timecode_inputs(ui, s, &mut project, editable),
+        Page::Rig | Page::Lens | Page::Position | Page::Limits | Page::KeepOut => {
+            let at = project.camera_index(&s.active_camera).unwrap_or(0);
+            let camera = &mut project.cameras[at];
+            match page {
+                Page::Rig => rig(ui, s, camera, editable),
+                Page::Lens => lens(ui, s, camera, editable),
+                Page::Position => position(ui, s, camera, editable),
+                Page::Limits => limits(ui, camera, editable),
+                _ => keep_out(ui, camera, editable),
+            }
+        }
+    }
+    if project != s.project {
+        s.put_project(project);
+    }
+}
 
-    section(ui, "Audio output");
+/// The frame rate the show is programmed at, and what the other cameras do when one faults.
+fn general(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::Project, editable: bool) {
+    ui.add_enabled_ui(editable, |ui| {
+        egui::Grid::new("general_grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+            ui.label("Frame rate");
+            egui::ComboBox::from_id_salt("rate").selected_text(s.project.rate.label()).show_ui(ui, |ui| {
+                for rate in ptz_core::FrameRate::ALL {
+                    if ui.selectable_label(s.project.rate == rate, rate.label()).clicked() && rate != s.project.rate {
+                        // Sent as asked and shown once the server has taken it: it can refuse a change of rate.
+                        let mut p = s.project.clone();
+                        p.rate = rate;
+                        s.link.send(Cmd::PutProject(Box::new(p)));
+                    }
+                }
+            });
+            ui.end_row();
+            ui.label("When a camera faults");
+            egui::ComboBox::from_id_salt("on_fault").selected_text(project.on_fault.label()).width(260.0).show_ui(ui, |ui| {
+                for choice in OnFault::ALL {
+                    ui.selectable_value(&mut project.on_fault, choice, choice.label());
+                }
+            });
+            ui.end_row();
+        });
+    });
+    ui.add_space(4.0);
+    ui.label(
+        RichText::new(
+            "Set the frame rate once, before programming. It must match the timecode the show will be locked to; code at another rate is refused.",
+        )
+        .color(MUTED)
+        .small(),
+    );
+    ui.label(RichText::new("E-Stop always stops every camera, whatever is chosen here.").color(MUTED).small());
+}
+
+/// Where the server plays the song's audio and timecode.
+fn audio_output(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::Project, editable: bool) {
     let audio = &s.status.audio;
     let device = match (&audio.output, &audio.silent_reason) {
         (Some(name), _) => format!("{name}, {} Hz", audio.device_rate),
@@ -328,8 +519,10 @@ pub fn project(ui: &mut Ui, s: &mut Session) {
             .color(MUTED)
             .small(),
     );
+}
 
-    section(ui, "Timecode inputs");
+/// Where Lock listens for timecode.
+fn timecode_inputs(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::Project, editable: bool) {
     ui.label(RichText::new("Where Lock listens. These are devices on the server machine.").color(MUTED).small());
     if s.inputs.is_none() {
         s.inputs = Some(Default::default());
@@ -372,15 +565,10 @@ pub fn project(ui: &mut Ui, s: &mut Session) {
     if ui.small_button("List devices again").clicked() {
         s.link.send(Cmd::RefreshInputs);
     }
+}
 
-    stage_model(ui, s, &mut project, editable);
-    cameras(ui, s, &mut project, editable);
-    let at = project.camera_index(&s.active_camera).unwrap_or(0);
-    let camera = &mut project.cameras[at];
-    lens(ui, s, camera, editable);
-    position(ui, s, camera, editable);
-
-    section(ui, "Rig limits");
+/// How far and how fast each axis of this camera's rig may go.
+fn limits(ui: &mut Ui, camera: &mut CameraConfig, editable: bool) {
     ui.label(
         RichText::new("Auto time and the too-fast warning come from these. Set them to what this camera's rig does safely.")
             .color(MUTED)
@@ -404,18 +592,10 @@ pub fn project(ui: &mut Ui, s: &mut Session) {
             }
         });
     });
-
-    keep_out(ui, camera, editable);
-    rig(ui, s, camera, editable);
-
-    if project != s.project {
-        s.put_project(project);
-    }
 }
 
 /// The camera list: which cameras the show has, their order and names, and which one is selected.
 fn cameras(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::Project, editable: bool) {
-    section(ui, "Cameras");
     let t = s.status.transport;
     let parked = t.run == Run::Stopped && t.output == Output::Rehearse && !t.estop;
     let selected = s.cam_id().to_string();
@@ -528,21 +708,10 @@ fn cameras(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::Project, 
             .color(MUTED)
             .small(),
     );
-    ui.add_enabled_ui(editable, |ui| {
-        ui.horizontal(|ui| {
-            ui.label("When a camera faults");
-            egui::ComboBox::from_id_salt("on_fault").selected_text(project.on_fault.label()).width(200.0).show_ui(ui, |ui| {
-                for choice in OnFault::ALL {
-                    ui.selectable_value(&mut project.on_fault, choice, choice.label());
-                }
-            });
-        });
-    });
 }
 
 /// The lens on the selected camera, and what it sees now.
 fn lens(ui: &mut Ui, s: &Session, camera: &mut CameraConfig, editable: bool) {
-    section(ui, &format!("Lens: {}", camera.name));
     let (pose, _) = s.camera_pose(&camera.id);
     ui.add_enabled_ui(editable, |ui| {
         egui::Grid::new("lens_grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
@@ -677,7 +846,6 @@ fn lens(ui: &mut Ui, s: &Session, camera: &mut CameraConfig, editable: bool) {
 
 /// Where the selected camera stands on the stage.
 fn position(ui: &mut Ui, s: &Session, camera: &mut CameraConfig, editable: bool) {
-    section(ui, &format!("Position on the stage: {}", camera.name));
     ui.add_enabled_ui(editable, |ui| {
         let m = &mut camera.mount;
         egui::Grid::new("mount_grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
@@ -731,7 +899,6 @@ fn position(ui: &mut Ui, s: &Session, camera: &mut CameraConfig, editable: bool)
 /// The venue: an imported model, where it stands, and whether the built-in stage is drawn.
 fn stage_model(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::Project, editable: bool) {
     use crate::stage::Import;
-    section(ui, "Stage");
     let why = (!editable).then(|| match s.can_edit() {
         Err(why) => why.replace("to edit the song", "to change the stage").replace("to edit", "to change the stage"),
         Ok(()) => String::new(),

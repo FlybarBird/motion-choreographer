@@ -10,11 +10,11 @@ fn song() -> Song {
     Song::new("s", "Test Song", "01:00:00:00", 1500)
 }
 
-fn acts(r: &Rig) -> Vec<Action> {
+pub(super) fn acts(r: &Rig) -> Vec<Action> {
     r.cmds.try_iter().filter_map(|c| if let Cmd::Act(a, _) = c { Some(a) } else { None }).collect()
 }
 
-fn rect_of(r: &Rig, label: &str) -> egui::Rect {
+pub(super) fn rect_of(r: &Rig, label: &str) -> egui::Rect {
     r.harness.get_by_label(label).rect()
 }
 
@@ -64,7 +64,7 @@ fn dead_points(r: &mut Rig, label: &str, action: Action) -> Vec<Pos2> {
 }
 
 /// The button is inside the window, alone on its place, and answers wherever it is clicked.
-fn assert_whole(r: &mut Rig, window: egui::Vec2, label: &str, action: Action) {
+pub(super) fn assert_whole(r: &mut Rig, window: egui::Vec2, label: &str, action: Action) {
     let button = rect_of(r, label);
     assert!(egui::Rect::from_min_size(Pos2::ZERO, window).contains_rect(button), "{label} at {button:?} is inside {window:?}");
     let over = laid_over(r, label);
@@ -144,7 +144,7 @@ fn reset_e_stop_keeps_its_place_while_the_latch_and_a_fault_are_on_show() {
 }
 
 /// Where pictures of the bars go when `PTZ_APP_SHOTS` names a folder: for a person to look at.
-fn shot(r: &Rig, name: &str) {
+pub(super) fn shot(r: &Rig, name: &str) {
     if let Some(dir) = std::env::var_os("PTZ_APP_SHOTS") {
         let window = r.harness.ctx.content_rect();
         let dir = std::path::PathBuf::from(dir);
