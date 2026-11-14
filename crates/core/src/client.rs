@@ -234,6 +234,10 @@ impl Api {
         self.get("/presets")
     }
 
+    pub fn sync_presets(&self) -> ApiResult<Vec<Preset>> {
+        self.post_empty("/presets/sync")
+    }
+
     pub fn jog(&self, jog: &Jog) -> ApiResult<Status> {
         self.post("/rig/jog", jog)
     }
