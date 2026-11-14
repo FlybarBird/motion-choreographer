@@ -1,0 +1,240 @@
+//! Blocking HTTP client for the show server, shared by the app, the probe and
+//! the tests so they all speak the API the same way.
+
+use crate::api::*;
+use crate::pose::{Preset, Project};
+use crate::transport::Action;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
+use std::time::Duration;
+
+#[derive(Clone, PartialEq, Debug)]
+pub enum ApiErr {
+    /// The server answered and said no. `code` 409 is a policy refusal.
+    Refused { code: u16, msg: String },
+    /// The server could not be reached, or the answer made no sense.
+    Network(String),
+}
+
+impl ApiErr {
+    pub fn message(&self) -> &str {
+        match self {
+            ApiErr::Refused { msg, .. } | ApiErr::Network(msg) => msg,
+        }
+    }
+
+    pub fn code(&self) -> Option<u16> {
+        match self {
+            ApiErr::Refused { code, .. } => Some(*code),
+            ApiErr::Network(_) => None,
+        }
+    }
+}
+
+impl std::fmt::Display for ApiErr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.message())
+    }
+}
+
+pub type ApiResult<T> = Result<T, ApiErr>;
+
+#[derive(Clone)]
+pub struct Api {
+    base: String,
+    pub client_id: String,
+    key: Option<String>,
+    agent: ureq::Agent,
+}
+
+/// `127.0.0.1:8787` or `http://host:8787/` to `http://host:8787`.
+pub fn normalize_base(input: &str) -> String {
+    let s = input.trim().trim_end_matches('/');
+    if s.starts_with("http://") || s.starts_with("https://") {
+        s.to_string()
+    } else {
+        format!("http://{s}")
+    }
+}
+
+impl Api {
+    pub fn new(base: &str, client_id: &str, key: Option<&str>) -> Api {
+        let config = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .timeout_connect(Some(Duration::from_secs(3)))
+            .timeout_global(Some(Duration::from_secs(120)))
+            .build();
+        Api {
+            base: normalize_base(base),
+            client_id: client_id.to_string(),
+            key: key.filter(|k| !k.is_empty()).map(|k| k.to_string()),
+            agent: ureq::Agent::new_with_config(config),
+        }
+    }
+
+    pub fn base(&self) -> &str {
+        &self.base
+    }
+
+    pub fn url(&self, path: &str) -> String {
+        format!("{}{API}{path}", self.base)
+    }
+
+    /// WebSocket address for the status stream.
+    pub fn ws_url(&self) -> String {
+        let host = self.base.trim_start_matches("http://").trim_start_matches("https://");
+        let mut url = format!("ws://{host}{API}/ws?client={}", self.client_id);
+        if let Some(k) = &self.key {
+            url.push_str("&key=");
+            url.push_str(k);
+        }
+        url
+    }
+
+    fn finish(result: Result<ureq::http::Response<ureq::Body>, ureq::Error>) -> ApiResult<ureq::http::Response<ureq::Body>> {
+        let mut resp = result.map_err(|e| ApiErr::Network(format!("Cannot reach the server: {e}")))?;
+        let code = resp.status().as_u16();
+        if (200..300).contains(&code) {
+            return Ok(resp);
+        }
+        let text = resp.body_mut().read_to_string().unwrap_or_default();
+        let msg = serde_json::from_str::<ApiError>(&text).map(|e| e.error).unwrap_or_else(|_| {
+            if text.trim().is_empty() {
+                format!("The server answered {code}")
+            } else {
+                text.trim().to_string()
+            }
+        });
+        Err(ApiErr::Refused { code, msg })
+    }
+
+    fn json<T: DeserializeOwned>(resp: ApiResult<ureq::http::Response<ureq::Body>>) -> ApiResult<T> {
+        let mut resp = resp?;
+        resp.body_mut()
+            .with_config()
+            .limit(256 * 1024 * 1024)
+            .read_json::<T>()
+            .map_err(|e| ApiErr::Network(format!("The server's answer was not understood: {e}")))
+    }
+
+    fn with_headers<B>(&self, mut req: ureq::RequestBuilder<B>) -> ureq::RequestBuilder<B> {
+        req = req.header(HEADER_CLIENT, &self.client_id);
+        if let Some(k) = &self.key {
+            req = req.header(HEADER_KEY, k);
+        }
+        req
+    }
+
+    pub fn get<T: DeserializeOwned>(&self, path: &str) -> ApiResult<T> {
+        Self::json(Self::finish(self.with_headers(self.agent.get(self.url(path))).call()))
+    }
+
+    pub fn get_bytes(&self, path: &str) -> ApiResult<Vec<u8>> {
+        let mut resp = Self::finish(self.with_headers(self.agent.get(self.url(path))).call())?;
+        resp.body_mut()
+            .with_config()
+            .limit(256 * 1024 * 1024)
+            .read_to_vec()
+            .map_err(|e| ApiErr::Network(format!("Download failed: {e}")))
+    }
+
+    pub fn post<B: Serialize, T: DeserializeOwned>(&self, path: &str, body: &B) -> ApiResult<T> {
+        Self::json(Self::finish(self.with_headers(self.agent.post(self.url(path))).send_json(body)))
+    }
+
+    pub fn post_empty<T: DeserializeOwned>(&self, path: &str) -> ApiResult<T> {
+        Self::json(Self::finish(self.with_headers(self.agent.post(self.url(path))).send_empty()))
+    }
+
+    pub fn put<B: Serialize, T: DeserializeOwned>(&self, path: &str, body: &B) -> ApiResult<T> {
+        Self::json(Self::finish(self.with_headers(self.agent.put(self.url(path))).send_json(body)))
+    }
+
+    pub fn delete<T: DeserializeOwned>(&self, path: &str) -> ApiResult<T> {
+        Self::json(Self::finish(self.with_headers(self.agent.delete(self.url(path))).call()))
+    }
+
+    /// Upload a file as the raw request body.
+    pub fn upload<T: DeserializeOwned>(&self, path: &str, file: std::fs::File) -> ApiResult<T> {
+        let req = self.with_headers(self.agent.post(self.url(path))).content_type("application/octet-stream");
+        Self::json(Self::finish(req.send(file)))
+    }
+
+    // ---- typed calls ----
+
+    pub fn status(&self) -> ApiResult<Status> {
+        self.get("/status")
+    }
+
+    pub fn take_lease(&self, name: &str, force: bool) -> ApiResult<Status> {
+        self.post("/lease", &LeaseRequest { name: name.to_string(), force })
+    }
+
+    pub fn release_lease(&self) -> ApiResult<Status> {
+        self.delete("/lease")
+    }
+
+    pub fn act(&self, action: Action, req: &TransportRequest) -> ApiResult<Status> {
+        match action {
+            Action::Estop => self.post_empty("/estop"),
+            Action::ResetEstop => self.post_empty("/estop/reset"),
+            other => self.post(&format!("/transport/{}", other.key()), req),
+        }
+    }
+
+    pub fn songs(&self) -> ApiResult<Vec<SongSummary>> {
+        self.get("/songs")
+    }
+
+    pub fn new_song(&self, name: &str, start_tc: Option<&str>) -> ApiResult<WorkingSong> {
+        self.post("/songs", &NewSong { name: name.to_string(), start_tc: start_tc.map(|s| s.to_string()) })
+    }
+
+    pub fn load_song(&self, id: &str) -> ApiResult<WorkingSong> {
+        self.post_empty(&format!("/songs/{id}/load"))
+    }
+
+    pub fn working(&self, id: &str) -> ApiResult<WorkingSong> {
+        self.get(&format!("/songs/{id}/working"))
+    }
+
+    pub fn put_working(&self, put: &PutWorking) -> ApiResult<WorkingSong> {
+        self.put(&format!("/songs/{}/working", put.song.id), put)
+    }
+
+    pub fn save(&self, id: &str) -> ApiResult<WorkingSong> {
+        self.post_empty(&format!("/songs/{id}/save"))
+    }
+
+    pub fn revert(&self, id: &str) -> ApiResult<WorkingSong> {
+        self.post_empty(&format!("/songs/{id}/revert"))
+    }
+
+    pub fn copy_song(&self, id: &str, name: &str) -> ApiResult<WorkingSong> {
+        self.post(&format!("/songs/{id}/copy"), &NewSong { name: name.to_string(), start_tc: None })
+    }
+
+    pub fn commit(&self, id: &str) -> ApiResult<RevisionInfo> {
+        self.post_empty(&format!("/songs/{id}/commit"))
+    }
+
+    pub fn delete_song(&self, id: &str) -> ApiResult<Vec<SongSummary>> {
+        self.delete(&format!("/songs/{id}"))
+    }
+
+    pub fn project(&self) -> ApiResult<Project> {
+        self.get("/project")
+    }
+
+    pub fn put_project(&self, project: &Project) -> ApiResult<Project> {
+        self.put("/project", project)
+    }
+
+    pub fn presets(&self) -> ApiResult<Vec<Preset>> {
+        self.get("/presets")
+    }
+
+    pub fn jog(&self, jog: &Jog) -> ApiResult<Status> {
+        self.post("/rig/jog", jog)
+    }
+}
