@@ -1,7 +1,8 @@
 //! REST for commands and edits, WebSocket for status. All under `/api/v1`.
 
-use crate::engine::{spawn_tick, Config, Fail, MediaTicket, Push, Shared, Show};
+use crate::engine::{spawn_tick, Config, Fail, MediaTicket, Push, Shared, Show, Stamp};
 use crate::media::{self, Ingested};
+use crate::video;
 use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{FromRequestParts, Path, Query, Request, State};
@@ -344,6 +345,67 @@ async fn media_peaks(State(app): State<App>, Path(id): Path<String>, Query(q): Q
     Ok(bytes_reply("application/octet-stream", level.level(rate).to_bytes()))
 }
 
+/// Set, decode or clear a file's start timecode. Reading the file happens off the show lock.
+async fn media_start_tc(
+    State(app): State<App>,
+    Client(c): Client,
+    Path(id): Path<String>,
+    Json(req): Json<StoreTc>,
+) -> Reply<MediaInfo> {
+    let text = req.start_tc.trim().to_string();
+    let (dir, rate, mut info) = {
+        let s = lock(&app.show);
+        s.require_lease(&c)?;
+        (s.media_file(&id, "")?, s.rate(), s.media_info(&id)?.clone())
+    };
+    let name = info.name.clone();
+    let stopped = |_| Fail { code: 500, msg: "The file reader stopped unexpectedly".into() };
+    let stamp = if text.is_empty() {
+        tokio::task::spawn_blocking(move || {
+            info.start_tc = None;
+            info.start_tc_source = None;
+            if let Some(original) = media::original_path(&dir) {
+                video::read_stamp(&original, rate, &mut info);
+            }
+            Stamp::FileOwn { start_tc: info.start_tc, source: info.start_tc_source }
+        })
+        .await
+        .map_err(stopped)?
+    } else if let Some(n) = text.strip_prefix("ltc:") {
+        let Some(channel) = n.trim().parse::<u32>().ok().filter(|n| *n >= 1) else {
+            return Err(Fail::bad("Name the channel as ltc:<number>, counting from 1"));
+        };
+        let start = tokio::task::spawn_blocking(move || media::ltc_start_of_file(&dir.join("audio.f32"), channel - 1, rate))
+            .await
+            .map_err(stopped)?
+            .map_err(|why| Fail::invalid(format!("{name}: {why}")))?;
+        Stamp::Ltc { channel: channel - 1, start }
+    } else {
+        match ptz_core::Timecode::parse_at(&text, rate) {
+            Some(tc) => Stamp::Typed(tc),
+            None => return Err(Fail::invalid(format!("{text} is not a timecode at {} fps. Use HH:MM:SS:FF", rate.label()))),
+        }
+    };
+    Ok(Json(lock(&app.show).stamp_media(&c, &id, stamp)?))
+}
+
+/// One proxy frame of a video, addressed by the timeline frame it shows.
+async fn media_frame(State(app): State<App>, Path((id, file)): Path<(String, String)>) -> Result<Response, Fail> {
+    let Some(frame) = file.strip_suffix(".jpg").and_then(|n| n.parse::<i64>().ok()) else {
+        return Err(Fail::not_found("Frames are addressed as <frame number>.jpg"));
+    };
+    let path = {
+        let s = lock(&app.show);
+        let index =
+            video::proxy_index(s.media_info(&id)?, frame, s.rate()).ok_or_else(|| Fail::not_found("This file has no picture"))?;
+        video::frame_path(&s.media_file(&id, "")?, index)
+    };
+    match tokio::fs::read(&path).await {
+        Ok(bytes) => Ok(bytes_reply("image/jpeg", bytes)),
+        Err(_) => Err(Fail::not_found("That frame is missing from the media folder")),
+    }
+}
+
 fn bytes_reply(content_type: &'static str, bytes: Vec<u8>) -> Response {
     ([(axum::http::header::CONTENT_TYPE, content_type)], bytes).into_response()
 }
@@ -437,6 +499,8 @@ pub fn router(app: App) -> Router {
         .route("/media", get(list_media).post(upload_media))
         .route("/media/{id}", delete(delete_media))
         .route("/media/{id}/peaks", get(media_peaks))
+        .route("/media/{id}/start_tc", post(media_start_tc))
+        .route("/media/{id}/frames/{file}", get(media_frame))
         .route("/log", get(get_log));
     Router::new().nest(API, api).layer(axum::middleware::from_fn_with_state(app.clone(), gate)).with_state(app)
 }

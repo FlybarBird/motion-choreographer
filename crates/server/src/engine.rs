@@ -3,12 +3,15 @@
 //! order to get wrong.
 
 use crate::audio::{AudioEngine, LtcOut, Mix, PlayClip};
+use crate::lock::{self, CodeSource, Kind};
 use crate::media::{self, Ingested};
 use crate::record::{self, Capture, RecordedPass};
 use crate::rig::{RigAdapter, Simulator};
 use crate::runlog::RunLog;
 use crate::storage::{self, Storage};
 use ptz_core::api::*;
+use ptz_core::chase::{Chase, ChaseState};
+use ptz_core::codes::CodeRate;
 use ptz_core::compile::{compile, Compiled};
 use ptz_core::edit;
 use ptz_core::pose::{Axis, Pose, Preset, Project};
@@ -118,6 +121,34 @@ impl Entry {
     }
 }
 
+/// A lock to LTC, MTC or Art-Net: the input, and the chase that decides when to trust it.
+struct External {
+    kind: Kind,
+    source: Box<dyn CodeSource>,
+    chase: Chase,
+    /// Readings in a row whose rate family is not the project's.
+    mismatched: u32,
+}
+
+/// Readings of the wrong rate family before Lock is given up. One could be a damaged frame.
+const MISMATCH_READINGS: u32 = 3;
+
+/// A start timecode to put on a media file.
+#[derive(Clone, PartialEq, Debug)]
+pub enum Stamp {
+    /// What the file itself carries, or nothing: undoes a typed or decoded stamp.
+    FileOwn {
+        start_tc: Option<String>,
+        source: Option<String>,
+    },
+    Typed(Timecode),
+    /// Decoded from LTC on a channel (0 is the first), which then leaves Program.
+    Ltc {
+        channel: u32,
+        start: Timecode,
+    },
+}
+
 struct Lease {
     client: String,
     name: String,
@@ -153,6 +184,9 @@ pub struct Show {
     /// The pass being captured, while there is one.
     capture: Option<Capture>,
     lock_source: Option<String>,
+    external: Option<External>,
+    /// Why the last lock was refused or let go, until the operator's next action.
+    lock_problem: Option<String>,
     /// The simulator was positioned by hand; the monitor shows it until the playhead moves.
     manual: bool,
     started: Instant,
@@ -234,6 +268,8 @@ impl Show {
             record_axes: vec![Axis::Pan, Axis::Tilt],
             capture: None,
             lock_source: None,
+            external: None,
+            lock_problem: None,
             manual: false,
             started: now,
             last_tick: now,
@@ -287,7 +323,7 @@ impl Show {
         self.lease.as_ref().is_some_and(|l| l.client == client)
     }
 
-    fn require_lease(&self, client: &str) -> Res<()> {
+    pub fn require_lease(&self, client: &str) -> Res<()> {
         if self.holds_lease(client) {
             Ok(())
         } else {
@@ -417,6 +453,8 @@ impl Show {
         self.frame_f = 0.0;
         self.manual = false;
         self.lock_source = None;
+        self.external = None;
+        self.lock_problem = None;
         let _ = self.storage.save_current(self.current.as_deref());
         self.transport = TransportState { estop: self.transport.estop, ..TransportState::IDLE };
         self.rebuild_mix();
@@ -461,6 +499,7 @@ impl Show {
                 self.audio.seek(length, self.rate());
             }
             self.rebuild_mix();
+            self.check_file_lock();
         }
         self.push(WsMsg::SongChanged { song_id: id.to_string(), edit_counter: counter, reason: reason.to_string() });
         Ok(out)
@@ -562,6 +601,9 @@ impl Show {
         }
         if project.rate != self.project.rate {
             self.require_parked("changing the frame rate")?;
+            if self.transport.locked() {
+                return Err(Fail::refused("Unlock before changing the frame rate"));
+            }
             for e in self.songs.values() {
                 if let Err(err) = e.song.validate(project.rate) {
                     return Err(Fail::invalid(format!("{} does not fit {} fps: {err}", e.song.name, project.rate.label())));
@@ -585,9 +627,12 @@ impl Show {
         }
         if rate_changed {
             for m in &mut self.media {
-                m.duration_frames = media::duration_frames(m.samples, m.sample_rate, project.rate);
+                media::restate(m, project.rate);
             }
             self.push(WsMsg::MediaChanged);
+        }
+        if let Some(ext) = &mut self.external {
+            ext.chase.set_freewheel(project.freewheel_frames);
         }
         self.rebuild_mix();
         self.log("project_changed", json!({ "by": self.lease.as_ref().map(|l| l.name.clone()) }));
@@ -695,7 +740,7 @@ impl Show {
     pub fn register_media(&mut self, ingested: Ingested, playable: Option<Vec<f32>>) -> MediaInfo {
         let mut info = ingested.info;
         self.media_reserved.remove(&info.id);
-        info.duration_frames = media::duration_frames(info.samples, info.sample_rate, self.rate());
+        media::restate(&mut info, self.rate());
         if let Some(mono) = playable {
             self.audio_cache.insert(info.id.clone(), Arc::new(mono));
         }
@@ -704,7 +749,11 @@ impl Show {
         self.media.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()).then(a.id.cmp(&b.id)));
         self.log(
             "media_imported",
-            json!({ "media": info.id, "name": info.name, "seconds": info.duration_s, "channels": info.channels, "rate": info.sample_rate }),
+            json!({
+                "media": info.id, "name": info.name, "seconds": info.duration_s, "channels": info.channels,
+                "rate": info.sample_rate, "start_tc": info.start_tc, "start_tc_source": info.start_tc_source,
+                "proxy_frames": info.proxy_frames,
+            }),
         );
         self.push(WsMsg::MediaChanged);
         self.rebuild_mix();
@@ -733,6 +782,43 @@ impl Show {
     pub fn media_file(&self, id: &str, file: &str) -> Res<PathBuf> {
         self.media_info(id)?;
         Ok(self.storage.media_dir(id).ok_or_else(|| Fail::not_found("No such media"))?.join(file))
+    }
+
+    /// Put a start timecode on a file, or take a typed or decoded one off again.
+    pub fn stamp_media(&mut self, client: &str, id: &str, stamp: Stamp) -> Res<MediaInfo> {
+        self.require_lease(client)?;
+        let path = self.media_file(id, "info.json")?;
+        let Some(info) = self.media.iter_mut().find(|m| m.id == id) else {
+            return Err(Fail::not_found(format!("No media with id {id}")));
+        };
+        let had_channel = info.ltc_channel;
+        match stamp {
+            Stamp::FileOwn { start_tc, source } => {
+                info.start_tc = start_tc;
+                info.start_tc_source = source;
+                info.ltc_channel = None;
+            }
+            Stamp::Typed(tc) => {
+                info.start_tc = Some(tc.to_string());
+                info.start_tc_source = Some(media::STAMP_TYPED.into());
+            }
+            Stamp::Ltc { channel, start } => {
+                info.start_tc = Some(start.to_string());
+                info.start_tc_source = Some(format!("ltc channel {}", channel + 1));
+                info.ltc_channel = Some(channel);
+            }
+        }
+        let out = info.clone();
+        storage::write_json(&path, &out).map_err(Fail::io)?;
+        if out.ltc_channel != had_channel {
+            // The timecode channel is not programme sound.
+            self.reload_audio(id);
+        }
+        self.log("media_stamped", json!({ "media": id, "start_tc": out.start_tc, "source": out.start_tc_source }));
+        self.push(WsMsg::MediaChanged);
+        self.check_file_lock();
+        self.poke();
+        Ok(out)
     }
 
     /// Load a media file's audio for playback on a worker thread; `tick` collects it.
@@ -851,6 +937,23 @@ impl Show {
     }
 
     pub fn act(&mut self, client: &str, action: Action, req: &TransportRequest) -> Res<()> {
+        self.act_with(client, action, req, None)
+    }
+
+    /// Lock to a source the caller supplies instead of one opened from the
+    /// project's inputs. The tests script timecode through this.
+    pub fn lock_with(&mut self, client: &str, kind: Kind, source: Box<dyn CodeSource>) -> Res<()> {
+        let req = TransportRequest { source: Some(kind.id().to_string()), ..Default::default() };
+        self.act_with(client, Action::Lock, &req, Some(source))
+    }
+
+    fn act_with(
+        &mut self,
+        client: &str,
+        action: Action,
+        req: &TransportRequest,
+        supplied: Option<Box<dyn CodeSource>>,
+    ) -> Res<()> {
         self.clock.reset();
         let ctx = self.context(client);
         transport::check(&self.transport, &ctx, action).map_err(|b| Fail::refused(b.text))?;
@@ -859,13 +962,25 @@ impl Show {
         let before = self.transport;
         match action {
             Action::Play => {
-                if self.frame_f >= length - 0.5 {
-                    self.frame_f = 0.0;
+                match before.time {
+                    TimeMode::FreeRun => {
+                        if self.frame_f >= length - 0.5 {
+                            self.frame_f = 0.0;
+                        }
+                        self.audio.play(self.frame_f, rate);
+                    }
+                    TimeMode::LockedFile => {
+                        // The server rolls the file itself, from the playhead when that is inside the file.
+                        let (first, end) = self.locked_file_span().map_err(Fail::refused)?;
+                        if self.frame_f < first as f64 || self.frame_f >= end as f64 - 0.5 {
+                            self.frame_f = first as f64;
+                        }
+                        self.audio.play(self.frame_f, rate);
+                    }
+                    // Code decides when the playhead and the sound start.
+                    TimeMode::LockedExternal => {}
                 }
                 self.manual = false;
-                if !self.transport.locked() {
-                    self.audio.play(self.frame_f, rate);
-                }
             }
             Action::Stop => {
                 self.audio.stop();
@@ -889,14 +1004,32 @@ impl Show {
             }
             Action::Lock => {
                 let source = req.source.clone().unwrap_or_default();
-                if !matches!(source.as_str(), "ltc" | "mtc" | "artnet") {
+                if let Some(clip) = source.strip_prefix("file:") {
+                    self.file_span(clip).map_err(Fail::refused)?;
+                } else if let Some(kind) = Kind::parse(&source) {
+                    let input: Box<dyn CodeSource> = match supplied {
+                        Some(given) => given,
+                        None => match lock::open(kind, &self.project.inputs) {
+                            Ok(feed) => Box::new(feed),
+                            Err(why) => {
+                                self.lock_problem = Some(why.clone());
+                                self.poke();
+                                return Err(Fail::refused(why));
+                            }
+                        },
+                    };
+                    let chase = Chase::new(rate, self.project.freewheel_frames, input.interval_frames());
+                    self.external = Some(External { kind, source: input, chase, mismatched: 0 });
+                } else {
                     return Err(Fail::bad("Lock needs a source: ltc, mtc, artnet or file:<clip id>"));
                 }
                 self.lock_source = Some(source);
             }
             Action::Unlock => {
                 self.lock_source = None;
-                if self.transport.run == Run::Playing {
+                self.external = None;
+                // Playing carries on in free-run from where it is.
+                if self.transport.run == Run::Playing && !self.audio.is_playing() {
                     self.audio.play(self.frame_f, rate);
                 }
             }
@@ -921,7 +1054,13 @@ impl Show {
             }
             Action::ResetEstop => {}
         }
-        self.transport = transport::apply(&before, action, true);
+        let mut after = transport::apply(&before, action, self.external.is_some());
+        if action == Action::Play && after.time == TimeMode::LockedFile {
+            // A file's code is in the song the moment the server starts rolling it.
+            after = transport::on_event(&after, Event::CodeEntered);
+        }
+        self.transport = after;
+        self.lock_problem = None;
         let frame = self.frame_f.floor() as i64;
         self.log("transport", json!({ "action": action.key(), "by": self.who(client), "frame": frame, "state": self.transport }));
         self.sync_capture();
@@ -951,6 +1090,170 @@ impl Show {
         self.log("event", json!({ "event": format!("{event:?}"), "frame": self.frame_f.floor() as i64, "state": after }));
         self.sync_capture();
         self.poke();
+    }
+
+    // ---- lock ----
+
+    fn locked_clip(&self) -> Option<&str> {
+        self.lock_source.as_deref().and_then(|s| s.strip_prefix("file:"))
+    }
+
+    /// The stretch of the song a file covers, as `(first frame, end frame)`, when
+    /// the playhead can be locked to it. A stamped file has to sit on its own code,
+    /// so that the code it plays is the code the timeline shows.
+    fn file_span(&self, clip_id: &str) -> Result<(i64, i64), String> {
+        let Some(e) = self.entry() else {
+            return Err("Create or load a song first".into());
+        };
+        let Some(clip) = e.song.media_clip(clip_id) else {
+            return Err("That file is not on this song's timeline".into());
+        };
+        let rate = self.rate();
+        let info = self.media.iter().find(|m| m.id == clip.media_id);
+        if let Some((info, on_code)) = info.and_then(|m| Some((m, m.frame_in(&e.song, rate)?))) {
+            let sits = clip.start_frame - clip.in_frame;
+            if sits != on_code {
+                return Err(format!(
+                    "{} starts at {} but sits at {} on the timeline. Move it to its timecode to lock to it",
+                    clip.name,
+                    info.start_tc.as_deref().unwrap_or_default(),
+                    e.song.clock(rate).timecode_at(sits)
+                ));
+            }
+        }
+        Ok((clip.start_frame, clip.end_frame().min(e.song.length_frames)))
+    }
+
+    fn locked_file_span(&self) -> Result<(i64, i64), String> {
+        match self.locked_clip() {
+            Some(clip) => self.file_span(clip),
+            None => Err("The lock names no file".into()),
+        }
+    }
+
+    /// An edit can take the locked file away or move it off its code.
+    fn check_file_lock(&mut self) {
+        if self.transport.time != TimeMode::LockedFile {
+            return;
+        }
+        if let Err(why) = self.locked_file_span() {
+            self.release_lock(format!("Unlocked. {why}"));
+        }
+    }
+
+    /// Let go of a lock the operator did not release: back to free-run, stopped, with the reason kept.
+    fn release_lock(&mut self, why: String) {
+        let source = self.lock_source.take();
+        self.external = None;
+        let mut after = transport::apply(&self.transport, Action::Unlock, false);
+        if after.run != Run::Stopped {
+            after = transport::apply(&after, Action::Stop, false);
+        }
+        self.audio.stop();
+        self.transport = after;
+        self.log("lock_released", json!({ "source": source, "reason": why, "state": after }));
+        self.lock_problem = Some(why);
+        self.sync_capture();
+        self.poke();
+    }
+
+    /// Follow LTC, MTC or Art-Net: feed the chase, then move the playhead and the sound with it.
+    fn tick_external(&mut self, now: Instant) {
+        let rate = self.rate();
+        let started = self.started;
+        let t = now.duration_since(started).as_secs_f64();
+        let Some(ext) = &mut self.external else { return };
+        for s in ext.source.poll() {
+            ext.mismatched = if s.reading.rate.matches(rate) { 0 } else { ext.mismatched + 1 };
+            ext.chase.on_reading(s.reading, s.at.saturating_duration_since(started).as_secs_f64());
+        }
+        ext.chase.tick(t);
+        if ext.mismatched >= MISMATCH_READINGS {
+            let carried = ext.chase.announced().map(CodeRate::label).unwrap_or("another");
+            let why = format!(
+                "Lock refused: the {} carries {carried} fps code and the project is {} fps",
+                ext.kind.label(),
+                rate.label()
+            );
+            self.release_lock(why);
+            return;
+        }
+        let jumped = ext.chase.take_jump();
+        let code = ext.chase.code_at(t);
+        if let Some(why) = ext.source.problem() {
+            if self.lock_problem.as_deref() != Some(why.as_str()) {
+                self.log("lock_input", json!({ "source": self.lock_source, "problem": why }));
+                self.lock_problem = Some(why);
+            }
+        }
+        if jumped {
+            self.event(Event::Relocated);
+        }
+        let Some(e) = self.entry() else { return };
+        let (clock, length) = (e.song.clock(rate), e.song.length_frames as f64);
+        // Code inside the song, as a playhead position.
+        let at = code.map(|c| clock.offset_of(c)).filter(|f| (0.0..length).contains(f));
+        match (self.transport.run, at) {
+            (Run::WaitingForCode, Some(frame)) => {
+                self.frame_f = frame;
+                self.clock.reset();
+                self.audio.play(frame, rate);
+                self.audio_drift = 0.0;
+                self.event(Event::CodeEntered);
+            }
+            (Run::Playing, Some(frame)) => {
+                self.frame_f = self.clock.follow(frame, now, rate.fps());
+                // The sound follows code the server does not control: more than a frame out, it jumps back on.
+                let drift = self.audio.position(rate) - frame;
+                if !self.audio.is_playing() || drift.abs() > 1.0 {
+                    self.audio.play(frame, rate);
+                    self.log("audio_reseek", json!({ "frame": frame, "drift_frames": drift }));
+                    self.audio_drift = 0.0;
+                } else {
+                    self.audio_drift = drift;
+                }
+            }
+            (Run::Playing, None) => {
+                // Code stopped or left the song: hold here with Play still pressed.
+                self.audio.stop();
+                self.audio_drift = 0.0;
+                self.event(Event::CodeLost);
+            }
+            _ => self.audio_drift = 0.0,
+        }
+    }
+
+    fn lock_status(&self) -> LockStatus {
+        let rate = self.rate();
+        let problem = self.lock_problem.clone();
+        if let Some(ext) = &self.external {
+            let t = self.started.elapsed().as_secs_f64();
+            let last = ext.chase.last_reading();
+            return LockStatus {
+                source: self.lock_source.clone(),
+                chase: ext.chase.state(),
+                last_code: last.map(|(frames, _)| {
+                    let counting = ext.chase.announced().map(CodeRate::counting_rate).unwrap_or(rate);
+                    Timecode::from_frames(frames.floor() as i64, counting).to_string()
+                }),
+                frames_since_code: last.map(|_| ext.chase.silent_frames(t)),
+                announced_rate: ext.chase.announced().map(|r| r.label().to_string()),
+                problem,
+            };
+        }
+        if self.transport.time == TimeMode::LockedFile {
+            // The file is its own code: always there, and exact.
+            let code = self.entry().map(|e| e.song.clock(rate).timecode_at(self.frame_f.floor() as i64).to_string());
+            return LockStatus {
+                source: self.lock_source.clone(),
+                chase: ChaseState::Locked,
+                last_code: code,
+                frames_since_code: Some(0.0),
+                announced_rate: Some(CodeRate::of(rate).label().to_string()),
+                problem,
+            };
+        }
+        LockStatus { problem, ..LockStatus::default() }
     }
 
     // ---- record ----
@@ -1156,18 +1459,30 @@ impl Show {
 
         if self.entry().is_some() {
             let length = self.length() as f64;
-            // One reading of the audio clock per tick: the playhead and the drift figure share it.
-            let audio_pos = self.audio.position(self.rate());
-            if self.transport.run == Run::Playing && self.transport.time != TimeMode::LockedExternal {
-                let f = self.clock.follow(audio_pos, now, self.rate().fps());
-                if f >= length {
-                    self.frame_f = length;
-                    self.event(Event::SongEnded);
-                } else {
-                    self.frame_f = f;
+            if self.transport.time == TimeMode::LockedExternal {
+                self.tick_external(now);
+            } else {
+                // One reading of the audio clock per tick: the playhead and the drift figure share it.
+                let audio_pos = self.audio.position(self.rate());
+                if self.transport.run == Run::Playing {
+                    // Locked to a file, the show is the stretch that file covers.
+                    let (first, end) = match self.transport.time {
+                        TimeMode::LockedFile => self.locked_file_span().unwrap_or((0, 0)),
+                        _ => (0, self.length()),
+                    };
+                    let f = self.clock.follow(audio_pos, now, self.rate().fps());
+                    if f >= end as f64 {
+                        self.frame_f = (end as f64).min(length);
+                        self.event(Event::SongEnded);
+                    } else if f < first as f64 - 0.5 {
+                        self.frame_f = f.max(0.0);
+                        self.event(Event::SongEnded);
+                    } else {
+                        self.frame_f = f;
+                    }
                 }
+                self.audio_drift = if self.audio.is_playing() { audio_pos - self.frame_f } else { 0.0 };
             }
-            self.audio_drift = if self.audio.is_playing() { audio_pos - self.frame_f } else { 0.0 };
 
             let target = self.timeline_pose();
             if self.transport.output == Output::Positioning {
@@ -1242,7 +1557,7 @@ impl Show {
             you_hold_lease: self.holds_lease(client),
             guidance: transport::guidance(&self.transport, &self.context(client)),
             audio: self.audio_status(),
-            lock: LockStatus { source: self.lock_source.clone(), ..LockStatus::default() },
+            lock: self.lock_status(),
             adapters: self.rig.status(),
             record: RecordStatus {
                 axes: self.record_axes.clone(),
@@ -1263,8 +1578,17 @@ fn pass_id_of(song: &Song, clip: &str) -> Option<String> {
 /// evenly and still cannot drift from the sound.
 #[derive(Default)]
 struct SteadyClock {
-    /// The last answer, when it was given, and the device position it was given for.
-    last: Option<(f64, Instant, f64)>,
+    last: Option<Followed>,
+}
+
+#[derive(Clone, Copy)]
+struct Followed {
+    /// The answer given, when, and the device position it was given for.
+    at: f64,
+    when: Instant,
+    device: f64,
+    /// The device had moved since the reading before.
+    moving: bool,
 }
 
 impl SteadyClock {
@@ -1274,10 +1598,12 @@ impl SteadyClock {
     const SNAP_S: f64 = 0.05;
 
     fn follow(&mut self, device: f64, now: Instant, fps: f64) -> f64 {
+        let moving = self.last.is_some_and(|l| l.device != device);
         let at = match self.last {
-            // A device that has not moved has not started yet, or has just been cued.
-            Some((at, then, was)) if device != was => {
-                let coasted = at + now.duration_since(then).as_secs_f64() * fps;
+            // The device's first step is where it started from, at a moment between two
+            // readings: there is nothing to coast from until it is already under way.
+            Some(l) if moving && l.moving => {
+                let coasted = l.at + now.duration_since(l.when).as_secs_f64() * fps;
                 let off = device - coasted;
                 if off.abs() > Self::SNAP_S * fps {
                     device
@@ -1287,7 +1613,7 @@ impl SteadyClock {
             }
             _ => device,
         };
-        self.last = Some((at, now, device));
+        self.last = Some(Followed { at, when: now, device, moving });
         at
     }
 

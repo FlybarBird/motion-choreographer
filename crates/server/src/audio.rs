@@ -463,7 +463,7 @@ pub mod device {
 
     /// Why the default host cannot be used, when that can be known without opening it.
     #[cfg(target_os = "linux")]
-    fn host_problem() -> Option<String> {
+    pub(crate) fn host_problem() -> Option<String> {
         match std::fs::read_to_string("/proc/asound/cards") {
             Ok(cards) if cards.contains("no soundcards") || cards.trim().is_empty() => {
                 Some("This machine has no sound card (ALSA lists none)".into())
@@ -474,7 +474,7 @@ pub mod device {
     }
 
     #[cfg(not(target_os = "linux"))]
-    fn host_problem() -> Option<String> {
+    pub(crate) fn host_problem() -> Option<String> {
         None
     }
 
@@ -658,10 +658,13 @@ pub mod device {
                         silent_rendered = due - 256;
                     }
                     while silent_rendered + 256 <= due {
-                        if let Ok(mut r) = renderer.lock() {
-                            r.render(&mut silent_buf, 2, 0);
-                        }
                         silent_rendered += 256;
+                        // The block is rendered when this thread wakes, a little after it fell due.
+                        // Reporting how far past due it is keeps the position on the clock, not on the wake-ups.
+                        let late = (started.elapsed().as_secs_f64() * rate as f64) as i64 - silent_rendered as i64;
+                        if let Ok(mut r) = renderer.lock() {
+                            r.render(&mut silent_buf, 2, -late.max(0));
+                        }
                     }
                     std::thread::sleep(Duration::from_millis(2));
                     if choice != AudioChoice::Off && last_retry.elapsed() > Duration::from_secs(3) && host_problem().is_none() {

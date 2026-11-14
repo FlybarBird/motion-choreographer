@@ -323,6 +323,24 @@ pub fn click_track(rate: u32, seconds: f64, click_at: f64) -> Vec<f32> {
     samples
 }
 
+/// The seeded bed: a quiet chord that swells and falls, with a tick on every
+/// second so the waveform shows where the seconds are.
+pub fn bed_track(rate: u32, seconds: f64) -> Vec<f32> {
+    let n = (seconds * rate as f64).round() as usize;
+    let tau = 2.0 * std::f32::consts::PI;
+    (0..n)
+        .map(|i| {
+            let t = i as f32 / rate as f32;
+            let swell = 0.55 + 0.45 * (t * tau / 8.0 - tau / 4.0).sin();
+            let chord = [220.0f32, 277.18, 329.63].iter().map(|f| (t * tau * f).sin()).sum::<f32>() / 3.0;
+            let into_second = t.fract();
+            let tick = if into_second < 0.004 { (into_second * tau * 1500.0).cos() * (1.0 - into_second / 0.004) } else { 0.0 };
+            let fade = (t / 0.5).min(1.0).min((seconds as f32 - t) / 0.5).max(0.0);
+            (chord * 0.28 * swell + tick * 0.5) * fade
+        })
+        .collect()
+}
+
 // ---- the library ----
 
 pub fn info_for(id: &str, name: &str, kind: MediaKind, d: &Decoded, rate: FrameRate) -> MediaInfo {
@@ -340,7 +358,96 @@ pub fn info_for(id: &str, name: &str, kind: MediaKind, d: &Decoded, rate: FrameR
         start_tc_source: None,
         proxy_frames: 0,
         ltc_channel: None,
+        start_samples: None,
+        proxy_rate: None,
     }
+}
+
+// ---- start timecode ----
+
+pub const STAMP_BEXT: &str = "bext";
+pub const STAMP_QUICKTIME: &str = "quicktime";
+pub const STAMP_TYPED: &str = "typed";
+
+/// A broadcast WAV's time reference: the file's start as samples since midnight.
+/// Zero is what software writes when it has no time to give, so it counts as none.
+pub fn bext_time_reference(path: &Path) -> Option<u64> {
+    use std::io::{Seek, SeekFrom};
+    let mut f = fs::File::open(path).ok()?;
+    let mut head = [0u8; 12];
+    f.read_exact(&mut head).ok()?;
+    if !matches!(&head[..4], b"RIFF" | b"RF64" | b"BW64") || &head[8..] != b"WAVE" {
+        return None;
+    }
+    loop {
+        let mut chunk = [0u8; 8];
+        f.read_exact(&mut chunk).ok()?;
+        let len = u32::from_le_bytes(chunk[4..].try_into().ok()?) as u64;
+        if &chunk[..4] == b"bext" {
+            // Description 256, originator 32, originator reference 32, date 10, time 8, then the reference.
+            let mut body = [0u8; 346];
+            if len < body.len() as u64 {
+                return None;
+            }
+            f.read_exact(&mut body).ok()?;
+            let low = u32::from_le_bytes(body[338..342].try_into().ok()?) as u64;
+            let high = u32::from_le_bytes(body[342..346].try_into().ok()?) as u64;
+            return Some((high << 32) | low).filter(|t| *t > 0);
+        }
+        f.seek(SeekFrom::Current((len + (len & 1)) as i64)).ok()?;
+    }
+}
+
+/// Restate what depends on the project rate: the length in frames, and the
+/// start timecode of a broadcast WAV.
+pub fn restate(info: &mut MediaInfo, rate: FrameRate) {
+    info.duration_frames = duration_frames(info.samples, info.sample_rate, rate);
+    if let (Some(samples), Some(STAMP_BEXT)) = (info.start_samples, info.start_tc_source.as_deref()) {
+        info.start_tc = Some(ptz_core::time::timecode_of_samples(samples, info.sample_rate, rate).to_string());
+    }
+}
+
+/// The start timecode of a file that carries LTC on one of its channels: the
+/// first decoded frame, backed up to the file's first sample.
+pub fn ltc_start(d: &Decoded, channel: u32, rate: FrameRate) -> Result<ptz_core::Timecode, String> {
+    use ptz_core::ltc::LtcDecoder;
+    let shown = channel + 1;
+    if channel >= d.channels {
+        return Err(format!(
+            "the file has {} channel{}, so there is no channel {shown}",
+            d.channels,
+            if d.channels == 1 { "" } else { "s" }
+        ));
+    }
+    let samples = d.channel(channel);
+    let mut decoder = LtcDecoder::new();
+    let mut readings = Vec::new();
+    for block in samples.chunks(48_000) {
+        readings.extend(decoder.feed(block));
+        if readings.len() >= 3 {
+            break;
+        }
+    }
+    let Some(first) = readings.first() else {
+        return Err(format!("no LTC was found on channel {shown}"));
+    };
+    // The frame length is measured best between two sync words.
+    let measured = readings.get(1).unwrap_or(first).samples_per_frame.max(1.0);
+    let family = crate::lock::ltc_family(first.tc.drop_frame, d.rate as f64 / measured);
+    if !family.matches(rate) {
+        return Err(format!("channel {shown} carries {} fps LTC and the project is {} fps", family.label(), rate.label()));
+    }
+    if !first.tc.is_valid(rate) {
+        return Err(format!("the LTC on channel {shown} does not read as timecode at {} fps", rate.label()));
+    }
+    // When the frame's last bit ended the code was one frame on; the file began `end_sample` earlier.
+    let before = first.end_sample as f64 * rate.fps() / d.rate as f64;
+    let start = first.tc.to_frames(rate) as f64 + 1.0 - before;
+    Ok(ptz_core::Timecode::from_frames(start.round() as i64, rate))
+}
+
+pub fn ltc_start_of_file(audio: &Path, channel: u32, rate: FrameRate) -> Result<ptz_core::Timecode, String> {
+    ltc_start(&read_audio(audio)?, channel, rate)
 }
 
 /// Whole timeline frames the media covers at the project rate, rounded up so the last samples are reachable.
@@ -388,7 +495,7 @@ fn ingest_inner(source: &Path, dir: &Path, id: &str, name: &str, rate: FrameRate
     write_audio(&dir.join("audio.f32"), &decoded).map_err(io)?;
     write_peaks(&dir.join("peaks.bin"), &build_peaks(&decoded)).map_err(io)?;
     let mut info = info_for(id, name, kind, &decoded, rate);
-    crate::video::after_ingest(&original, dir, &decoded, rate, &mut info);
+    crate::video::after_ingest(&original, dir, rate, &mut info);
     write_json(&dir.join("info.json"), &info).map_err(io)?;
     Ok(Ingested { info, decoded })
 }
@@ -401,7 +508,7 @@ pub fn load_all(root: &Path, rate: FrameRate) -> Vec<MediaInfo> {
         .flatten()
         .filter_map(|e| read_json::<MediaInfo>(&e.path().join("info.json")))
         .map(|mut m| {
-            m.duration_frames = duration_frames(m.samples, m.sample_rate, rate);
+            restate(&mut m, rate);
             m
         })
         .collect();
