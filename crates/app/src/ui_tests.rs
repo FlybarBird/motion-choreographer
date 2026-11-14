@@ -1385,6 +1385,8 @@ fn cameras_are_selected_moved_turned_placed_and_aimed_in_the_stage_view() {
     // The same drag from above, in the Top view.
     r.press("Top");
     assert_eq!(r.harness.state().session.stage_view.angle, Angle::Top);
+    let labels = r.harness.state().session.stage_view.labels.clone();
+    assert!(labels.iter().all(|label| view.contains_rect(*label)), "the plan is fitted to the view: {labels:?} in {view:?}");
     let (from, to) = (r.stage_point([6.0, 3.0, 0.0]), r.stage_point([-5.0, 2.0, 0.0]));
     r.drag(from, to);
     let m = r.mount("cam3");
