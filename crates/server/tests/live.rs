@@ -742,3 +742,62 @@ fn with_plain_moves_a_camera_whose_keep_out_rules_watch_pan_or_tilt_is_steered_a
     assert_eq!(absolute, 0, "the head was steered, not sent off on a ramp of its own");
     assert!(rig.fr7.pose().1 < -29.0 && rig.pod.height_mm() > 390.0, "and the move was made: {:?}", rig.pose());
 }
+
+/// Fastest pan of the stand-in head over any 300 ms of the next `for_ms`, in degrees per second.
+/// Long enough to even out the adapter's stepping between the two speed steps either side of a speed.
+fn fastest_pan(fr7: &FakeFr7, for_ms: u64) -> f64 {
+    let began = Instant::now();
+    let mut samples: Vec<(Instant, f64)> = Vec::new();
+    while began.elapsed() < Duration::from_millis(for_ms) {
+        samples.push((Instant::now(), fr7.pose().0));
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    samples
+        .iter()
+        .enumerate()
+        .filter_map(|(i, (t0, p0))| {
+            let (t1, p1) = samples[i..].iter().find(|(t, _)| t.duration_since(*t0) >= Duration::from_millis(300))?;
+            Some((p1 - p0).abs() / t1.duration_since(*t0).as_secs_f64())
+        })
+        .fold(0.0, f64::max)
+}
+
+#[test]
+fn a_playhead_that_jumps_while_armed_sends_the_rig_there_at_the_arm_speed() {
+    let t = TestServer::start("live-jump");
+    let api = t.client("a");
+    api.take_lease("Luke-MacBook", false).unwrap();
+    let rig = Rig::start();
+    let project = rig.connect(&api);
+    let arm_speed = project.cameras[0].rig.positioning_speed * project.cameras[0].axes.pan.max_speed;
+    assert_eq!(arm_speed, 30.0, "Arm moves at half of 60 degrees per second");
+
+    let mark = store(&api, "Far", Pose { pan: 150.0, ..Pose::home() });
+    song_with_move(&api, &project, "Rewind", &mark);
+    let length = api.status().unwrap().song.unwrap().length_frames;
+    do_act(&api, Action::Arm);
+    wait_for(&api, |s| s.transport.output == Output::Armed);
+
+    // Play Live through the last frames of the song: it stops at the end, armed, the head at 150 degrees.
+    seek(&api, length - 10);
+    wait_for(&api, |s| s.transport.output == Output::Armed);
+    assert!((rig.fr7.pose().0 - 150.0).abs() < 1.0);
+    do_act(&api, Action::Play);
+    let st = wait_for(&api, |s| s.transport.run == Run::Stopped);
+    assert_eq!((st.frame, st.transport.output), (length, Output::Armed));
+
+    // Play Live again starts the song from the top, where the head belongs at 0 degrees. The rig
+    // goes there as it goes anywhere the playhead jumps to: at the Arm speed, with the bar saying so.
+    do_act(&api, Action::Play);
+    let st = wait_for(&api, |s| s.transport.output != Output::Armed || s.telemetry.fault.is_some());
+    assert_eq!((st.transport.output, st.telemetry.fault.clone()), (Output::Positioning, None));
+    let speed = fastest_pan(&rig.fr7, 1200);
+    assert!(speed > arm_speed * 0.5, "the head is on its way back: {speed:.1} deg/s");
+    assert!(speed < arm_speed * 1.15, "the head swung back at {speed:.1} deg/s; the Arm speed is {arm_speed} deg/s");
+    let st = api.status().unwrap();
+    assert_eq!(st.telemetry.fault, None);
+    let log = log_kinds(&api);
+    assert!(log.iter().any(|r| r.kind == "event" && r.data["event"] == "Relocated"), "the jump is in the run log");
+    do_act(&api, Action::Disarm);
+    wait_for(&api, |s| !s.telemetry.halting);
+}

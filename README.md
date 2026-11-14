@@ -396,7 +396,11 @@ the pose it was made from, so the armed song is not affected.
 
 While armed and stopped, **Cue**, Home, a click on the ruler, or a jump in the
 timecode the show is locked to sends every rig to the pose at the new
-playhead, at the Arm speed; the bar reads ARMING until they are there.
+playhead, at the Arm speed; the bar reads ARMING until they are there. The
+same holds for any other way the playhead comes to be somewhere else while
+armed, playing or stopped: **Play Live** at the end of the song starts it from
+the top, and the rigs travel back at the Arm speed, not at the full speed of
+their axes.
 
 A camera's rig is held and its output is cut, with the reason in red on the bar and in the
 Rig controller tab, until the show is disarmed and armed again (Play does not

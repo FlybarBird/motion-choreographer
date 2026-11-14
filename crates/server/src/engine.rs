@@ -198,7 +198,12 @@ pub struct Show {
     log: RunLog,
     tx: broadcast::Sender<Push>,
     estop_line: EstopLine,
+    /// Where the playhead was at the last turn of the show loop with hardware live.
+    live_playhead: Option<f64>,
 }
+
+/// A playhead further than this from where playing on would have put it has jumped.
+const PLAYHEAD_JUMP_S: f64 = 0.25;
 
 pub type Shared = Arc<Mutex<Show>>;
 
@@ -413,6 +418,7 @@ impl Show {
             log,
             tx,
             estop_line,
+            live_playhead: None,
         };
         show.rebuild_mix();
         Ok((show, rx))
@@ -2140,7 +2146,8 @@ impl Show {
 
     pub fn tick(&mut self) {
         let now = Instant::now();
-        let dt = now.duration_since(self.last_tick).as_secs_f64().min(0.25);
+        let elapsed = now.duration_since(self.last_tick).as_secs_f64();
+        let dt = elapsed.min(0.25);
         self.last_tick = now;
 
         if self.lease.as_ref().is_some_and(|l| now.duration_since(l.last_seen) > self.lease_ttl) {
@@ -2183,6 +2190,20 @@ impl Show {
                 }
                 self.audio_drift = if self.audio.is_playing() { audio_pos - self.frame_f } else { 0.0 };
             }
+
+            // Armed, the rigs follow the playhead at the full speed of their axes. A playhead that
+            // is suddenly somewhere else is not followed like that, however it got there: the
+            // rigs travel to the new pose at the Arm speed, as they do after Cue or a jump in the code.
+            if self.transport.output == Output::Armed {
+                if let Some(was) = self.live_playhead {
+                    let fps = self.rate().fps();
+                    let played = if self.transport.run == Run::Playing { fps * elapsed } else { 0.0 };
+                    if (self.frame_f - was - played).abs() > fps * PLAYHEAD_JUMP_S {
+                        self.event(Event::Relocated);
+                    }
+                }
+            }
+            self.live_playhead = self.transport.hardware_live().then_some(self.frame_f);
 
             if self.transport.hardware_live() {
                 self.tick_cameras(now, dt);
