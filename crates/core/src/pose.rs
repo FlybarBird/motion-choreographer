@@ -295,6 +295,9 @@ pub struct RigConfig {
     /// Run a plain preset move as one absolute command and let the head ramp itself,
     /// instead of steering it along the curve.
     pub fr7_absolute_moves: bool,
+    /// Degrees per second of each VISCA speed step, slowest first, as measured on the
+    /// head by the bring-up tool. Empty uses an even spread between Sony's published ends.
+    pub fr7_speed_steps: Vec<f64>,
     /// Age of a position reading when it arrives, in milliseconds. Zero uses the
     /// round trip the adapter measures as it runs.
     pub query_delay_ms: f64,
@@ -321,6 +324,7 @@ impl Default for RigConfig {
             fr7_invert_pan: false,
             fr7_invert_tilt: false,
             fr7_absolute_moves: false,
+            fr7_speed_steps: Vec::new(),
             query_delay_ms: 0.0,
             autopod_host: String::new(),
             autopod_calibration: Vec::new(),
