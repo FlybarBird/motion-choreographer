@@ -1,4 +1,4 @@
-.PHONY: test check fmt run-server run-app probe install-mac uninstall-mac test-install
+.PHONY: test check fmt run-server run-app probe install-mac uninstall-mac test-install package test-package
 
 DATA ?= $(HOME)/PTZProgrammer
 PROBE_PORT ?= 18787
@@ -7,12 +7,13 @@ PROBE_PORT ?= 18787
 test:
 	cargo test --workspace
 
-# Formatting and lints, warnings as errors, then the install script on stand-in binaries.
+# Formatting and lints, warnings as errors, then the install and packaging scripts on stand-in binaries.
 check:
 	cargo fmt --all -- --check
 	cargo clippy --workspace --all-targets -- -D warnings
 	@if command -v shellcheck >/dev/null 2>&1; then shellcheck scripts/*.sh; else echo "shellcheck is not installed: the scripts were not linted"; fi
 	bash scripts/test-install.sh
+	bash scripts/test-package.sh
 
 fmt:
 	cargo fmt --all
@@ -41,3 +42,11 @@ uninstall-mac:
 
 test-install:
 	bash scripts/test-install.sh
+
+# Two installers in dist/: the app (with the show server as an option), and the server alone.
+# .pkg files on a Mac, .run files on Linux, for the kind of machine this is run on.
+package:
+	bash scripts/package.sh
+
+test-package:
+	bash scripts/test-package.sh
