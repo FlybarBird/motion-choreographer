@@ -1,4 +1,4 @@
-.PHONY: test check fmt run-server run-app probe install-mac test-install
+.PHONY: test check fmt run-server run-app probe install-mac uninstall-mac test-install
 
 DATA ?= $(HOME)/PTZProgrammer
 PROBE_PORT ?= 18787
@@ -11,6 +11,7 @@ test:
 check:
 	cargo fmt --all -- --check
 	cargo clippy --workspace --all-targets -- -D warnings
+	@if command -v shellcheck >/dev/null 2>&1; then shellcheck scripts/*.sh; else echo "shellcheck is not installed: the scripts were not linted"; fi
 	bash scripts/test-install.sh
 
 fmt:
@@ -34,6 +35,9 @@ probe:
 
 install-mac:
 	bash scripts/macos-install.sh
+
+uninstall-mac:
+	bash scripts/macos-install.sh --uninstall
 
 test-install:
 	bash scripts/test-install.sh
