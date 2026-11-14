@@ -7,6 +7,7 @@ use ptz_core::api::MediaInfo;
 use ptz_core::edit;
 use ptz_core::pose::{Axis, Preset, Project};
 use ptz_core::song::{Interp, Key, Song, Track};
+use ptz_core::time::{frame_to_sample, Timecode};
 use std::collections::BTreeMap;
 
 pub const CLICK_ID: &str = "click-12-4s";
@@ -21,6 +22,23 @@ fn seed_click(storage: &Storage, project: &Project) -> std::io::Result<MediaInfo
     media::wav::write(&tmp, 48_000, 1, &media::click_track(48_000, CLICK_SECONDS, CLICK_AT), None)?;
     let dir = storage.media_dir(CLICK_ID).ok_or_else(|| std::io::Error::other("bad media id"))?;
     media::ingest(&tmp, &dir, CLICK_ID, "Click 12.4s.wav", project.rate).map(|i| i.info).map_err(std::io::Error::other)
+}
+
+pub const BED_ID: &str = "awards-bed-walk-on";
+pub const BED_NAME: &str = "Awards Bed walk-on.wav";
+pub const BED_SECONDS: f64 = 20.0;
+pub const BED_START_TC: &str = "02:00:10:00";
+
+/// A broadcast WAV stamped ten seconds into Awards Bed: dropped on that song
+/// it lands on its code, and the song can be locked to it.
+fn seed_bed(storage: &Storage, project: &Project) -> std::io::Result<MediaInfo> {
+    let rate = project.rate;
+    let start = Timecode::parse_at(BED_START_TC, rate).map(|tc| tc.to_frames(rate)).unwrap_or(0);
+    let reference = frame_to_sample(start, 48_000, rate).max(0) as u64;
+    let tmp = storage.media_root().join(".seed-bed.tmp");
+    media::wav::write(&tmp, 48_000, 1, &media::bed_track(48_000, BED_SECONDS), Some(reference))?;
+    let dir = storage.media_dir(BED_ID).ok_or_else(|| std::io::Error::other("bad media id"))?;
+    media::ingest(&tmp, &dir, BED_ID, BED_NAME, rate).map(|i| i.info).map_err(std::io::Error::other)
 }
 
 fn secs(project: &Project, s: f64) -> i64 {
@@ -106,8 +124,16 @@ pub fn seed(storage: &Storage) -> std::io::Result<()> {
         opening = next;
     }
 
-    let awards_bed =
+    let mut awards_bed =
         build(&project, "awards-bed", "Awards Bed", "02:00:00:00", 60.0, &[(0.0, awards)], &[(30.0, "Winner announced")]);
+    let bed = seed_bed(storage, &project)?;
+    if let Some(at) = bed.frame_in(&awards_bed, project.rate) {
+        if let Ok((next, _)) =
+            edit::add_media_clip(&awards_bed, &project, &bed.id, &bed.name, Track::Audio, bed.duration_frames, at)
+        {
+            awards_bed = next;
+        }
+    }
 
     storage.save_project(&project)?;
     storage.save_presets(&presets)?;
@@ -153,8 +179,15 @@ mod tests {
         let clip = &walk_in.media[0];
         assert_eq!((clip.media_id.as_str(), clip.start_frame, clip.in_frame, clip.out_frame), (CLICK_ID, 0, 0, 310));
         let library = media::load_all(&st.media_root(), project.rate);
-        assert_eq!(library.len(), 1);
-        assert!((library[0].duration_s - CLICK_SECONDS).abs() < 1e-9);
+        assert_eq!(library.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), [BED_ID, CLICK_ID]);
+        assert!((library[1].duration_s - CLICK_SECONDS).abs() < 1e-9);
+        // Awards Bed carries a stamped file sitting on its own code.
+        let bed = &library[0];
+        assert_eq!((bed.start_tc.as_deref(), bed.start_tc_source.as_deref()), (Some(BED_START_TC), Some("bext")));
+        let awards = st.load_working("awards-bed").unwrap();
+        let clip = &awards.media[0];
+        assert_eq!((clip.media_id.as_str(), clip.start_frame, clip.out_frame), (BED_ID, 250, 500));
+        assert_eq!(awards.clock(project.rate).timecode_at(clip.start_frame).to_string(), BED_START_TC);
         assert_eq!(st.revisions("walk-in").len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
