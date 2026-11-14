@@ -215,6 +215,20 @@ impl CodeSource for Feed {
     }
 }
 
+/// The audio inputs and MIDI ports on this machine, for the input settings.
+pub fn choices() -> ptz_core::api::InputChoices {
+    let mut out = ptz_core::api::InputChoices::default();
+    match crate::audio::device::list() {
+        Ok((_, inputs)) => out.audio_inputs = inputs,
+        Err(why) => out.audio_problem = Some(why),
+    }
+    match midir::MidiInput::new("PTZ Programmer") {
+        Ok(input) => out.midi_inputs = input.ports().iter().filter_map(|p| input.port_name(p).ok()).collect(),
+        Err(e) => out.midi_problem = Some(format!("MIDI is not available on this machine: {e}")),
+    }
+    out
+}
+
 /// Open the input for `kind` as the project configures it. An input that
 /// cannot be opened says why, in words the operator can act on.
 pub fn open(kind: Kind, cfg: &InputConfig) -> Result<Feed, String> {

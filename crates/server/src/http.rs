@@ -226,6 +226,10 @@ async fn put_project(State(app): State<App>, Client(c): Client, Json(project): J
     Ok(Json(lock(&app.show).put_project(&c, project)?))
 }
 
+async fn get_inputs() -> Json<InputChoices> {
+    Json(tokio::task::spawn_blocking(crate::lock::choices).await.unwrap_or_default())
+}
+
 async fn get_presets(State(app): State<App>) -> Json<Vec<Preset>> {
     Json(lock(&app.show).presets.clone())
 }
@@ -491,6 +495,7 @@ pub fn router(app: App) -> Router {
         .route("/estop", post(estop))
         .route("/estop/reset", post(estop_reset))
         .route("/project", get(get_project).put(put_project))
+        .route("/inputs", get(get_inputs))
         .route("/presets", get(get_presets).post(post_preset))
         .route("/presets/sync", post(sync_presets))
         .route("/presets/{id}", delete(delete_preset))
