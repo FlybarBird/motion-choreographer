@@ -76,7 +76,22 @@ pub struct Settings {
     pub server: String,
     pub station: String,
     pub access_key: String,
+    /// Servers this station has reached, newest first.
+    pub recent: Vec<String>,
     pub layout: Option<DockState<Tab>>,
+}
+
+const RECENT_SERVERS: usize = 5;
+
+/// `url` moved to the front of the recent list.
+pub fn remember_server(recent: &mut Vec<String>, url: &str) {
+    let url = url.trim();
+    if url.is_empty() {
+        return;
+    }
+    recent.retain(|r| r != url);
+    recent.insert(0, url.to_string());
+    recent.truncate(RECENT_SERVERS);
 }
 
 fn settings_path() -> Option<PathBuf> {
@@ -463,7 +478,11 @@ impl Shell {
                         None => ("Take the lease", "Watching. Nobody holds the edit lease".to_string(), false),
                     };
                     if ui.add(filled(label, ACCENT)).clicked() {
-                        s.link.send(Cmd::TakeLease { name: s.station.clone(), force });
+                        if force {
+                            s.confirm_takeover = true;
+                        } else {
+                            s.link.send(Cmd::TakeLease { name: s.station.clone(), force });
+                        }
                     }
                     ui.label(RichText::new(icon::EYE).font(icon_font(15.0)).color(AMBER));
                     ui.label(RichText::new(text).color(AMBER));
@@ -828,6 +847,27 @@ impl Shell {
                 s.confirm_sync = false;
             }
         }
+        if s.confirm_takeover {
+            let holder = s.status.lease.as_ref().map(|l| l.holder.clone()).unwrap_or_default();
+            egui::Modal::new(egui::Id::new("dlg_takeover")).show(ctx, |ui| {
+                ui.set_width(380.0);
+                ui.heading(format!("Take the edit lease from {holder}?"));
+                ui.label(format!("{holder} stops being able to edit or run the show at once, and is told this station took over. The song stays as it is."));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.add(filled(format!("Take it from {holder}"), AMBER)).clicked() {
+                        s.link.send(Cmd::TakeLease { name: s.station.clone(), force: true });
+                        s.confirm_takeover = false;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        s.confirm_takeover = false;
+                    }
+                });
+            });
+            if ctx.input(|i| i.key_pressed(Key::Escape)) {
+                s.confirm_takeover = false;
+            }
+        }
         if let Some(d) = next {
             self.dialog = d;
         } else if close || (!matches!(self.dialog, Dialog::None) && ctx.input(|i| i.key_pressed(Key::Escape))) {
@@ -1054,6 +1094,20 @@ impl PtzApp {
                             go = true;
                         }
                         ui.end_row();
+                        let others: Vec<String> =
+                            self.settings.recent.iter().filter(|r| r.as_str() != self.settings.server.trim()).cloned().collect();
+                        if !others.is_empty() {
+                            ui.label(RichText::new("Recent").color(MUTED));
+                            ui.vertical(|ui| {
+                                for url in others {
+                                    let link = ui.add_enabled(!busy, egui::Button::new(&url).frame(false));
+                                    if link.on_hover_text("Use this server").clicked() {
+                                        self.settings.server = url;
+                                    }
+                                }
+                            });
+                            ui.end_row();
+                        }
                         ui.label("Station name");
                         ui.add_enabled(!busy, egui::TextEdit::singleline(&mut self.settings.station).desired_width(290.0))
                             .on_hover_text("Shown to other stations when this one holds the edit lease");
@@ -1080,7 +1134,7 @@ impl PtzApp {
                             }
                             if ui
                                 .add(egui::Button::new("Start a server on this computer").min_size(vec2(0.0, 32.0)))
-                                .on_hover_text("Runs ptz-server here with the simulator rig, then connects to it")
+                                .on_hover_text("Runs ptz-server here on the show folder in your home folder, then connects to it. It drives the rig that project names, the simulator on a new folder, and keeps running after the app quits")
                                 .clicked()
                             {
                                 start_local = true;
@@ -1135,6 +1189,9 @@ impl eframe::App for PtzApp {
                         else {
                             unreachable!()
                         };
+                        let server = self.settings.server.clone();
+                        remember_server(&mut self.settings.recent, &server);
+                        self.settings.save();
                         let session = Session::new(link, &self.settings.station, *hello);
                         let shell = Shell::new(session, self.settings.layout.take());
                         next = Some(Screen::Main(Box::new(shell)));
