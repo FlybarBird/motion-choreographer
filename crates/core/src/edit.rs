@@ -515,6 +515,23 @@ pub fn set_key_interp(song: &Song, project: &Project, clip: &str, axis: Axis, in
     finish(next, project)
 }
 
+/// Replace the curves of a keys clip on the given axes, for example after
+/// refitting a recorded pass. Axes the clip does not drive are ignored.
+pub fn replace_curves(song: &Song, project: &Project, clip: &str, new_curves: BTreeMap<Axis, Vec<Key>>) -> Edit {
+    let mut next = song.clone();
+    let c = motion_mut(&mut next, clip)?;
+    let axes = c.axes.clone();
+    let ClipBody::Keys { curves } = &mut c.body else {
+        return Err(Refusal::NotKeys);
+    };
+    for (axis, keys) in new_curves {
+        if axes.contains(&axis) {
+            curves.insert(axis, keys);
+        }
+    }
+    finish(next, project)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum EasyEase {
     Both,

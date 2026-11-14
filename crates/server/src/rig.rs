@@ -37,6 +37,12 @@ pub trait RigAdapter: Send {
         Err("The rig controller drives the simulator only. Use the camera's own controller for hardware".into())
     }
 
+    /// How old a pose reading is when it arrives, in seconds. The recorder
+    /// shifts samples back by this much.
+    fn query_delay_s(&self) -> f64 {
+        0.0
+    }
+
     /// Put the given axes of a virtual rig at `pose` (Rehearse monitor). Hardware ignores this.
     fn sync_virtual(&mut self, _pose: &Pose, _axes: &[Axis]) {}
 
@@ -168,11 +174,15 @@ impl RigAdapter for Simulator {
     }
 
     fn sync_virtual(&mut self, pose: &Pose, axes: &[Axis]) {
-        if matches!(self.mode, Mode::Jog(_)) {
-            return;
-        }
+        // An axis being driven by hand is left alone; the rest follow.
+        let held = match self.mode {
+            Mode::Jog(jog) => jog,
+            _ => Jog::default(),
+        };
         for a in axes {
-            self.pose.set(*a, pose.get(*a));
+            if held.get(*a) == 0.0 {
+                self.pose.set(*a, pose.get(*a));
+            }
         }
     }
 }
