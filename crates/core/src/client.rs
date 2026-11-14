@@ -237,4 +237,34 @@ impl Api {
     pub fn jog(&self, jog: &Jog) -> ApiResult<Status> {
         self.post("/rig/jog", jog)
     }
+
+    pub fn media(&self) -> ApiResult<Vec<MediaInfo>> {
+        self.get("/media")
+    }
+
+    /// Import a file. `name` is the file name shown in the Media tab; its extension picks the decoder.
+    pub fn upload_media(&self, name: &str, file: std::fs::File) -> ApiResult<MediaInfo> {
+        self.upload(&format!("/media?name={}", encode_query(name)), file)
+    }
+
+    pub fn delete_media(&self, id: &str) -> ApiResult<Vec<MediaInfo>> {
+        self.delete(&format!("/media/{id}"))
+    }
+
+    /// The waveform overview level that suits `samples_per_pixel`.
+    pub fn peaks(&self, id: &str, samples_per_pixel: u32) -> ApiResult<PeakLevel> {
+        let bytes = self.get_bytes(&format!("/media/{id}/peaks?spp={samples_per_pixel}"))?;
+        PeakLevel::from_bytes(&bytes).ok_or_else(|| ApiErr::Network("The server's waveform was not understood".into()))
+    }
+}
+
+/// Percent-encode a value for a query string.
+pub fn encode_query(value: &str) -> String {
+    value
+        .bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' => (b as char).to_string(),
+            other => format!("%{other:02X}"),
+        })
+        .collect()
 }

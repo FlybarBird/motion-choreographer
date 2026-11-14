@@ -243,6 +243,48 @@ pub struct MediaInfo {
     pub ltc_channel: Option<u32>,
 }
 
+/// One level of a waveform overview: the lowest and highest sample in each
+/// bucket, across channels, scaled to -127..=127. Sent as bytes, not JSON.
+#[derive(Clone, PartialEq, Debug, Default)]
+pub struct PeakLevel {
+    pub samples_per_bucket: u32,
+    pub sample_rate: u32,
+    pub pairs: Vec<(i8, i8)>,
+}
+
+impl PeakLevel {
+    const MAGIC: &'static [u8; 4] = b"PTZW";
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(16 + self.pairs.len() * 2);
+        out.extend_from_slice(Self::MAGIC);
+        out.extend_from_slice(&self.samples_per_bucket.to_le_bytes());
+        out.extend_from_slice(&self.sample_rate.to_le_bytes());
+        out.extend_from_slice(&(self.pairs.len() as u32).to_le_bytes());
+        for (lo, hi) in &self.pairs {
+            out.push(*lo as u8);
+            out.push(*hi as u8);
+        }
+        out
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Option<PeakLevel> {
+        let word = |at: usize| Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?));
+        if bytes.get(..4)? != Self::MAGIC {
+            return None;
+        }
+        let (samples_per_bucket, sample_rate, count) = (word(4)?, word(8)?, word(12)? as usize);
+        let body = bytes.get(16..16 + count * 2)?;
+        let pairs = body.as_chunks::<2>().0.iter().map(|c| (c[0] as i8, c[1] as i8)).collect();
+        Some(PeakLevel { samples_per_bucket, sample_rate, pairs })
+    }
+
+    /// Seconds covered by one bucket.
+    pub fn bucket_seconds(&self) -> f64 {
+        self.samples_per_bucket as f64 / self.sample_rate.max(1) as f64
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub struct StoreTc {
     /// Typed start timecode, or `ltc:<channel>` to decode it from a channel.
