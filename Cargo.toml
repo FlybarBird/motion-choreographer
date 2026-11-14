@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/server", "crates/app"]
+members = ["crates/core", "crates/scene", "crates/server", "crates/app"]
 
 [workspace.package]
 version = "0.1.0"
@@ -10,6 +10,7 @@ rust-version = "1.88"
 
 [workspace.dependencies]
 ptz-core = { path = "crates/core" }
+ptz-scene = { path = "crates/scene" }
 serde = { version = "1", features = ["derive"] }
 # float_roundtrip: the run log hashes numbers as written, so they must read back exactly.
 serde_json = { version = "1", features = ["float_roundtrip"] }
@@ -50,3 +51,7 @@ lto = "thin"
 
 [profile.dev.package.ptz-core]
 opt-level = 2
+
+# The renderer is a pixel loop: unoptimised it is too slow to judge.
+[profile.dev.package.ptz-scene]
+opt-level = 3
