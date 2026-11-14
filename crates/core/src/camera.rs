@@ -215,6 +215,43 @@ impl StageModel {
         }
     }
 
+    /// Where a point of the file stands in the world, in metres: unit, then up axis, then rotation, then offset.
+    pub fn place(&self, p: [f64; 3]) -> [f64; 3] {
+        let s = self.unit.metres();
+        let [x, y, z] = match self.up {
+            UpAxis::Z => [p[0] * s, p[1] * s, p[2] * s],
+            // A quarter turn about X: the file's Y becomes height and nothing is mirrored.
+            UpAxis::Y => [p[0] * s, -p[2] * s, p[1] * s],
+        };
+        let (sin, cos) = self.rotation_deg.to_radians().sin_cos();
+        [x * cos - y * sin + self.offset[0], x * sin + y * cos + self.offset[1], z + self.offset[2]]
+    }
+
+    /// Lowest and highest corner of the placed model's box, in metres.
+    pub fn bounds_m(&self) -> ([f64; 3], [f64; 3]) {
+        let (mut min, mut max) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+        for corner in 0..8 {
+            let p = self.place([0, 1, 2].map(|k| if corner >> k & 1 == 1 { self.max[k] } else { self.min[k] }));
+            for k in 0..3 {
+                min[k] = min[k].min(p[k]);
+                max[k] = max[k].max(p[k]);
+            }
+        }
+        (min, max)
+    }
+
+    /// Move the model up or down so its lowest point is on the floor.
+    pub fn sit_on_floor(&mut self) {
+        self.offset[2] -= self.bounds_m().0[2];
+    }
+
+    /// Move the model sideways so the middle of its footprint is at the origin.
+    pub fn centre(&mut self) {
+        let (min, max) = self.bounds_m();
+        self.offset[0] -= (min[0] + max[0]) / 2.0;
+        self.offset[1] -= (min[1] + max[1]) / 2.0;
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         let finite = self.offset.iter().chain(&self.min).chain(&self.max).chain([&self.rotation_deg]).all(|v| v.is_finite());
         if !finite || self.offset.iter().any(|v| v.abs() > 100_000.0) {
@@ -252,6 +289,41 @@ impl Stage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_model_is_placed_by_unit_up_axis_rotation_and_offset_in_that_order() {
+        // A box 4000 by 3000 by 2000 in millimetres, Y up, its low corner 1000 above and 500 behind the file's origin.
+        let mut model = StageModel {
+            min: [0.0, 1000.0, -3500.0],
+            max: [4000.0, 3000.0, -500.0],
+            unit: Unit::Mm,
+            up: UpAxis::Y,
+            ..StageModel::default()
+        };
+        assert_eq!(model.size_m(), [4.0, 3.0, 2.0]);
+        // The file's Y is height, and its -Z is depth away from the camera.
+        assert_eq!(model.place([4000.0, 3000.0, -3500.0]), [4.0, 3.5, 3.0]);
+        assert_eq!(model.bounds_m(), ([0.0, 0.5, 1.0], [4.0, 3.5, 3.0]));
+
+        model.sit_on_floor();
+        model.centre();
+        assert_eq!(model.offset, [-2.0, -2.0, -1.0]);
+        assert_eq!(model.bounds_m(), ([-2.0, -1.5, 0.0], [2.0, 1.5, 2.0]));
+
+        // A quarter turn swaps width and depth; the offset is applied after it, so the box is no longer centred.
+        model.rotation_deg = 90.0;
+        let (min, max) = model.bounds_m();
+        let near = |a: [f64; 3], b: [f64; 3]| a.iter().zip(&b).all(|(a, b)| (a - b).abs() < 1e-9);
+        assert!(near(min, [-5.5, -2.0, 0.0]) && near(max, [-2.5, 2.0, 2.0]), "{min:?} {max:?}");
+        model.centre();
+        let (min, max) = model.bounds_m();
+        assert!(near(min, [-1.5, -2.0, 0.0]) && near(max, [1.5, 2.0, 2.0]), "{min:?} {max:?}");
+
+        // In metres with Z up the file is taken as it is.
+        let plain = StageModel { min: [0.0; 3], max: [40.0, 25.0, 9.0], ..StageModel::default() };
+        assert_eq!(plain.place([40.0, 25.0, 9.0]), [40.0, 25.0, 9.0]);
+        assert_eq!(plain.size_m(), [40.0, 25.0, 9.0]);
+    }
 
     #[test]
     fn the_lens_rises_with_the_column_and_turns_with_the_heading() {
