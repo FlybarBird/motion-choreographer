@@ -774,20 +774,22 @@ impl Shell {
         };
         let with_cmd = |k: Key| chord(k).is_some_and(|m| m.command);
         let alone = |k: Key| chord(k).is_some_and(|m| !m.command);
+        if with_cmd(Key::S) {
+            if let Some(song) = &s.song {
+                s.link.send(Cmd::Save(song.id.clone()));
+            }
+        }
+        // Nothing below edits or runs the show while a text field has the keyboard. Cmd-Z there
+        // is the field's own undo: it does not reach past the field into the song.
+        if ctx.text_edit_focused() {
+            return;
+        }
         if let Some(m) = chord(Key::Z).filter(|m| m.command) {
             if m.shift {
                 s.redo();
             } else {
                 s.undo();
             }
-        }
-        if with_cmd(Key::S) {
-            if let Some(song) = &s.song {
-                s.link.send(Cmd::Save(song.id.clone()));
-            }
-        }
-        if ctx.text_edit_focused() {
-            return;
         }
         if with_cmd(Key::D) {
             timeline_ui::duplicate_selection(s);

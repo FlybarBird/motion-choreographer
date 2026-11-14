@@ -549,3 +549,43 @@ fn a_held_pad_stops_when_the_hand_is_taken_off_it_by_anything_else() {
         assert!(cam_jogs(&r).iter().any(|(_, jog)| jog.pan > 0.0), "{when}: a new press moves the rig");
     }
 }
+
+/// Undo belongs to the text box while one is being typed in: it does not reach past it into the song.
+#[test]
+fn undo_and_redo_leave_the_song_alone_while_a_text_field_has_the_keyboard() {
+    use egui::{Key, Modifiers};
+    let mut r = busy(DEFAULT_WINDOW);
+    assert_eq!(r.song().motion.len(), 1);
+    // The song's name, in the header.
+    let name = r
+        .harness
+        .query_all(egui_kittest::kittest::by().role(egui::accesskit::Role::TextInput))
+        .filter(|n| n.accesskit_node().value().as_deref() == Some("Test Song"))
+        .map(|n| n.rect())
+        .min_by(|a, b| a.top().total_cmp(&b.top()))
+        .expect("the name box is in the header");
+    r.click(name.center());
+    assert!(r.harness.ctx.text_edit_focused(), "the name box has the keyboard");
+    r.harness.event(egui::Event::Text("x".into()));
+    r.harness.run_steps(2);
+    let _ = r.cmds.try_iter().count();
+
+    r.harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    r.harness.run_steps(2);
+    assert_eq!(r.song().motion.len(), 1, "Cmd-Z in the name box did not undo the move on the timeline");
+    assert!(r.toasts().is_empty(), "{:?}", r.toasts());
+
+    // Out of the box, the same keys undo and redo the song.
+    r.harness.key_press(Key::Escape);
+    r.harness.run_steps(2);
+    let l = r.layout();
+    r.click(pos2(l.x_of(900.0), l.lane_rect(Lane::Audio).unwrap().center().y));
+    assert!(!r.harness.ctx.text_edit_focused());
+    let before = r.song().clone();
+    r.harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    r.harness.run_steps(2);
+    assert_ne!(*r.song(), before, "Cmd-Z undoes when no text field has the keyboard");
+    r.harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z);
+    r.harness.run_steps(2);
+    assert_eq!(*r.song(), before, "and Cmd-Shift-Z puts it back");
+}
