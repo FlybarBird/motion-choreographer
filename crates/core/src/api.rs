@@ -239,8 +239,22 @@ pub struct MediaInfo {
     pub start_tc_source: Option<String>,
     /// Proxy frames available for the reference monitor.
     pub proxy_frames: i64,
-    /// Channel carrying LTC, excluded from Program.
+    /// Index of the channel carrying LTC (0 is the first), excluded from Program.
     pub ltc_channel: Option<u32>,
+    /// Broadcast WAV time reference: samples since midnight at `sample_rate`.
+    /// Kept so the start timecode can be restated when the project rate changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_samples: Option<u64>,
+    /// The frame rate the proxy frames were made at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_rate: Option<FrameRate>,
+}
+
+impl MediaInfo {
+    /// The song frame this file's first sample belongs on, when the file is stamped.
+    pub fn frame_in(&self, song: &Song, rate: FrameRate) -> Option<i64> {
+        song.clock(rate).frame_of_stamp(self.start_tc.as_deref()?)
+    }
 }
 
 /// One level of a waveform overview: the lowest and highest sample in each
@@ -287,7 +301,8 @@ impl PeakLevel {
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub struct StoreTc {
-    /// Typed start timecode, or `ltc:<channel>` to decode it from a channel.
+    /// A typed start timecode; `ltc:<n>` to decode it from channel `n` (1 is the
+    /// first channel); or empty to clear a typed or decoded stamp.
     pub start_tc: String,
 }
 

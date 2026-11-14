@@ -238,6 +238,8 @@ fn click_media() -> ptz_core::api::MediaInfo {
         start_tc_source: None,
         proxy_frames: 0,
         ltc_channel: None,
+        start_samples: None,
+        proxy_rate: None,
     }
 }
 
