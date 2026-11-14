@@ -2,7 +2,8 @@
 //! show state goes through `Show`, behind a single mutex, so there is no lock
 //! order to get wrong.
 
-use crate::clock::Clock;
+use crate::audio::{AudioEngine, LtcOut, Mix, PlayClip};
+use crate::media::{self, Ingested};
 use crate::rig::{RigAdapter, Simulator};
 use crate::runlog::RunLog;
 use crate::storage::{self, Storage};
@@ -10,27 +11,40 @@ use ptz_core::api::*;
 use ptz_core::compile::{compile, Compiled};
 use ptz_core::pose::{Axis, Pose, Preset, Project};
 use ptz_core::song::Song;
-use ptz_core::time::{FrameRate, Timecode};
+use ptz_core::time::{frame_to_sample, FrameRate, Timecode};
 use ptz_core::transport::{self, Action, Context, Event, Output, Run, TimeMode, TransportState};
 use serde_json::json;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
 
 pub const NO_LEASE: &str = "Take the edit lease to control the show";
 
+/// Which audio output to open.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AudioChoice {
+    /// The system's default output.
+    Default,
+    /// The first output whose name contains this text.
+    Named(String),
+    /// No device: run silent on the monotonic clock.
+    Off,
+}
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub data: PathBuf,
     pub seed: bool,
     pub lease_ttl: Duration,
+    pub audio: AudioChoice,
 }
 
 impl Config {
     pub fn new(data: impl Into<PathBuf>) -> Config {
-        Config { data: data.into(), seed: true, lease_ttl: Duration::from_secs(10) }
+        Config { data: data.into(), seed: true, lease_ttl: Duration::from_secs(10), audio: AudioChoice::Default }
     }
 }
 
@@ -115,7 +129,17 @@ pub struct Show {
     pub songs: BTreeMap<String, Entry>,
     pub current: Option<String>,
     pub transport: TransportState,
-    clock: Clock,
+    pub media: Vec<MediaInfo>,
+    /// Ids handed to imports that are still decoding.
+    media_reserved: HashSet<String>,
+    audio: AudioEngine,
+    /// Each media file as one channel at the device rate, ready to play.
+    audio_cache: HashMap<String, Arc<Vec<f32>>>,
+    audio_loading: HashSet<String>,
+    audio_failed: HashSet<String>,
+    loaded_tx: mpsc::Sender<(String, Result<Vec<f32>, String>)>,
+    loaded_rx: mpsc::Receiver<(String, Result<Vec<f32>, String>)>,
+    audio_drift: f64,
     frame_f: f64,
     lease: Option<Lease>,
     lease_ttl: Duration,
@@ -131,6 +155,18 @@ pub struct Show {
 }
 
 pub type Shared = Arc<Mutex<Show>>;
+
+/// What an import needs to do its work without holding the show.
+#[derive(Clone, Debug)]
+pub struct MediaTicket {
+    pub id: String,
+    pub name: String,
+    pub dir: PathBuf,
+    /// Folder for the upload while it arrives.
+    pub incoming: PathBuf,
+    pub rate: FrameRate,
+    pub device_rate: u32,
+}
 
 fn lerp_pose(a: &Pose, b: &Pose, t: f64) -> Pose {
     Pose::from_fn(|ax| a.get(ax) + (b.get(ax) - a.get(ax)) * t)
@@ -163,14 +199,25 @@ impl Show {
         let now = Instant::now();
         let mut log = RunLog::open(&storage.log_dir());
         log.append("server_start", json!({ "version": env!("CARGO_PKG_VERSION"), "songs": songs.len() }));
-        let show = Show {
+        let media = media::load_all(&storage.media_root(), project.rate);
+        let audio = AudioEngine::start(cfg.audio.clone());
+        let (loaded_tx, loaded_rx) = mpsc::channel();
+        let mut show = Show {
             storage,
             project,
             presets,
             songs,
             current,
             transport: TransportState::IDLE,
-            clock: Clock::new(),
+            media,
+            media_reserved: HashSet::new(),
+            audio,
+            audio_cache: HashMap::new(),
+            audio_loading: HashSet::new(),
+            audio_failed: HashSet::new(),
+            loaded_tx,
+            loaded_rx,
+            audio_drift: 0.0,
             frame_f: 0.0,
             lease: None,
             lease_ttl: cfg.lease_ttl,
@@ -183,6 +230,7 @@ impl Show {
             log,
             tx,
         };
+        show.rebuild_mix();
         Ok((show, rx))
     }
 
@@ -354,12 +402,14 @@ impl Show {
     }
 
     fn reset_for_new_song(&mut self) {
-        self.clock.stop();
+        self.audio.stop();
+        self.audio.seek(0.0, self.rate());
         self.frame_f = 0.0;
         self.manual = false;
         self.lock_source = None;
         let _ = self.storage.save_current(self.current.as_deref());
         self.transport = TransportState { estop: self.transport.estop, ..TransportState::IDLE };
+        self.rebuild_mix();
     }
 
     pub fn delete_song(&mut self, client: &str, id: &str) -> Res<()> {
@@ -398,8 +448,9 @@ impl Show {
             let length = self.length() as f64;
             if self.frame_f > length {
                 self.frame_f = length;
-                self.clock.seek(length, self.rate());
+                self.audio.seek(length, self.rate());
             }
+            self.rebuild_mix();
         }
         self.push(WsMsg::SongChanged { song_id: id.to_string(), edit_counter: counter, reason: reason.to_string() });
         Ok(out)
@@ -517,10 +568,18 @@ impl Show {
             }
         }
         self.storage.save_project(&project).map_err(Fail::io)?;
+        let rate_changed = project.rate != self.project.rate;
         self.project = project.clone();
         for e in self.songs.values_mut() {
             e.compiled = compile(&e.song, &project);
         }
+        if rate_changed {
+            for m in &mut self.media {
+                m.duration_frames = media::duration_frames(m.samples, m.sample_rate, project.rate);
+            }
+            self.push(WsMsg::MediaChanged);
+        }
+        self.rebuild_mix();
         self.log("project_changed", json!({ "by": self.lease.as_ref().map(|l| l.name.clone()) }));
         self.push(WsMsg::ProjectChanged);
         self.poke();
@@ -583,6 +642,184 @@ impl Show {
         Ok(self.presets.clone())
     }
 
+    // ---- media and audio ----
+
+    pub fn media_info(&self, id: &str) -> Res<&MediaInfo> {
+        self.media.iter().find(|m| m.id == id).ok_or_else(|| Fail::not_found(format!("No media with id {id}")))
+    }
+
+    /// First half of an import: pick an id and a folder. The decode happens outside the show lock.
+    pub fn reserve_media(&mut self, client: &str, name: &str) -> Res<MediaTicket> {
+        self.require_lease(client)?;
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(Fail::bad("The upload needs a file name: /media?name=<file name>"));
+        }
+        let ext = media::extension(name);
+        if !media::AUDIO_EXTENSIONS.contains(&ext.as_str()) && !media::VIDEO_EXTENSIONS.contains(&ext.as_str()) {
+            return Err(Fail::invalid(format!(
+                "{name} was not imported: only WAV, AIFF and MP3 audio and QuickTime or MP4 video can be used"
+            )));
+        }
+        let stem = std::path::Path::new(name).file_stem().and_then(|s| s.to_str()).unwrap_or(name);
+        let base = storage::slug(stem);
+        let taken = |id: &str| self.media.iter().any(|m| m.id == id) || self.media_reserved.contains(id);
+        let id = if taken(&base) { (2..).map(|n| format!("{base}-{n}")).find(|id| !taken(id)).unwrap() } else { base };
+        let dir = self.storage.media_dir(&id).ok_or_else(|| Fail::bad("That file name cannot be used"))?;
+        self.media_reserved.insert(id.clone());
+        Ok(MediaTicket {
+            id,
+            name: name.to_string(),
+            dir,
+            incoming: self.storage.media_root(),
+            rate: self.rate(),
+            device_rate: self.audio.rate(),
+        })
+    }
+
+    pub fn cancel_media(&mut self, id: &str) {
+        self.media_reserved.remove(id);
+    }
+
+    /// Second half of an import: the file decoded, add it to the library.
+    pub fn register_media(&mut self, ingested: Ingested, playable: Option<Vec<f32>>) -> MediaInfo {
+        let mut info = ingested.info;
+        self.media_reserved.remove(&info.id);
+        info.duration_frames = media::duration_frames(info.samples, info.sample_rate, self.rate());
+        if let Some(mono) = playable {
+            self.audio_cache.insert(info.id.clone(), Arc::new(mono));
+        }
+        self.media.retain(|m| m.id != info.id);
+        self.media.push(info.clone());
+        self.media.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()).then(a.id.cmp(&b.id)));
+        self.log(
+            "media_imported",
+            json!({ "media": info.id, "name": info.name, "seconds": info.duration_s, "channels": info.channels, "rate": info.sample_rate }),
+        );
+        self.push(WsMsg::MediaChanged);
+        self.rebuild_mix();
+        info
+    }
+
+    pub fn delete_media(&mut self, client: &str, id: &str) -> Res<()> {
+        self.require_lease(client)?;
+        self.media_info(id)?;
+        if let Some(e) = self.songs.values().find(|e| e.song.media.iter().any(|c| c.media_id == id)) {
+            return Err(Fail::refused(format!("{} uses this file. Remove it from the timeline first", e.song.name)));
+        }
+        if let Some(dir) = self.storage.media_dir(id) {
+            if dir.exists() {
+                std::fs::remove_dir_all(dir).map_err(Fail::io)?;
+            }
+        }
+        self.media.retain(|m| m.id != id);
+        self.audio_cache.remove(id);
+        self.audio_failed.remove(id);
+        self.log("media_deleted", json!({ "media": id }));
+        self.push(WsMsg::MediaChanged);
+        Ok(())
+    }
+
+    pub fn media_file(&self, id: &str, file: &str) -> Res<PathBuf> {
+        self.media_info(id)?;
+        Ok(self.storage.media_dir(id).ok_or_else(|| Fail::not_found("No such media"))?.join(file))
+    }
+
+    /// Load a media file's audio for playback on a worker thread; `tick` collects it.
+    fn load_audio(&mut self, id: &str) {
+        if self.audio_loading.contains(id) || self.audio_failed.contains(id) {
+            return;
+        }
+        let Some(dir) = self.storage.media_dir(id) else { return };
+        let exclude = self.media.iter().find(|m| m.id == id).and_then(|m| m.ltc_channel);
+        let (tx, id, device_rate) = (self.loaded_tx.clone(), id.to_string(), self.audio.rate());
+        self.audio_loading.insert(id.clone());
+        let spawned = std::thread::Builder::new().name("audio-load".into()).spawn(move || {
+            let result = media::read_audio(&dir.join("audio.f32"))
+                .and_then(|d| crate::audio::resample(&d.mono(exclude), d.rate, device_rate));
+            let _ = tx.send((id, result));
+        });
+        if spawned.is_err() {
+            self.audio_loading.clear();
+        }
+    }
+
+    fn collect_loaded_audio(&mut self) {
+        let mut changed = false;
+        while let Ok((id, result)) = self.loaded_rx.try_recv() {
+            self.audio_loading.remove(&id);
+            match result {
+                Ok(mono) => {
+                    self.audio_cache.insert(id, Arc::new(mono));
+                }
+                Err(e) => {
+                    self.audio_failed.insert(id.clone());
+                    self.log("media_error", json!({ "media": id, "error": e }));
+                }
+            }
+            changed = true;
+        }
+        if changed {
+            self.rebuild_mix();
+        }
+    }
+
+    /// The media changed (for example its timecode channel): load its audio again.
+    pub fn reload_audio(&mut self, id: &str) {
+        self.audio_cache.remove(id);
+        self.audio_failed.remove(id);
+        self.rebuild_mix();
+    }
+
+    /// Hand the audio thread what the loaded song plays.
+    fn rebuild_mix(&mut self) {
+        let rate = self.rate();
+        let device_rate = self.audio.rate();
+        let mut clips = Vec::new();
+        let mut missing = Vec::new();
+        let mut ltc = None;
+        if let Some(e) = self.entry() {
+            for c in e.song.media.iter().filter(|c| !c.muted) {
+                let Some(data) = self.audio_cache.get(&c.media_id) else {
+                    missing.push(c.media_id.clone());
+                    continue;
+                };
+                let offset = frame_to_sample(c.in_frame, device_rate, rate);
+                let len = (frame_to_sample(c.out_frame, device_rate, rate) - offset).min(data.len() as i64 - offset);
+                if len > 0 {
+                    clips.push(PlayClip {
+                        start: frame_to_sample(c.start_frame, device_rate, rate),
+                        offset,
+                        len,
+                        data: data.clone(),
+                    });
+                }
+            }
+            let start_code = Timecode::parse_at(&e.song.start_tc, rate).map(|tc| tc.to_frames(rate)).unwrap_or(0);
+            ltc = Some(LtcOut { rate, start_code, level: self.project.ltc_level });
+        }
+        self.audio.set_mix(Mix { clips, routing: self.project.routing, ltc });
+        for id in missing {
+            self.load_audio(&id);
+        }
+    }
+
+    fn audio_status(&self) -> AudioStatus {
+        let info = self.audio.info();
+        let (peak_left, peak_right) = self.audio.peaks();
+        AudioStatus {
+            output: info.name,
+            silent_reason: info.silent_reason,
+            device_rate: self.audio.rate(),
+            routing: self.project.routing,
+            callbacks: self.audio.callbacks(),
+            position_frame: if self.audio.is_playing() { self.audio.position(self.rate()) } else { self.frame_f },
+            drift_frames: self.audio_drift,
+            peak_left,
+            peak_right,
+        }
+    }
+
     // ---- transport ----
 
     fn context(&self, client: &str) -> Context {
@@ -616,17 +853,18 @@ impl Show {
                 }
                 self.manual = false;
                 if !self.transport.locked() {
-                    self.clock.play(self.frame_f, rate);
+                    self.audio.play(self.frame_f, rate);
                 }
             }
             Action::Stop => {
-                self.clock.stop();
+                self.audio.stop();
                 if before.hardware_live() {
                     self.rig.stop();
                 }
             }
             Action::Cue => {
-                self.clock.stop();
+                self.audio.stop();
+                self.audio.seek(0.0, rate);
                 self.frame_f = 0.0;
                 self.manual = false;
             }
@@ -636,7 +874,7 @@ impl Show {
                 };
                 self.frame_f = (frame as f64).clamp(0.0, length);
                 self.manual = false;
-                self.clock.seek(self.frame_f, rate);
+                self.audio.seek(self.frame_f, rate);
             }
             Action::Lock => {
                 let source = req.source.clone().unwrap_or_default();
@@ -648,14 +886,14 @@ impl Show {
             Action::Unlock => {
                 self.lock_source = None;
                 if self.transport.run == Run::Playing {
-                    self.clock.play(self.frame_f, rate);
+                    self.audio.play(self.frame_f, rate);
                 }
             }
             Action::Arm => {}
             Action::Disarm => self.rig.stop(),
             Action::RecordOn | Action::RecordOff => {}
             Action::Estop => {
-                self.clock.stop();
+                self.audio.stop();
                 self.rig.stop();
                 let _ = self.rig.jog(Jog::default());
                 self.jog_deadline = None;
@@ -676,9 +914,9 @@ impl Show {
             return;
         }
         match event {
-            Event::SongEnded => self.clock.stop(),
+            Event::SongEnded => self.audio.stop(),
             Event::Fault => {
-                self.clock.stop();
+                self.audio.stop();
                 self.rig.stop();
             }
             _ => {}
@@ -751,11 +989,14 @@ impl Show {
             let _ = self.rig.jog(Jog::default());
             self.jog_deadline = None;
         }
+        self.collect_loaded_audio();
 
         if self.entry().is_some() {
             let length = self.length() as f64;
+            // One reading of the audio clock per tick: the playhead and the drift figure share it.
+            let audio_pos = self.audio.position(self.rate());
             if self.transport.run == Run::Playing && self.transport.time != TimeMode::LockedExternal {
-                let f = self.clock.position(self.rate());
+                let f = audio_pos;
                 if f >= length {
                     self.frame_f = length;
                     self.event(Event::SongEnded);
@@ -763,6 +1004,7 @@ impl Show {
                     self.frame_f = f;
                 }
             }
+            self.audio_drift = if self.audio.is_playing() { audio_pos - self.frame_f } else { 0.0 };
 
             let target = self.timeline_pose();
             if self.transport.output == Output::Positioning {
@@ -823,7 +1065,7 @@ impl Show {
             }),
             you_hold_lease: self.holds_lease(client),
             guidance: transport::guidance(&self.transport, &self.context(client)),
-            audio: AudioStatus::default(),
+            audio: self.audio_status(),
             lock: LockStatus { source: self.lock_source.clone(), ..LockStatus::default() },
             adapters: self.rig.status(),
             record: RecordStatus::default(),

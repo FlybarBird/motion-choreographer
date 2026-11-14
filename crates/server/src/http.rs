@@ -1,6 +1,7 @@
 //! REST for commands and edits, WebSocket for status. All under `/api/v1`.
 
-use crate::engine::{spawn_tick, Config, Fail, Push, Shared, Show};
+use crate::engine::{spawn_tick, Config, Fail, MediaTicket, Push, Shared, Show};
+use crate::media::{self, Ingested};
 use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{FromRequestParts, Path, Query, Request, State};
@@ -239,6 +240,105 @@ async fn rig_jog(State(app): State<App>, Client(c): Client, Json(jog): Json<Jog>
     Ok(Json(s.status(&c)))
 }
 
+async fn list_media(State(app): State<App>) -> Json<Vec<MediaInfo>> {
+    Json(lock(&app.show).media.clone())
+}
+
+#[derive(Deserialize)]
+struct UploadQuery {
+    #[serde(default)]
+    name: String,
+}
+
+/// Write the upload to disk as it arrives, then decode it off the async threads.
+async fn receive_media(ticket: MediaTicket, body: axum::body::Body) -> Result<(Ingested, Option<Vec<f32>>), String> {
+    use futures_util::StreamExt;
+    use tokio::io::AsyncWriteExt;
+    let tmp = ticket.incoming.join(format!(".upload-{}.tmp", ticket.id));
+    let io = |e: std::io::Error| format!("could not write to the media folder: {e}");
+    let mut file = tokio::fs::File::create(&tmp).await.map_err(io)?;
+    let mut stream = body.into_data_stream();
+    let mut total = 0u64;
+    while let Some(chunk) = stream.next().await {
+        let Ok(chunk) = chunk else {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            return Err("the upload was interrupted".into());
+        };
+        total += chunk.len() as u64;
+        file.write_all(&chunk).await.map_err(io)?;
+    }
+    file.flush().await.map_err(io)?;
+    drop(file);
+    if total == 0 {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err("the file is empty".into());
+    }
+    tokio::task::spawn_blocking(move || {
+        let ingested = media::ingest(&tmp, &ticket.dir, &ticket.id, &ticket.name, ticket.rate)?;
+        let exclude = ingested.info.ltc_channel;
+        let playable = crate::audio::resample(&ingested.decoded.mono(exclude), ingested.decoded.rate, ticket.device_rate).ok();
+        Ok((ingested, playable))
+    })
+    .await
+    .map_err(|_| "the importer stopped unexpectedly".to_string())?
+}
+
+async fn upload_media(
+    State(app): State<App>,
+    Client(c): Client,
+    Query(q): Query<UploadQuery>,
+    body: axum::body::Body,
+) -> Reply<MediaInfo> {
+    let reserved = lock(&app.show).reserve_media(&c, &q.name);
+    let ticket = match reserved {
+        Ok(t) => t,
+        Err(fail) => {
+            // Take the upload anyway, so the sender reads the refusal instead of a broken connection.
+            use futures_util::StreamExt;
+            let mut stream = body.into_data_stream();
+            while let Some(Ok(_)) = stream.next().await {}
+            return Err(fail);
+        }
+    };
+    let (id, name) = (ticket.id.clone(), ticket.name.clone());
+    let result = receive_media(ticket, body).await;
+    let mut s = lock(&app.show);
+    match result {
+        Ok((ingested, playable)) => Ok(Json(s.register_media(ingested, playable))),
+        Err(msg) => {
+            s.cancel_media(&id);
+            Err(Fail::invalid(format!("{name} was not imported: {msg}")))
+        }
+    }
+}
+
+async fn delete_media(State(app): State<App>, Client(c): Client, Path(id): Path<String>) -> Reply<Vec<MediaInfo>> {
+    let mut s = lock(&app.show);
+    s.delete_media(&c, &id)?;
+    Ok(Json(s.media.clone()))
+}
+
+#[derive(Deserialize)]
+struct PeaksQuery {
+    /// Samples per pixel at the app's zoom. The reply is the coarsest level that is at least that fine.
+    #[serde(default)]
+    spp: u32,
+}
+
+async fn media_peaks(State(app): State<App>, Path(id): Path<String>, Query(q): Query<PeaksQuery>) -> Result<Response, Fail> {
+    let (path, rate) = {
+        let s = lock(&app.show);
+        (s.media_file(&id, "peaks.bin")?, s.media_info(&id)?.sample_rate)
+    };
+    let levels = media::read_peaks(&path).ok_or_else(|| Fail::not_found("This file has no waveform"))?;
+    let level = media::pick_level(&levels, q.spp.max(1)).ok_or_else(|| Fail::not_found("This file has no waveform"))?;
+    Ok(bytes_reply("application/octet-stream", level.level(rate).to_bytes()))
+}
+
+fn bytes_reply(content_type: &'static str, bytes: Vec<u8>) -> Response {
+    ([(axum::http::header::CONTENT_TYPE, content_type)], bytes).into_response()
+}
+
 #[derive(Deserialize)]
 struct Since {
     #[serde(default)]
@@ -324,6 +424,9 @@ pub fn router(app: App) -> Router {
         .route("/presets/sync", post(sync_presets))
         .route("/presets/{id}", delete(delete_preset))
         .route("/rig/jog", post(rig_jog))
+        .route("/media", get(list_media).post(upload_media))
+        .route("/media/{id}", delete(delete_media))
+        .route("/media/{id}/peaks", get(media_peaks))
         .route("/log", get(get_log));
     Router::new().nest(API, api).layer(axum::middleware::from_fn_with_state(app.clone(), gate)).with_state(app)
 }

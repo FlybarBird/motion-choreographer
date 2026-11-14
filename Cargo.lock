@@ -2782,6 +2782,7 @@ dependencies = [
 name = "ptz-server"
 version = "0.1.0"
 dependencies = [
+ "audioadapter-buffers",
  "axum",
  "cpal",
  "futures-util",

@@ -19,6 +19,7 @@ futures-util = "0.3"
 cpal = "0.18"
 symphonia = { version = "0.6", default-features = false, features = ["wav", "aiff", "mp3", "pcm"] }
 rubato = "5"
+audioadapter-buffers = "5"
 midir = "0.11"
 ureq = { version = "3", default-features = false, features = ["json"] }
 tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
