@@ -280,3 +280,85 @@ fn the_view_menu_opens_clear_of_e_stop() {
         assert_whole(&mut r, window, "E-STOP", Action::Estop);
     }
 }
+
+/// Three cameras and a song with a selected move on it, made by an edit that can be undone.
+fn busy(window: egui::Vec2) -> Rig {
+    let (project, presets) = three_cameras();
+    let mut r = rig_sized(window, project, presets.clone(), song());
+    {
+        let s = &mut r.harness.state_mut().session;
+        let mut id = String::new();
+        assert!(s.edit(|song, project| {
+            let (song, clip) = ptz_core::edit::insert_preset_move(song, project, &presets[1], 200)?;
+            id = clip;
+            Ok(song)
+        }));
+        s.timeline.selection.insert(id);
+    }
+    r.harness.run_steps(3);
+    let _ = r.cmds.try_iter().count();
+    r
+}
+
+/// What the keyboard can change: the song, the camera in hand, the selection, and what is sent to the server.
+fn show_state(r: &Rig) -> (Song, String, Vec<String>, Vec<String>) {
+    let s = &r.harness.state().session;
+    (
+        r.song().clone(),
+        s.cam_id().to_string(),
+        s.timeline.selection.iter().cloned().collect(),
+        r.cmds.try_iter().map(|c| format!("{c:?}")).collect(),
+    )
+}
+
+/// Every key the window gives a meaning to, pressed one after another.
+fn press_every_shortcut(r: &mut Rig) {
+    use egui::{Key, Modifiers};
+    let plain = [
+        Key::Space,
+        Key::Home,
+        Key::End,
+        Key::ArrowLeft,
+        Key::ArrowRight,
+        Key::Num2,
+        Key::M,
+        Key::K,
+        Key::Backslash,
+        Key::Delete,
+        Key::Backspace,
+    ];
+    for key in plain {
+        r.harness.key_press(key);
+        r.harness.run_steps(2);
+    }
+    for (modifiers, key) in [
+        (Modifiers::COMMAND, Key::D),
+        (Modifiers::COMMAND, Key::S),
+        (Modifiers::COMMAND, Key::Z),
+        (Modifiers::COMMAND | Modifiers::SHIFT, Key::Z),
+    ] {
+        r.harness.key_press_modifiers(modifiers, key);
+        r.harness.run_steps(2);
+    }
+}
+
+#[test]
+fn no_key_reaches_the_show_while_a_dialog_is_open() {
+    // With nothing open the same keys do run the transport, change camera and edit the song.
+    let mut r = busy(DEFAULT_WINDOW);
+    let before = show_state(&r);
+    press_every_shortcut(&mut r);
+    let after = show_state(&r);
+    assert_ne!(before.0, after.0, "the keys edit the song");
+    assert_ne!(before.1, after.1, "the keys change camera");
+    assert!(after.3.iter().any(|c| c.starts_with("Act(")), "the keys run the transport: {:?}", after.3);
+
+    for prompt in Prompt::ALL {
+        let mut r = busy(DEFAULT_WINDOW);
+        open(&mut r, prompt);
+        let before = show_state(&r);
+        press_every_shortcut(&mut r);
+        assert!(crate::app::modal_open(&r.harness.ctx), "{prompt:?} is still open");
+        assert_eq!(before, show_state(&r), "under {prompt:?}");
+    }
+}
