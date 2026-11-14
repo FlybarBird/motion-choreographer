@@ -41,14 +41,43 @@ pub fn note(ui: &mut Ui, text: &str) {
 
 // ---------------------------------------------------------------- Presets
 
-fn preset_card(ui: &mut Ui, preset: &Preset, selected: bool) -> egui::Response {
+/// The camera's picture of a preset, asked for once and uploaded as a texture when it arrives.
+fn preset_picture(ui: &Ui, s: &mut Session, preset: &Preset) -> Option<egui::TextureId> {
+    use crate::session::PresetPicture;
+    if !preset.has_thumbnail {
+        return None;
+    }
+    match s.preset_pictures.get(&preset.id) {
+        None => {
+            s.preset_pictures.insert(preset.id.clone(), PresetPicture::Asked);
+            s.link.send(Cmd::FetchPresetThumb(preset.id.clone()));
+            None
+        }
+        Some(PresetPicture::Asked) => None,
+        Some(PresetPicture::Shown(texture)) => Some(texture.id()),
+        Some(PresetPicture::Decoded(image)) => {
+            let texture = ui.ctx().load_texture(format!("preset:{}", preset.id), image.clone(), egui::TextureOptions::LINEAR);
+            let id = texture.id();
+            s.preset_pictures.insert(preset.id.clone(), PresetPicture::Shown(texture));
+            Some(id)
+        }
+    }
+}
+
+fn preset_card(ui: &mut Ui, preset: &Preset, picture: Option<egui::TextureId>) -> egui::Response {
     let width = ui.available_width().clamp(120.0, 400.0);
     let (rect, resp) = ui.allocate_exact_size(vec2(width, 58.0), Sense::hover());
     let p = ui.painter_at(rect);
     let fill = if resp.hovered() { Color32::from_rgb(0x34, 0x36, 0x46) } else { LANE };
-    p.rect(rect, 6.0, fill, Stroke::new(1.0, if selected { BLUE } else { LINE }), StrokeKind::Inside);
+    p.rect(rect, 6.0, fill, Stroke::new(1.0, LINE), StrokeKind::Inside);
     let thumb = egui::Rect::from_min_size(rect.min + vec2(5.0, 5.0), vec2(48.0 * 16.0 / 9.0, 48.0));
-    monitor::paint_stage(&p, thumb, &preset.pose);
+    match picture {
+        Some(texture) => {
+            let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+            p.image(texture, thumb, uv, Color32::WHITE);
+        }
+        None => monitor::paint_stage(&p, thumb, &preset.pose),
+    }
     p.rect_stroke(thumb, 2.0, Stroke::new(1.0, LINE), StrokeKind::Outside);
     let x = thumb.right() + 10.0;
     p.text(egui::pos2(x, rect.top() + 9.0), egui::Align2::LEFT_TOP, &preset.name, egui::FontId::proportional(13.5), OFF_WHITE);
@@ -76,8 +105,35 @@ pub fn presets(ui: &mut Ui, s: &mut Session) {
     ui.add_space(6.0);
     ui.horizontal(|ui| {
         ui.add_space(6.0);
-        if ui.small_button("Sync from rig").on_hover_text("Read the preset list and poses from the camera").clicked() {
-            s.link.send(Cmd::SyncPresets);
+        let hardware = s.status.telemetry.hardware;
+        let t = s.status.transport;
+        let why_not = if s.status.telemetry.preset_sync.is_some() {
+            Some("The camera is being read now")
+        } else if !hardware {
+            None
+        } else if !s.status.you_hold_lease {
+            Some("Take the edit lease to read presets from the camera")
+        } else if t.output != ptz_core::transport::Output::Rehearse {
+            Some("Disarm first: reading presets moves the camera")
+        } else if t.run != ptz_core::transport::Run::Stopped {
+            Some("Stop first: reading presets moves the camera")
+        } else {
+            None
+        };
+        let sync = ui.add_enabled(why_not.is_none(), egui::Button::new("Sync from rig").small());
+        let sync = match why_not {
+            Some(why) => sync.on_disabled_hover_text(why),
+            None if hardware => {
+                sync.on_hover_text("Recall each preset on the camera and read its pose and picture. The camera moves")
+            }
+            None => sync.on_hover_text("Read the preset list and poses from the rig"),
+        };
+        if sync.clicked() {
+            if hardware {
+                s.confirm_sync = true;
+            } else {
+                s.link.send(Cmd::SyncPresets);
+            }
         }
         let can = s.can_edit();
         let store = ui.add_enabled(can.is_ok(), egui::Button::new("Store current pose").small());
@@ -91,6 +147,13 @@ pub fn presets(ui: &mut Ui, s: &mut Session) {
             s.link.send(Cmd::StorePreset(ptz_core::api::StorePreset { name, pose: Some(pose) }));
         }
     });
+    if let Some(progress) = s.status.telemetry.preset_sync.clone() {
+        ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            ui.spinner();
+            ui.label(RichText::new(progress).color(AMBER));
+        });
+    }
     ui.add_space(2.0);
     if s.presets.is_empty() {
         ui.add_space(12.0);
@@ -108,7 +171,8 @@ pub fn presets(ui: &mut Ui, s: &mut Session) {
             ui.horizontal(|ui| {
                 ui.add_space(6.0);
                 let id = egui::Id::new(("preset_drag", &preset.id));
-                let inner = ui.dnd_drag_source(id, PresetDrag(preset.clone()), |ui| preset_card(ui, preset, false));
+                let picture = preset_picture(ui, s, preset);
+                let inner = ui.dnd_drag_source(id, PresetDrag(preset.clone()), |ui| preset_card(ui, preset, picture));
                 if !ui.ctx().is_being_dragged(id) {
                     s.probe_presets.push((preset.id.clone(), inner.response.rect));
                 }
@@ -637,6 +701,48 @@ fn log_line(kind: &str, data: &serde_json::Value) -> String {
             let frame = data.get("frame").and_then(|v| v.as_i64()).map(|f| format!(" at frame {f}")).unwrap_or_default();
             format!("{action}{frame}  ({by})")
         }
+        "refused" => format!("{} refused: {}  ({})", text("action"), text("reason"), text("by")),
+        "arm" => {
+            let revision = data.get("revision").and_then(|v| v.as_u64()).unwrap_or(0);
+            let sha: String = text("sha256").chars().take(12).collect();
+            let accepted = data.get("accepted").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+            let accepted = match accepted {
+                0 => String::new(),
+                1 => ", 1 accepted issue".to_string(),
+                n => format!(", {n} accepted issues"),
+            };
+            format!("{} revision {revision} ({sha}){accepted}  ({})", text("song"), text("by"))
+        }
+        "fault" => text("reason"),
+        "estop_halted" => {
+            let ms = data.get("after_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+            format!("the rig stood still {ms} ms after E-Stop")
+        }
+        "estop_still_moving" => "the rig is still moving; stop sent again".to_string(),
+        "adapter" => {
+            let up = data.get("connected").and_then(|v| v.as_bool()).unwrap_or(false);
+            format!("{} {}  {}", text("name"), if up { "connected" } else { "disconnected" }, text("detail"))
+        }
+        "pose" => {
+            let frame = data.get("frame").and_then(|v| v.as_i64()).unwrap_or(0);
+            let value = |group: &str, axis: Axis| {
+                let key = axis.label().to_lowercase();
+                data.get(group).and_then(|g| g.get(&key)).and_then(|v| v.as_f64()).unwrap_or(0.0)
+            };
+            let axes: Vec<String> = Axis::ALL
+                .iter()
+                .map(|a| format!("{} {} ({:+.2})", a.label().to_lowercase(), a.format(value("pose", *a)), value("error", *a)))
+                .collect();
+            format!("frame {frame}   {}", axes.join("   "))
+        }
+        "chase" => {
+            let jumped = if data.get("jumped").and_then(|v| v.as_bool()).unwrap_or(false) { ", code jumped" } else { "" };
+            format!("{} {}{jumped}", text("source"), text("state"))
+        }
+        "issue_accepted" => {
+            let issues = data.get("issues").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+            format!("{} accepted {issues} issue(s) on {} as programmed", text("by"), text("clip"))
+        }
         _ => {
             let mut parts = Vec::new();
             if let Some(obj) = data.as_object() {
@@ -680,8 +786,9 @@ pub fn log(ui: &mut Ui, s: &mut Session) {
                     ui.label(RichText::new(format!("{:>5}", r.seq)).monospace().color(MUTED));
                     ui.label(RichText::new(time).monospace().color(MUTED));
                     let color = match r.kind.as_str() {
-                        "estop" | "fault" => RED,
-                        "limit" | "lease" => AMBER,
+                        "estop" | "fault" | "estop_halted" | "estop_still_moving" => RED,
+                        "limit" | "lease" | "refused" | "issue_accepted" | "acceptance_withdrawn" => AMBER,
+                        "arm" => GREEN,
                         "transport" => OFF_WHITE,
                         _ => BLUE,
                     };

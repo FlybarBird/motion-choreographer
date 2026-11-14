@@ -110,10 +110,13 @@ pub enum Event {
         image: Option<egui::ColorImage>,
     },
     Inputs(InputChoices),
+    /// The camera's picture of a preset, decoded.
     PresetThumb {
         id: String,
-        jpeg: Vec<u8>,
+        image: egui::ColorImage,
     },
+    /// The server took a preset sync. On hardware it has only begun: the list arrives when it ends.
+    SyncAccepted(Vec<Preset>),
     Committed(RevisionInfo),
     Uploaded(MediaInfo),
     Log(LogRecord),
@@ -415,10 +418,7 @@ impl Worker {
                 Err(e) => self.refused("Delete preset", e),
             },
             Cmd::SyncPresets => match self.api.post_empty::<Vec<Preset>>("/presets/sync") {
-                Ok(p) => {
-                    self.emit(Event::Info(format!("Synced {} presets from the rig", p.len())));
-                    self.emit(Event::Presets(p));
-                }
+                Ok(p) => self.emit(Event::SyncAccepted(p)),
                 Err(e) => self.refused("Sync presets", e),
             },
             Cmd::Jog(jog) => {
@@ -469,8 +469,9 @@ impl Worker {
                 }
             }
             Cmd::FetchPresetThumb(id) => {
-                if let Ok(jpeg) = self.api.get_bytes(&format!("/presets/{id}/thumb.jpg")) {
-                    self.emit(Event::PresetThumb { id, jpeg });
+                let jpeg = self.api.get_bytes(&format!("/presets/{id}/thumb.jpg")).ok();
+                if let Some(image) = jpeg.and_then(|jpeg| decode_frame(&jpeg, false)) {
+                    self.emit(Event::PresetThumb { id, image });
                 }
             }
             Cmd::RefreshSongs => {

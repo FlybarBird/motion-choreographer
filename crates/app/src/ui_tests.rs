@@ -825,3 +825,197 @@ fn the_reference_monitor_shows_the_frame_under_the_playhead_and_the_video_lane_a
     assert!(after.iter().all(|t| tiles.iter().any(|b| b.frame == t.frame && (b.rect.left() - t.rect.left()).abs() < 0.01)));
     assert!(tiles.windows(2).all(|w| w[1].frame >= w[0].frame && (w[1].rect.left() - w[0].rect.right()).abs() < 0.01));
 }
+
+#[test]
+fn arm_says_that_it_moves_the_rig_and_a_fault_is_shown_until_it_is_cleared() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut r = rig(Song::new("s", "Test Song", "01:00:00:00", 1500));
+    r.harness.get_by_label("Arm (moves rig to playhead)").click();
+    r.harness.run_steps(2);
+    assert!(r.cmds.try_iter().any(|c| matches!(c, Cmd::Act(Action::Arm, _))));
+
+    // Positioning, then a tracking fault: output is cut and the reason stays on show.
+    {
+        let s = &mut r.harness.state_mut().session;
+        s.status.transport.output = Output::Positioning;
+        s.status.hardware_live = true;
+        s.status.telemetry.hardware = true;
+        s.status.telemetry.error.pan = 1.4;
+    }
+    r.harness.state_mut().show_tab(Tab::Rig);
+    r.harness.run_steps(3);
+    r.harness.get_by_label("ARMING");
+    r.harness.get_by_label("Disarm");
+    r.harness.get_by_label("TRACKING");
+    r.harness.get_by_label("+1.40");
+    {
+        let s = &mut r.harness.state_mut().session;
+        s.status.transport.output = Output::Rehearse;
+        s.status.hardware_live = false;
+        s.status.telemetry.fault = Some("Tracking fault: pan is 3.2° from the timeline. The rig is held".into());
+        s.status.telemetry.halting = true;
+    }
+    r.harness.run_steps(3);
+    assert_eq!(r.harness.query_all_by_label("Tracking fault: pan is 3.2° from the timeline. The rig is held").count(), 2);
+    r.harness.get_by_label("Stopping: stop is being repeated until the rig stands still");
+    assert!(r.harness.query_by_label("TRACKING").is_none(), "the error bars are for live output only");
+}
+
+#[test]
+fn syncing_presets_from_a_real_rig_asks_first_and_is_refused_while_live() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut r = rig(Song::new("s", "Test Song", "01:00:00:00", 1500));
+    let synced = |r: &Rig| r.cmds.try_iter().filter(|c| matches!(c, Cmd::SyncPresets)).count();
+
+    // The simulator has nothing to move: one click syncs.
+    r.harness.get_by_label("Sync from rig").click();
+    r.harness.run_steps(2);
+    assert_eq!(synced(&r), 1);
+
+    // A real camera travels to every preset, so the click only asks.
+    r.harness.state_mut().session.status.telemetry.hardware = true;
+    r.harness.run_steps(2);
+    r.harness.get_by_label("Sync from rig").click();
+    r.harness.run_steps(3);
+    assert_eq!(synced(&r), 0);
+    r.harness.get_by_label("Read presets from the camera?");
+    r.harness.get_by_label("Cancel").click();
+    r.harness.run_steps(3);
+    assert_eq!(synced(&r), 0);
+    assert!(r.harness.query_by_label("Read presets from the camera?").is_none());
+
+    r.harness.get_by_label("Sync from rig").click();
+    r.harness.run_steps(3);
+    r.harness.get_by_label("Move the camera and sync").click();
+    r.harness.run_steps(3);
+    assert_eq!(synced(&r), 1);
+    assert!(r.harness.query_by_label("Read presets from the camera?").is_none());
+
+    // The server's answer on hardware is only that it began; progress comes with the status.
+    r.events.send(Event::SyncAccepted(presets())).unwrap();
+    r.harness.state_mut().session.status.telemetry.preset_sync = Some("Recalling preset 2 of 3: Lectern".into());
+    r.harness.run_steps(3);
+    assert!(r.toasts().iter().any(|t| t.contains("It moves to each one in turn")), "{:?}", r.toasts());
+    r.harness.get_by_label("Recalling preset 2 of 3: Lectern");
+    r.harness.get_by_label("Sync from rig").click();
+    r.harness.run_steps(3);
+    assert_eq!(synced(&r), 0, "the button is off while a sync runs");
+    assert!(r.harness.query_by_label("Read presets from the camera?").is_none());
+
+    // Armed, the button is off: the camera is not free to travel.
+    {
+        let s = &mut r.harness.state_mut().session;
+        s.status.telemetry.preset_sync = None;
+        s.status.transport.output = Output::Armed;
+    }
+    r.harness.run_steps(3);
+    r.harness.get_by_label("Sync from rig").click();
+    r.harness.run_steps(3);
+    assert!(r.harness.query_by_label("Read presets from the camera?").is_none());
+
+    // A preset with a picture on the camera asks for it once, and shows it when it arrives.
+    {
+        let s = &mut r.harness.state_mut().session;
+        s.status.transport.output = Output::Rehearse;
+        s.presets[1].has_thumbnail = true;
+    }
+    r.harness.run_steps(4);
+    let asked: Vec<String> =
+        r.cmds.try_iter().filter_map(|c| if let Cmd::FetchPresetThumb(id) = c { Some(id) } else { None }).collect();
+    assert_eq!(asked, ["lectern"]);
+    let image = egui::ColorImage::filled([16, 9], egui::Color32::from_rgb(200, 40, 40));
+    r.events.send(Event::PresetThumb { id: "lectern".into(), image }).unwrap();
+    r.harness.run_steps(3);
+    let pictures = &r.harness.state().session.preset_pictures;
+    assert!(matches!(pictures.get("lectern"), Some(crate::session::PresetPicture::Shown(_))));
+}
+
+#[test]
+fn a_keep_out_rule_is_added_and_edited_in_the_project_settings_and_blocks_the_song_at_once() {
+    let mut r = rig(Song::new("s", "Test Song", "01:00:00:00", 1500));
+    // A move that ends low and tilted down: fine until a rule says otherwise.
+    {
+        let s = &mut r.harness.state_mut().session;
+        let low = Preset {
+            id: "low".into(),
+            name: "Low".into(),
+            pose: Pose { tilt: -20.0, elevation: 50.0, ..Pose::home() },
+            camera_number: None,
+            has_thumbnail: false,
+        };
+        let (song, _) = ptz_core::edit::insert_preset_move(s.song.as_ref().unwrap(), &s.project, &low, 100).unwrap();
+        s.commit_edit(song);
+    }
+    r.harness.run_steps(3);
+    assert_eq!(r.blocking(), 0);
+    let projects = |r: &Rig| -> Vec<Project> {
+        r.cmds.try_iter().filter_map(|c| if let Cmd::PutProject(p) = c { Some(*p) } else { None }).collect()
+    };
+    let _ = projects(&r);
+
+    r.harness.state_mut().show_tab(Tab::Inspector);
+    r.harness.run_steps(3);
+    r.press("Add a keep-out rule");
+    let sent = projects(&r);
+    let rule = &sent.last().expect("the project was sent").keep_out[0];
+    assert_eq!(rule.describe(), "when elevation is below 200 mm, tilt must be above -10.0°");
+    assert_eq!(rule.name, "Rule 1");
+    // The local compile already shows it: the move now breaks the rule, and that cannot be accepted.
+    let s = &r.harness.state().session;
+    assert_eq!(r.blocking(), 1);
+    assert!(s.compiled.issues.iter().any(|i| i.message().contains("Keep-out rule broken") && !i.acceptable()));
+
+    r.press("Remove");
+    let sent = projects(&r);
+    assert!(sent.last().unwrap().keep_out.is_empty());
+    assert_eq!(r.blocking(), 0);
+}
+
+#[test]
+fn rig_settings_switch_to_hardware_and_take_a_height_from_the_leg_box() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut r = rig(Song::new("s", "Test Song", "01:00:00:00", 1500));
+    let projects = |r: &Rig| -> Vec<Project> {
+        r.cmds.try_iter().filter_map(|c| if let Cmd::PutProject(p) = c { Some(*p) } else { None }).collect()
+    };
+    r.harness.state_mut().show_tab(Tab::Inspector);
+    r.harness.run_steps(3);
+    assert!(r.harness.query_by_label("FR7 address").is_none(), "the simulator has no addresses to set");
+    {
+        let s = &mut r.harness.state_mut().session;
+        s.project.rig.kind = ptz_core::pose::RigKind::Hardware;
+        s.project.rig.autopod_host = "10.0.0.31".into();
+        s.status.adapters = vec![ptz_core::api::AdapterStatus {
+            name: "AutoPod".into(),
+            connected: true,
+            detail: "10.0.0.31:80 answers in 3.0 ms".into(),
+            calibrated: Some(true),
+            round_trip_ms: Some(3.0),
+            raw_position: Some(9120.0),
+        }];
+    }
+    r.harness.run_steps(3);
+    r.harness.get_by_label("FR7 address");
+    r.harness.get_by_label("assumed until bring-up measures them");
+    r.harness.get_by_label("0 of 3 heights. Arm is refused until the map has three; ptz-bringup measures them with you.");
+    r.press("Add the current height");
+    let sent = projects(&r);
+    let map = &sent.last().expect("the project was sent").rig.autopod_calibration;
+    assert_eq!(map.len(), 1);
+    assert_eq!(map[0].raw, 9120.0);
+    r.harness.get_by_label("1 of 3 heights. Arm is refused until the map has three; ptz-bringup measures them with you.");
+
+    // Armed or playing, the rig cannot be swapped out from under the show.
+    r.harness.state_mut().session.status.transport.output = Output::Armed;
+    r.harness.run_steps(3);
+    r.harness.get_by_label("Stop and disarm to change which rig the server drives.");
+    r.press("Add the current height");
+    assert!(projects(&r).is_empty());
+}
+
+impl Rig {
+    fn blocking(&self) -> usize {
+        let s = &self.harness.state().session;
+        s.compiled.blocking_count(s.song.as_ref().unwrap())
+    }
+}

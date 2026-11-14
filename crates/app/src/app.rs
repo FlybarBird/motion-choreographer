@@ -100,6 +100,9 @@ impl Settings {
     }
 }
 
+/// Arm is never a quiet switch: the rig travels to the pose at the playhead before anything plays.
+pub const ARM_LABEL: &str = "Arm (moves rig to playhead)";
+
 #[derive(Default)]
 enum Dialog {
     #[default]
@@ -488,7 +491,7 @@ impl Shell {
                         crate::lock_ui::lock_menu(ui, s);
                     }
                     if t.output == Output::Rehearse {
-                        action_button(ui, s, Action::Arm, "Arm", Some((GREEN, NAVY)), 0.0);
+                        action_button(ui, s, Action::Arm, ARM_LABEL, Some((GREEN, NAVY)), 0.0);
                     } else {
                         action_button(ui, s, Action::Disarm, "Disarm", Some((AMBER, NAVY)), 0.0);
                     }
@@ -720,6 +723,27 @@ impl Shell {
                         }
                     });
                 });
+            }
+        }
+        if s.confirm_sync {
+            egui::Modal::new(egui::Id::new("dlg_sync")).show(ctx, |ui| {
+                ui.set_width(380.0);
+                ui.heading("Read presets from the camera?");
+                ui.label("The camera is recalled to each of its presets in turn, so that its pose and picture can be read. It will move, at its own speed, through every preset it holds.");
+                ui.label(RichText::new("The pedestal does not move. E-Stop stops the camera and abandons the sync.").color(MUTED));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.add(egui::Button::new("Move the camera and sync").fill(AMBER)).clicked() {
+                        s.link.send(Cmd::SyncPresets);
+                        s.confirm_sync = false;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        s.confirm_sync = false;
+                    }
+                });
+            });
+            if ctx.input(|i| i.key_pressed(Key::Escape)) {
+                s.confirm_sync = false;
             }
         }
         if let Some(d) = next {
