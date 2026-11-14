@@ -467,6 +467,8 @@ impl Graph {
 }
 
 /// Stretches of frames where an axis runs faster than its limit: `(first, last)` inclusive.
+/// The speed view fills these per pixel column; the tests check the same rule frame by frame.
+#[cfg(test)]
 pub fn over_limit(speeds: &[f64], limit: f64) -> Vec<(i64, i64)> {
     let mut out: Vec<(i64, i64)> = Vec::new();
     for (f, v) in speeds.iter().enumerate() {

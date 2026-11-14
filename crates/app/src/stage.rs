@@ -281,10 +281,6 @@ impl World {
         }
     }
 
-    pub fn scene(&self) -> &Arc<Scene> {
-        &self.built.scene
-    }
-
     pub fn picker(&self) -> &Picker {
         &self.built.picker
     }
@@ -464,6 +460,7 @@ impl World {
     }
 
     /// True when the picture under `name` is already drawn for `key` at `size`.
+    #[cfg(test)]
     pub fn is_fresh(&self, name: &str, size: [usize; 2], key: u64) -> bool {
         let full = fit(size);
         let content = Key::new().add(key).add(full).add(self.generation).finish();
