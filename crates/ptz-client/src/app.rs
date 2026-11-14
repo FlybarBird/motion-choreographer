@@ -413,6 +413,7 @@ impl DirectorApp {
             self.transport_btn(ui, "Save/Commit", g.buttons.save_commit, GREEN, "save_commit");
             self.transport_btn(ui, "Prepare", g.buttons.prepare, BLUE, "prepare");
             self.transport_btn(ui, "Arm", g.buttons.arm, WARN, "arm");
+            self.transport_btn(ui, "Disarm", g.buttons.disarm, WARN, "disarm");
             self.transport_btn(ui, "Play", g.buttons.play, GREEN, "play");
             ui.separator();
             self.transport_btn(ui, "Preview", g.buttons.preview, BLUE, "preview");

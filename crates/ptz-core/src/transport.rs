@@ -196,7 +196,7 @@ impl TransportPolicy {
         let mut play_blocked = None;
         let mut preview_blocked = None;
         let mut prepare_blocked = None;
-        let mut arm_blocked = None;
+        let mut arm_blocked: Option<String> = None;
         let mut disarm_blocked = None;
 
         let can_prepare_live = snap.committed && !snap.dirty && snap.song_id.is_some();
@@ -205,11 +205,13 @@ impl TransportPolicy {
             TransportPhase::Estopped => {
                 buttons.cue = false;
                 buttons.save_commit = false;
-                play_blocked = Some("E-Stop latched — Clear E-Stop first".into());
-                preview_blocked = Some("E-Stop latched — Clear E-Stop first".into());
-                prepare_blocked = Some("E-Stop latched — Clear E-Stop first".into());
-                arm_blocked = Some("E-Stop latched — Clear E-Stop first".into());
-                disarm_blocked = Some("E-Stop latched — Clear E-Stop first".into());
+                // Avoid the bare label "E-Stop" here (disabled); only name Clear E-Stop.
+                let latched = "Latched — Clear E-Stop first".to_string();
+                play_blocked = Some(latched.clone());
+                preview_blocked = Some(latched.clone());
+                prepare_blocked = Some(latched.clone());
+                arm_blocked = Some(latched.clone());
+                disarm_blocked = Some(latched);
             }
             TransportPhase::Editing => {
                 buttons.preview = snap.song_id.is_some();
@@ -300,12 +302,23 @@ impl TransportPolicy {
                 if can_prepare_live {
                     play_blocked = Some("Not prepared — Prepare first".into());
                     arm_blocked = Some("Not prepared — Prepare first".into());
-                } else {
+                } else if buttons.save_commit {
                     play_blocked = Some("Unsaved changes — Save/Commit first".into());
                     prepare_blocked = Some("Unsaved changes — Save/Commit first".into());
                     arm_blocked = Some("Unsaved changes — Save/Commit first".into());
+                } else {
+                    play_blocked = Some("Not prepared — Cue to Idle, then Prepare".into());
+                    // Cue is enabled — ok to name.
+                    prepare_blocked = Some("Cannot Prepare — Cue to Idle first".into());
+                    arm_blocked = Some("Cannot Arm — Cue to Idle first".into());
                 }
-                disarm_blocked = Some("Not on live path".into());
+                disarm_blocked = Some("Not on live path — Cue to Idle or Prepare".into());
+                // If Prepare is enabled, disarm reason must not be the only escape named wrongly.
+                if buttons.prepare {
+                    disarm_blocked = Some("Not on live path — Prepare or Cue".into());
+                } else if buttons.cue {
+                    disarm_blocked = Some("Not on live path — Cue to Idle".into());
+                }
             }
         }
 
@@ -459,7 +472,7 @@ impl TransportPolicy {
 
 fn build_next_hint(snap: &TransportSnapshot, buttons: &TransportButtons) -> String {
     if buttons.clear_estop {
-        return "E-Stop latched. Clear E-Stop when safe.".into();
+        return "Latched. Clear E-Stop when safe.".into();
     }
     if buttons.play && matches!(snap.phase, TransportPhase::Armed) {
         return "Ready: Play (live). Disarm cancels the live path.".into();
@@ -474,13 +487,17 @@ fn build_next_hint(snap: &TransportSnapshot, buttons: &TransportButtons) -> Stri
         return "Next: Prepare for live (or Preview / Cue).".into();
     }
     if buttons.save_commit && (snap.dirty || !snap.committed) {
-        return "Next: Save/Commit before Prepare / live Play.".into();
+        // Only name Save/Commit — Prepare/Play are not enabled yet.
+        return "Next: Save/Commit before the live path.".into();
     }
     if buttons.preview && buttons.prepare {
         return "Preview available. Or Prepare → Arm → Play for live.".into();
     }
+    if buttons.preview && buttons.save_commit {
+        return "Preview available (no hardware). Save/Commit before the live path.".into();
+    }
     if buttons.preview {
-        return "Preview available (no hardware). Save/Commit before live path.".into();
+        return "Preview available (no hardware).".into();
     }
     if buttons.stop {
         return "Playing — Stop pauses; Cue re-cues.".into();
@@ -511,12 +528,31 @@ pub fn guidance_action_labels() -> &'static [(&'static str, TransportAction)] {
     ]
 }
 
-/// Extract transport actions named in a guidance string.
+fn label_at_word_boundary(text: &str, label: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut start = 0;
+    while let Some(rel) = text[start..].find(label) {
+        let abs = start + rel;
+        let before_ok = abs == 0 || !bytes[abs - 1].is_ascii_alphanumeric();
+        let end = abs + label.len();
+        let after_ok = end >= bytes.len() || !bytes[end].is_ascii_alphanumeric();
+        if before_ok && after_ok {
+            return true;
+        }
+        start = abs + 1;
+    }
+    false
+}
+
+/// Extract transport actions named in a guidance string (word-boundary aware).
+/// Longer labels are matched first and masked so `"Stop"` does not fire inside `"E-Stop"`.
 pub fn actions_named_in_text(text: &str) -> Vec<TransportAction> {
+    let mut remaining = text.to_string();
     let mut found = Vec::new();
     for (label, action) in guidance_action_labels() {
-        if text.contains(label) && !found.contains(action) {
+        if label_at_word_boundary(&remaining, label) && !found.contains(action) {
             found.push(*action);
+            remaining = remaining.replace(label, &" ".repeat(label.len()));
         }
     }
     found
