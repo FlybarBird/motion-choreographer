@@ -3,7 +3,7 @@
 use crate::camera::{first_camera, is_first_camera};
 use crate::eval::{ease_keys, peak_factor, segment_value, Evaluator};
 use crate::pose::{Axis, AxisLimits, AxisTable, KeepOutRule, Pose, Project};
-use crate::song::{ClipBody, Ease, FromPose, MotionClip, Song};
+use crate::song::{ClipBody, Ease, FromPose, Key, MotionClip, Song};
 use crate::time::FrameRate;
 use serde::{Deserialize, Serialize};
 
@@ -272,36 +272,60 @@ fn compile_camera(
     poses
 }
 
-/// True when an eased move of `frames` stays inside the speed and acceleration
-/// limits, sampled per frame the same way `compile` does. The rig stands still
-/// before the move and after it.
-fn move_fits(from: f64, to: f64, ease: Ease, frames: i64, lim: &AxisLimits, fps: f64) -> bool {
-    if from == to {
-        return true;
+#[cfg(test)]
+thread_local! {
+    /// Frames auto time set out to walk one by one, so a test can hold the search to its budget.
+    static WALKED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// One axis of an eased move of `frames`, judged against its speed and acceleration
+/// limits per frame the same way `compile` does. The rig stands still before the move
+/// and after it.
+struct EasedAxis<'a> {
+    keys: [Key; 2],
+    frames: i64,
+    lim: &'a AxisLimits,
+    fps: f64,
+}
+
+impl<'a> EasedAxis<'a> {
+    /// None for an axis that does not move: it fits whatever the time.
+    fn new(from: f64, to: f64, ease: Ease, frames: i64, lim: &'a AxisLimits, fps: f64) -> Option<Self> {
+        (from != to).then(|| EasedAxis { keys: ease_keys(from, to, frames, ease), frames, lim, fps })
     }
-    let [k0, k1] = ease_keys(from, to, frames, ease);
-    let at = |f: i64| segment_value(&k0, &k1, f.clamp(0, frames) as f64);
-    let over = |before: f64, here: f64, after: f64| {
-        (after - here).abs() * fps > lim.max_speed * SLACK
-            || (after - 2.0 * here + before).abs() * fps * fps > lim.max_accel * SLACK
-    };
-    // A move that is too short fails where it starts, where it stops or where it is
-    // fastest, so those frames and a spread of the rest are looked at first. A candidate
-    // that is far too short is then turned down without walking its whole length.
-    let probe = |f: i64| over(at(f - 1), at(f), at(f + 1));
-    const SPREAD: i64 = 64;
-    if probe(0) || probe(frames) || (frames > 4 * SPREAD && (1..SPREAD).any(|i| probe(frames / SPREAD * i))) {
-        return false;
+
+    fn at(&self, f: i64) -> f64 {
+        segment_value(&self.keys[0], &self.keys[1], f.clamp(0, self.frames) as f64)
     }
-    let (mut before, mut here) = (at(-1), at(0));
-    for f in 0..=frames {
-        let after = at(f + 1);
-        if over(before, here, after) {
-            return false;
+
+    fn over(&self, before: f64, here: f64, after: f64) -> bool {
+        (after - here).abs() * self.fps > self.lim.max_speed * SLACK
+            || (after - 2.0 * here + before).abs() * self.fps * self.fps > self.lim.max_accel * SLACK
+    }
+
+    /// A move that is too short breaks a limit where it starts, where it stops or where it
+    /// is fastest, so those frames and a spread of the rest are looked at first. True when
+    /// one of them is over: the move does not fit, and nobody has to walk it to know.
+    fn misses_at_a_glance(&self) -> bool {
+        const SPREAD: i64 = 64;
+        let probe = |f: i64| self.over(self.at(f - 1), self.at(f), self.at(f + 1));
+        probe(0) || probe(self.frames) || (self.frames > 4 * SPREAD && (1..SPREAD).any(|i| probe(self.frames / SPREAD * i)))
+    }
+
+    /// Every frame, one by one.
+    fn fits(&self) -> bool {
+        #[cfg(test)]
+        WALKED.with(|w| w.set(w.get() + self.frames as u64 + 1));
+        let (mut before, mut here) = (self.at(-1), self.at(0));
+        for f in 0..=self.frames {
+            let after = self.at(f + 1);
+            if self.over(before, here, after) {
+                return false;
+            }
+            (before, here) = (here, after);
         }
-        (before, here) = (here, after);
+        true
     }
-    true
 }
 
 /// Shortest whole-frame duration that every axis can make: the slowest axis's
@@ -332,8 +356,16 @@ pub fn auto_duration(from: &Pose, to: &Pose, axes: &[Axis], ease: Ease, limits: 
         return longest;
     }
     let mut frames = first as i64;
-    let fits =
-        |frames: i64| axes.iter().all(|&axis| move_fits(from.get(axis), to.get(axis), ease, frames, limits.get(axis), fps));
+    // Every axis is glanced at before any is walked. Otherwise a candidate that one axis turns
+    // down at a glance is first walked from end to end on the axes listed before it, and an ease
+    // that stops dead goes through a hundred candidates.
+    let fits = |frames: i64| {
+        let moving: Vec<EasedAxis> = axes
+            .iter()
+            .filter_map(|&axis| EasedAxis::new(from.get(axis), to.get(axis), ease, frames, limits.get(axis), fps))
+            .collect();
+        !moving.iter().any(EasedAxis::misses_at_a_glance) && moving.iter().all(EasedAxis::fits)
+    };
     let mut guard = 0;
     while !fits(frames) && guard < 400 {
         frames += (frames / 20).max(1);
@@ -770,5 +802,35 @@ mod tests {
         assert_eq!(sharp(10, Ease::EaseIn, 60), Some((true, 60)));
         // A gentle move in the same places is clean.
         assert_eq!(sharp(0, Ease::EaseInOut, 50), None);
+    }
+
+    #[test]
+    fn auto_time_on_several_axes_walks_only_the_candidates_that_look_right() {
+        // An ease in on all five axes: pan and tilt are content with the first guess, and the
+        // column, which may hardly accelerate, turns down a hundred longer ones. Each of those
+        // is turned down by looking at where it stops, not by walking pan and tilt first.
+        let p = Project::default();
+        let limits = p.first().axes;
+        let mut seed = 0x77u64;
+        let mut rnd = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        for ease in Ease::ALL {
+            for case in 0..20 {
+                let mut pose = || Pose::from_fn(|a| limits.get(a).min + rnd() * (limits.get(a).max - limits.get(a).min));
+                let (from, to) = (pose(), pose());
+                WALKED.with(|w| w.set(0));
+                let frames = auto_duration(&from, &to, &Axis::ALL, ease, &limits, FrameRate::F25);
+                let walked = WALKED.with(|w| w.get());
+                let once = Axis::ALL.len() as u64 * (frames as u64 + 1);
+                assert!(
+                    walked <= 4 * once,
+                    "{ease:?} case {case}: walked {walked} frames for a {frames}-frame move on five axes"
+                );
+            }
+        }
     }
 }
