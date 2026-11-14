@@ -172,6 +172,7 @@ struct Head {
     first_after_reset: u32,
     drop_next: u32,
     presets: Vec<FakePreset>,
+    picture: Vec<u8>,
     seen: Vec<Seen>,
     web_requests: Vec<String>,
 }
@@ -335,6 +336,7 @@ impl FakeFr7 {
                 FakePreset { number: 2, name: "Lectern".into(), pan: -24.0, tilt: 1.5, zoom: 0.62, focus: 0.5 },
                 FakePreset { number: 3, name: "Two-Shot".into(), pan: 18.0, tilt: 0.5, zoom: 0.38, focus: 0.48 },
             ],
+            picture: FAKE_PICTURE.to_vec(),
             seen: Vec::new(),
             web_requests: Vec::new(),
         }));
@@ -433,7 +435,7 @@ impl FakeFr7 {
                         Some(_) => Some(Response {
                             code: 200,
                             headers: vec![("Content-Type".into(), "image/jpeg".into())],
-                            body: FAKE_PICTURE.to_vec(),
+                            body: head.picture.clone(),
                         }),
                         None => Some(Response::status(404)),
                     }
@@ -465,6 +467,11 @@ impl FakeFr7 {
     pub fn is_moving(&self) -> bool {
         let h = self.head();
         h.pan_speed != 0.0 || h.tilt_speed != 0.0 || h.going_to.is_some()
+    }
+
+    /// The picture served for every preset, in place of the stub.
+    pub fn set_picture(&self, jpeg: Vec<u8>) {
+        self.head().picture = jpeg;
     }
 
     /// Stop answering, like a pulled cable. The head keeps doing what it was last told.

@@ -792,7 +792,7 @@ pub fn log(ui: &mut Ui, s: &mut Session) {
                         "transport" => OFF_WHITE,
                         _ => BLUE,
                     };
-                    ui.label(RichText::new(format!("{:<10}", r.kind)).monospace().color(color));
+                    ui.label(RichText::new(format!("{:<13}", r.kind)).monospace().color(color));
                     ui.label(RichText::new(log_line(&r.kind, &r.data)).monospace());
                 });
             }
