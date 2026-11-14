@@ -2,11 +2,11 @@
 
 use crate::session::Session;
 use crate::theme::*;
-use crate::timeline::{self, ClipBox, ClipKind, Doc, Ghost, Hit, Lane, Layout, Mods, Outcome, HEADER_W};
+use crate::timeline::{self, ClipBox, ClipKind, Doc, Ghost, Hit, Lane, Layout, Mods, Outcome, Stamp, HEADER_W};
 use egui::{pos2, vec2, Align2, Color32, CornerRadius, FontId, Painter, Pos2, Rect, Sense, Stroke, StrokeKind, Ui};
 use ptz_core::api::{MediaInfo, PeakLevel};
 use ptz_core::pose::{Axis, Preset};
-use ptz_core::song::{ClipBody, Song, Track};
+use ptz_core::song::{ClipBody, MediaClip, Song, Track};
 
 /// Drag payloads from the browser tabs.
 #[derive(Clone)]
@@ -64,6 +64,7 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
 
     let playhead = s.playhead();
     let base = timeline::layout(&song, &s.timeline.view, rect);
+    request_filmstrip(s, ui.ctx(), &song, &base);
     let m = mods(ui);
     let editable = s.can_edit();
     let pointer = ui.input(|i| i.pointer.interact_pos());
@@ -125,7 +126,8 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
     if let (Some(payload), Some(p)) = (resp.dnd_hover_payload::<MediaDrag>(), ui.ctx().pointer_latest_pos()) {
         let doc = Doc { song: &song, project: &s.project, playhead };
         let info = &payload.0;
-        ghost = s.timeline.media_ghost(&base, &doc, &info.name, media_track(info), info.duration_frames, p, m);
+        let stamp = Stamp::of(info, &doc, m);
+        ghost = s.timeline.media_ghost(&base, &doc, &info.name, media_track(info), info.duration_frames, stamp, p, m);
     }
     // Taking a payload of the wrong type would throw it away, so ask for the type first.
     let holds = |ui: &Ui, preset: bool| {
@@ -148,10 +150,17 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
         if let Some(p) = ui.ctx().pointer_latest_pos() {
             let doc = Doc { song: &song, project: &s.project, playhead };
             let info = &payload.0;
-            outcomes.push(match &editable {
-                Ok(()) => s.timeline.drop_media(&base, &doc, &info.id, &info.name, media_track(info), info.duration_frames, p, m),
+            let stamp = Stamp::of(info, &doc, m);
+            let track = media_track(info);
+            let outcome = match &editable {
+                Ok(()) => s.timeline.drop_media(&base, &doc, &info.id, &info.name, track, info.duration_frames, stamp, p, m),
                 Err(why) => Outcome::Refused(why.clone()),
-            });
+            };
+            if let Outcome::StampOutside { at_frame } = outcome {
+                s.stamped_drop = Some(crate::session::StampedDrop { media: info.clone(), at_frame });
+            } else {
+                outcomes.push(outcome);
+            }
         }
     }
 
@@ -161,6 +170,7 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
             Outcome::Seek(frame) => s.seek(frame),
             Outcome::Edit { song, .. } => s.commit_edit(song),
             Outcome::Refused(why) => s.toast(why, true),
+            Outcome::StampOutside { .. } => {}
         }
     }
 
@@ -500,6 +510,65 @@ fn request_peaks(s: &mut Session, song: &Song) {
     }
 }
 
+/// Height of the waveform under a video clip's pictures.
+const VIDEO_WAVE_H: f32 = 14.0;
+
+/// The part of a video clip that shows pictures: everything above its waveform.
+pub fn filmstrip_rect(clip: Rect) -> Rect {
+    Rect::from_min_max(clip.min + vec2(0.0, 1.0), pos2(clip.right(), clip.bottom() - VIDEO_WAVE_H - 1.0))
+}
+
+/// One picture of a filmstrip: where it is drawn, and which frame of the file it shows.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Tile {
+    pub rect: Rect,
+    pub frame: i64,
+}
+
+/// The pictures across the visible part of a video clip. Tiles are laid out from the
+/// file's first frame, so trimming or moving the clip never changes which pictures are
+/// needed, and frames are rounded to a power of two so zooming reuses most of them.
+pub fn filmstrip_tiles(strip: Rect, visible: Rect, clip: &MediaClip, px_per_frame: f32) -> Vec<Tile> {
+    let tile_w = (strip.height() * 16.0 / 9.0).max(8.0);
+    if strip.height() < 8.0 || px_per_frame <= 0.0 || visible.width() <= 0.0 {
+        return Vec::new();
+    }
+    let per_tile = (tile_w / px_per_frame) as f64;
+    let step = (2f64.powf(per_tile.max(1.0).log2().floor()) as i64).max(1);
+    let origin = strip.left() - clip.in_frame as f32 * px_per_frame;
+    let from = visible.left().max(strip.left());
+    let to = visible.right().min(strip.right());
+    let first = ((from - origin) / tile_w).floor().max(0.0) as i64;
+    let mut out = Vec::new();
+    let mut i = first;
+    loop {
+        let x = origin + i as f32 * tile_w;
+        if x >= to || out.len() >= 200 {
+            break;
+        }
+        let frame = ((i as f64 * per_tile) as i64 / step * step).clamp(0, (clip.media_frames - 1).max(0));
+        out.push(Tile { rect: Rect::from_min_size(pos2(x, strip.top()), vec2(tile_w, strip.height())), frame });
+        i += 1;
+    }
+    out
+}
+
+/// Ask for the filmstrip pictures of every video clip in view, and turn the ones that have arrived into textures.
+fn request_filmstrip(s: &mut Session, ctx: &egui::Context, song: &Song, l: &Layout) {
+    for c in l.clips.iter().filter(|c| c.kind == ClipKind::Video) {
+        let Some(clip) = song.media_clip(&c.id) else { continue };
+        if !s.media.iter().any(|m| m.id == clip.media_id && m.proxy_frames > 0) {
+            continue;
+        }
+        let visible = c.rect.intersect(l.body);
+        for tile in filmstrip_tiles(filmstrip_rect(c.rect), visible, clip, l.px_per_frame) {
+            let key = crate::frames::key(&clip.media_id, tile.frame, true);
+            s.frames.want(&s.link, &key);
+            s.frames.texture(ctx, &key);
+        }
+    }
+}
+
 /// Which media second each pixel column of a clip shows, and the waveform there.
 /// `in_s..out_s` is the stretch of the file the clip plays.
 pub fn waveform_columns(level: &PeakLevel, r: Rect, visible: Rect, in_s: f64, out_s: f64) -> Vec<(f32, f32, f32)> {
@@ -583,7 +652,18 @@ fn paint_clip(painter: &Painter, l: &Layout, c: &ClipBox, song: &Song, s: &Sessi
         ClipKind::Audio | ClipKind::Video => {
             if let Some(m) = song.media_clip(&c.id) {
                 let wave = if c.kind == ClipKind::Video {
-                    c.rect.shrink2(vec2(0.0, 2.0)).with_min_y(c.rect.center().y)
+                    let strip = filmstrip_rect(c.rect);
+                    let pictures = p.with_clip_rect(visible.intersect(strip));
+                    pictures.rect_filled(strip, 0.0, mix(NAVY, CHARCOAL, 0.3));
+                    let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+                    for tile in filmstrip_tiles(strip, visible, m, l.px_per_frame) {
+                        if let Some(texture) = s.frames.ready(&crate::frames::key(&m.media_id, tile.frame, true)) {
+                            let tint = if selected { Color32::WHITE } else { Color32::from_gray(215) };
+                            pictures.image(texture.id(), tile.rect, uv, tint);
+                        }
+                        pictures.vline(tile.rect.left(), tile.rect.y_range(), Stroke::new(1.0, with_alpha(NAVY, 160)));
+                    }
+                    c.rect.with_min_y(strip.bottom() + 1.0).shrink2(vec2(0.0, 1.0))
                 } else {
                     c.rect.shrink2(vec2(0.0, 2.0))
                 };
@@ -595,6 +675,12 @@ fn paint_clip(painter: &Painter, l: &Layout, c: &ClipBox, song: &Song, s: &Sessi
                     paint_waveform(&pc, wave, level, m.in_frame as f64 / fps, m.out_frame as f64 / fps, color);
                 }
                 let label = if m.muted { format!("{} (muted)", m.name) } else { m.name.clone() };
+                if c.kind == ClipKind::Video {
+                    // A plate under the name, so it reads over any picture.
+                    let text_w = label.chars().count() as f32 * 6.2 + 10.0;
+                    let plate = Rect::from_min_size(c.rect.left_top() + vec2(2.0, 2.0), vec2(text_w, 15.0));
+                    p.with_clip_rect(visible).rect_filled(plate, 3.0, with_alpha(NAVY, 190));
+                }
                 p.with_clip_rect(visible.shrink(2.0)).text(
                     c.rect.left_top() + vec2(6.0, 3.0),
                     Align2::LEFT_TOP,

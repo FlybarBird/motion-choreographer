@@ -36,7 +36,7 @@ impl Lane {
     fn height(self) -> f32 {
         match self {
             Lane::Markers => 22.0,
-            Lane::Video => 44.0,
+            Lane::Video => 62.0,
             Lane::Audio => 56.0,
             Lane::Motion => 46.0,
             Lane::Axis(_) => 30.0,
@@ -414,6 +414,33 @@ pub enum Outcome {
         select: Option<Vec<String>>,
     },
     Refused(String),
+    /// A stamped file was dropped, and its timecode is outside the song. `at_frame` is where the pointer let go.
+    StampOutside {
+        at_frame: i64,
+    },
+}
+
+/// Where a file's own timecode puts it on this song.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Stamp {
+    /// No timecode in the file, or the operator is placing it by hand.
+    None,
+    /// Inside the song, at this frame.
+    At(i64),
+    /// Before the song starts or after it ends.
+    Outside,
+}
+
+impl Stamp {
+    /// Hold Alt to place a stamped file by hand.
+    pub fn of(info: &ptz_core::api::MediaInfo, doc: &Doc, mods: Mods) -> Stamp {
+        match info.frame_in(doc.song, doc.project.rate) {
+            Some(_) if mods.alt => Stamp::None,
+            Some(f) if (0..doc.song.length_frames).contains(&f) => Stamp::At(f),
+            Some(_) => Stamp::Outside,
+            None => Stamp::None,
+        }
+    }
 }
 
 pub type KeyRef = (String, Axis, usize);
@@ -833,7 +860,8 @@ impl Timeline {
         }
     }
 
-    /// Where dragged media would land: on its own track, at the pointer frame.
+    /// Where dragged media would land: on its own track, on its own timecode
+    /// when it has one inside the song, else at the pointer frame.
     pub fn media_ghost(
         &mut self,
         layout: &Layout,
@@ -841,6 +869,7 @@ impl Timeline {
         name: &str,
         track: Track,
         media_frames: i64,
+        stamp: Stamp,
         pos: Pos2,
         mods: Mods,
     ) -> Option<Ghost> {
@@ -850,20 +879,23 @@ impl Timeline {
         let lane = if track == Track::Video { Lane::Video } else { Lane::Audio };
         let mut frame = (layout.frame_at(pos.x).round() as i64).max(0);
         self.snap_frame = None;
-        if !mods.shift {
+        let mut label = name.to_string();
+        match stamp {
+            Stamp::At(f) => {
+                frame = f;
+                label = format!("{name} at {}, its own timecode", doc.song.clock(doc.project.rate).timecode_at(f));
+            }
+            Stamp::Outside => label = format!("{name}: its timecode is outside this song"),
+            Stamp::None => {}
+        }
+        if stamp != Stamp::At(frame) && !mods.shift {
             if let Some(t) = Self::snap(frame, &self.snap_targets(doc, &[]), layout.px_per_frame) {
                 frame = t;
                 self.snap_frame = Some(t);
             }
         }
         let refusal = edit::add_media_clip(doc.song, doc.project, "probe", name, track, media_frames, frame).err();
-        Some(Ghost {
-            lane,
-            start: frame,
-            duration: media_frames.max(1),
-            label: name.to_string(),
-            refusal: refusal.map(|r| r.to_string()),
-        })
+        Some(Ghost { lane, start: frame, duration: media_frames.max(1), label, refusal: refusal.map(|r| r.to_string()) })
     }
 
     pub fn drop_media(
@@ -874,11 +906,17 @@ impl Timeline {
         name: &str,
         track: Track,
         media_frames: i64,
+        stamp: Stamp,
         pos: Pos2,
         mods: Mods,
     ) -> Outcome {
-        let Some(ghost) = self.media_ghost(layout, doc, name, track, media_frames, pos, mods) else { return Outcome::None };
+        let Some(ghost) = self.media_ghost(layout, doc, name, track, media_frames, stamp, pos, mods) else {
+            return Outcome::None;
+        };
         self.snap_frame = None;
+        if stamp == Stamp::Outside {
+            return Outcome::StampOutside { at_frame: ghost.start };
+        }
         match edit::add_media_clip(doc.song, doc.project, media_id, name, track, media_frames, ghost.start) {
             Ok((song, id)) => {
                 self.select_only(&id);
@@ -1010,7 +1048,7 @@ mod tests {
         assert_eq!(l.keys.len(), 10, "two keys on each of five axes");
         let k = l.keys.iter().find(|k| k.axis == Axis::Pan && k.index == 0).unwrap();
         assert_eq!(hit(&l, k.pos), Hit::Key { clip: ids[0].clone(), axis: Axis::Pan, index: 0 });
-        assert!((Layout::content_height(&v) - (RULER_H + 22.0 + 44.0 + 56.0 + 46.0 + 150.0)).abs() < 1e-3);
+        assert!((Layout::content_height(&v) - (RULER_H + 22.0 + 62.0 + 56.0 + 46.0 + 150.0)).abs() < 1e-3);
     }
 
     /// The headless driver: the same press, drag and release the window sends.
@@ -1040,7 +1078,7 @@ mod tests {
                 }
                 Outcome::Seek(f) => self.playhead = f as f64,
                 Outcome::Refused(r) => self.refusals.push(r),
-                Outcome::None => {}
+                Outcome::None | Outcome::StampOutside { .. } => {}
             }
         }
 

@@ -1,6 +1,7 @@
-//! The connection to the show server. Two background threads own the HTTP
-//! client and the WebSocket, so the UI thread never waits on the network.
-//! Commands leave through one channel; replies and status arrive through another.
+//! The connection to the show server. Background threads own the HTTP client,
+//! the WebSocket and the picture fetches, so the UI thread never waits on the
+//! network. Commands leave through one channel; replies and status arrive
+//! through another.
 
 use ptz_core::api::*;
 use ptz_core::client::{Api, ApiErr};
@@ -60,11 +61,8 @@ pub enum Cmd {
         spp: u32,
     },
     DeleteMedia(String),
-    FetchFrame {
-        media: String,
-        frame: i64,
-    },
     FetchPresetThumb(String),
+    RefreshInputs,
     RefreshSongs,
     RefreshPresets,
     RefreshProject,
@@ -106,11 +104,12 @@ pub enum Event {
         media: String,
         level: PeakLevel,
     },
+    /// A proxy frame, decoded. `None` when the server has no such picture.
     Frame {
-        media: String,
-        frame: i64,
-        jpeg: Vec<u8>,
+        key: FrameKey,
+        image: Option<egui::ColorImage>,
     },
+    Inputs(InputChoices),
     PresetThumb {
         id: String,
         jpeg: Vec<u8>,
@@ -137,10 +136,20 @@ pub struct Hello {
     pub log: Vec<LogRecord>,
 }
 
+/// One picture of a video: the media, the frame of the file in timeline
+/// frames, and whether the small filmstrip size is wanted.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FrameKey {
+    pub media: String,
+    pub frame: i64,
+    pub thumb: bool,
+}
+
 pub struct Link {
     pub tx: Sender<Cmd>,
     pub rx: Receiver<Event>,
     pub base: String,
+    frames: Sender<FrameKey>,
     stop: Arc<AtomicBool>,
 }
 
@@ -149,12 +158,18 @@ impl Link {
         let _ = self.tx.send(cmd);
     }
 
+    /// Ask for a picture. It arrives later as `Event::Frame`, unless newer requests crowd it out.
+    pub fn want_frame(&self, key: FrameKey) {
+        let _ = self.frames.send(key);
+    }
+
     /// A link with no server behind it, for tests. Commands pile up in the returned receiver.
     #[cfg(test)]
     pub fn detached() -> (Link, Receiver<Cmd>, Sender<Event>) {
         let (tx, cmd_rx) = channel();
         let (ev_tx, rx) = channel();
-        (Link { tx, rx, base: "test".into(), stop: Arc::new(AtomicBool::new(false)) }, cmd_rx, ev_tx)
+        let (frames, _) = channel();
+        (Link { tx, rx, base: "test".into(), frames, stop: Arc::new(AtomicBool::new(false)) }, cmd_rx, ev_tx)
     }
 }
 
@@ -176,8 +191,16 @@ pub fn connect(base: &str, key: Option<&str>, station: &str, repaint: Repaint) -
     let (tx, cmd_rx) = channel::<Cmd>();
     let (ev_tx, rx) = channel::<Event>();
     let stop = Arc::new(AtomicBool::new(false));
-    let link = Link { tx: tx.clone(), rx, base: api.base().to_string(), stop: stop.clone() };
+    let (frames, frame_rx) = channel::<FrameKey>();
+    let link = Link { tx: tx.clone(), rx, base: api.base().to_string(), frames, stop: stop.clone() };
     let station = station.to_string();
+    {
+        let (api, events, repaint) = (api.clone(), ev_tx.clone(), repaint.clone());
+        std::thread::Builder::new()
+            .name("link-frames".into())
+            .spawn(move || frame_loop(api, frame_rx, events, repaint))
+            .expect("frame thread");
+    }
     std::thread::Builder::new()
         .name("link-http".into())
         .spawn(move || worker(api, station, cmd_rx, tx, ev_tx, stop, repaint))
@@ -205,6 +228,48 @@ fn hello(api: &Api, station: &str) -> Result<Hello, ApiErr> {
         working,
         status,
     })
+}
+
+/// Requests still waiting when this many newer ones have arrived are dropped:
+/// the playhead has moved on, and the window asks again for what it still shows.
+const FRAME_BACKLOG: usize = 48;
+pub const THUMB_WIDTH: u32 = 120;
+
+fn decode_frame(jpeg: &[u8], thumb: bool) -> Option<egui::ColorImage> {
+    let picture = image::load_from_memory_with_format(jpeg, image::ImageFormat::Jpeg).ok()?;
+    let picture = if thumb { picture.thumbnail(THUMB_WIDTH, THUMB_WIDTH) } else { picture };
+    let rgba = picture.to_rgba8();
+    let size = [rgba.width() as usize, rgba.height() as usize];
+    Some(egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw()))
+}
+
+/// Fetch and decode proxy frames, newest request first.
+fn frame_loop(api: Api, wanted: Receiver<FrameKey>, events: Sender<Event>, repaint: Repaint) {
+    let mut queue: Vec<FrameKey> = Vec::new();
+    loop {
+        if queue.is_empty() {
+            match wanted.recv() {
+                Ok(key) => queue.push(key),
+                Err(_) => return,
+            }
+        }
+        for key in wanted.try_iter() {
+            queue.retain(|k| *k != key);
+            queue.push(key);
+        }
+        if queue.len() > FRAME_BACKLOG {
+            queue.drain(..queue.len() - FRAME_BACKLOG);
+        }
+        let Some(key) = queue.pop() else { continue };
+        let image = api
+            .get_bytes(&format!("/media/{}/frames/{}.jpg", key.media, key.frame))
+            .ok()
+            .and_then(|jpeg| decode_frame(&jpeg, key.thumb));
+        if events.send(Event::Frame { key, image }).is_err() {
+            return;
+        }
+        repaint();
+    }
 }
 
 /// Drop commands that a later one in the same batch makes pointless.
@@ -398,9 +463,9 @@ impl Worker {
                 Ok(m) => self.emit(Event::Media(m)),
                 Err(e) => self.refused("Delete media", e),
             },
-            Cmd::FetchFrame { media, frame } => {
-                if let Ok(jpeg) = self.api.get_bytes(&format!("/media/{media}/frames/{frame}.jpg")) {
-                    self.emit(Event::Frame { media, frame, jpeg });
+            Cmd::RefreshInputs => {
+                if let Ok(choices) = self.api.get::<InputChoices>("/inputs") {
+                    self.emit(Event::Inputs(choices));
                 }
             }
             Cmd::FetchPresetThumb(id) => {

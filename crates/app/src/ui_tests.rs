@@ -628,3 +628,200 @@ fn a_recorded_pass_arriving_from_the_server_is_one_undo_step_and_opens_in_the_gr
     assert_eq!(r.song(), &before);
     assert_eq!(r.puts(), vec![before]);
 }
+
+fn stamped_media(id: &str, kind: ptz_core::api::MediaKind, start_tc: &str) -> ptz_core::api::MediaInfo {
+    ptz_core::api::MediaInfo {
+        id: id.into(),
+        name: format!("{id}.wav"),
+        kind,
+        duration_s: 8.0,
+        duration_frames: 200,
+        start_tc: Some(start_tc.into()),
+        start_tc_source: Some("bext".into()),
+        proxy_frames: if kind == ptz_core::api::MediaKind::Video { 200 } else { 0 },
+        proxy_rate: Some(ptz_core::FrameRate::F25),
+        ..click_media()
+    }
+}
+
+impl Rig {
+    fn media_card(&mut self, id: &str) -> Pos2 {
+        self.harness.state_mut().show_tab(Tab::Media);
+        self.harness.run_steps(3);
+        let s = &self.harness.state().session;
+        s.probe_media.iter().find(|(m, _)| m == id).expect("the media card was drawn").1.center()
+    }
+
+    fn press(&mut self, label: &str) {
+        use egui_kittest::kittest::Queryable as _;
+        // Scrolling into view is animated: wait for the button to come to rest before clicking it.
+        self.harness.get_by_label(label).scroll_to_me();
+        let mut at = self.harness.get_by_label(label).rect();
+        for _ in 0..40 {
+            self.harness.run_steps(1);
+            let now = self.harness.get_by_label(label).rect();
+            if now == at {
+                break;
+            }
+            at = now;
+        }
+        self.harness.run_steps(2);
+        self.harness.get_by_label(label).click();
+        self.harness.run_steps(3);
+    }
+}
+
+#[test]
+fn a_stamped_file_lands_on_its_code_wherever_it_is_dropped_and_the_inspector_locks_to_it() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut r = rig(Song::new("s", "Test Song", "01:00:00:00", 1500));
+    r.events.send(Event::Media(vec![stamped_media("bed", ptz_core::api::MediaKind::Audio, "01:00:14:00")])).unwrap();
+    r.harness.run_steps(2);
+
+    // Dropped 24 seconds in, it goes to 14 seconds: where its timecode says it starts.
+    let card = r.media_card("bed");
+    let to = r.lane_point(Lane::Audio, 600.0);
+    r.drag(card, to);
+    let song = r.song().clone();
+    assert_eq!(song.media.len(), 1, "{:?}", r.toasts());
+    let clip = song.media[0].clone();
+    assert_eq!(clip.start_frame, 350);
+    assert_eq!(song.clock(ptz_core::FrameRate::F25).timecode_at(clip.start_frame).to_string(), "01:00:14:00");
+
+    // It is selected, and the inspector says where it stands and offers the lock.
+    r.harness.state_mut().show_tab(Tab::Inspector);
+    r.harness.run_steps(3);
+    r.harness.get_by_label("On its timecode");
+    r.harness.get_by_label("from the broadcast WAV");
+    let _ = r.cmds.try_iter().count();
+    r.press("Lock to this file");
+    let locks: Vec<Option<String>> =
+        r.cmds.try_iter().filter_map(|c| if let Cmd::Act(Action::Lock, req) = c { Some(req.source) } else { None }).collect();
+    assert_eq!(locks, vec![Some(format!("file:{}", clip.id))]);
+
+    // Dragged four seconds late, the inspector says so and puts it back.
+    let l = r.layout();
+    let y = l.lane_rect(Lane::Audio).unwrap().center().y;
+    r.drag(pos2(l.x_of(400.0), y), pos2(l.x_of(500.0), y));
+    let moved = r.song().media[0].start_frame;
+    assert!((moved - 450).abs() <= 3, "{moved}");
+    r.harness.run_steps(2);
+    r.harness.get_by_label(format!("Sits {} frames late against its timecode", moved - 350).as_str());
+    r.press("Move to its timecode");
+    assert_eq!(r.song().media[0].start_frame, 350, "{:?}", r.toasts());
+
+    // Alt places it by hand: a second copy goes where the pointer is.
+    let card = r.media_card("bed");
+    let to = r.lane_point(Lane::Audio, 900.0);
+    r.harness.event(egui::Event::ModifiersChanged(egui::Modifiers::ALT));
+    r.drag(card, to);
+    r.harness.event(egui::Event::ModifiersChanged(egui::Modifiers::default()));
+    r.harness.run_steps(1);
+    let starts: Vec<i64> = r.song().media.iter().map(|c| c.start_frame).collect();
+    assert_eq!(starts.len(), 2, "{:?}", r.toasts());
+    assert!((starts[1] - 900).abs() <= 3, "{starts:?}");
+}
+
+#[test]
+fn a_stamped_file_outside_the_song_offers_to_move_the_song_start_to_it() {
+    use egui_kittest::kittest::Queryable as _;
+    let project = Project::default();
+    let (before, _) =
+        ptz_core::edit::insert_preset_move(&Song::new("s", "Test Song", "01:00:00:00", 1500), &project, &presets()[1], 200)
+            .unwrap();
+    let mut r = rig(before.clone());
+    r.events.send(Event::Media(vec![stamped_media("bed", ptz_core::api::MediaKind::Audio, "02:00:10:00")])).unwrap();
+    r.harness.run_steps(2);
+
+    let card = r.media_card("bed");
+    let to = r.lane_point(Lane::Audio, 600.0);
+    r.drag(card, to);
+    assert!(r.song().media.is_empty(), "nothing is placed until the operator chooses");
+    r.harness.get_by_label("bed.wav starts at 02:00:10:00");
+    r.harness.get_by_label("That is outside Test Song, which runs from 01:00:00:00 to 01:01:00:00.");
+
+    r.press("Set the song start to 02:00:10:00");
+    let song = r.song().clone();
+    assert_eq!(song.start_tc, "02:00:10:00");
+    assert_eq!(song.media.iter().map(|c| c.start_frame).collect::<Vec<_>>(), vec![0]);
+    assert_eq!(song.motion[0].start_frame, 200, "moves keep their places");
+    assert!(r.harness.query_by_label("bed.wav starts at 02:00:10:00").is_none(), "the dialog closed");
+    assert_eq!(r.harness.state().session.undo.len(), 1, "the new start and the clip are one undo step");
+    r.harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    r.harness.run_steps(2);
+    assert_eq!(r.song(), &before);
+
+    // The other answer: leave the song alone and place it where it was dropped.
+    let card = r.media_card("bed");
+    let to = r.lane_point(Lane::Audio, 600.0);
+    r.drag(card, to);
+    r.press("Place it where I dropped it");
+    let song = r.song().clone();
+    assert_eq!(song.start_tc, "01:00:00:00");
+    assert!((song.media[0].start_frame - 600).abs() <= 3, "{}", song.media[0].start_frame);
+}
+
+#[test]
+fn the_reference_monitor_shows_the_frame_under_the_playhead_and_the_video_lane_a_filmstrip() {
+    use crate::link::FrameKey;
+    let project = Project::default();
+    let info = stamped_media("plate", ptz_core::api::MediaKind::Video, "01:00:04:00");
+    let (song, clip) = ptz_core::edit::add_media_clip(
+        &Song::new("s", "Test Song", "01:00:00:00", 600),
+        &project,
+        &info.id,
+        &info.name,
+        ptz_core::song::Track::Video,
+        info.duration_frames,
+        100,
+    )
+    .unwrap();
+    let mut r = rig(song);
+    r.events.send(Event::Media(vec![info])).unwrap();
+    r.harness.state_mut().show_tab(Tab::Reference);
+    r.harness.run_steps(3);
+
+    // The filmstrip asks for small pictures across the clip, at frames of the file.
+    let asked = r.harness.state().session.frames.asked();
+    let thumbs: Vec<i64> = asked.iter().filter(|k| k.thumb).map(|k| k.frame).collect();
+    assert!(thumbs.len() >= 3 && thumbs[0] == 0, "{thumbs:?}");
+    assert!(thumbs.iter().all(|f| (0..200).contains(f)), "{thumbs:?}");
+    // The playhead is before the clip: no monitor picture is asked for.
+    assert!(asked.iter().all(|k| k.thumb), "{asked:?}");
+
+    // Playhead 30 frames into the clip: the monitor asks for frame 30 of the file.
+    {
+        let status = &mut r.harness.state_mut().session.status;
+        status.frame = 130;
+        status.frame_f = 130.0;
+    }
+    r.harness.run_steps(3);
+    let full = FrameKey { media: "plate".into(), frame: 30, thumb: false };
+    assert!(r.harness.state().session.frames.asked().contains(&full));
+    assert!(r.harness.state().session.reference_shown.is_none());
+
+    // When it arrives it is shown, and a filmstrip picture becomes a texture.
+    let picture = |shade: u8| Some(egui::ColorImage::filled([48, 27], egui::Color32::from_gray(shade)));
+    r.events.send(Event::Frame { key: full.clone(), image: picture(200) }).unwrap();
+    let first_thumb = FrameKey { media: "plate".into(), frame: 0, thumb: true };
+    r.events.send(Event::Frame { key: first_thumb.clone(), image: picture(90) }).unwrap();
+    r.harness.run_steps(3);
+    let s = &r.harness.state().session;
+    assert_eq!(s.reference_shown.as_ref().map(|(media, _)| media.as_str()), Some("plate"));
+    assert!(s.frames.ready(&first_thumb).is_some());
+    assert!(!s.frames.asked().contains(&full));
+
+    // Trimming the head of the clip does not change which pictures are needed.
+    let l = r.layout();
+    let rect = l.clip(&clip).unwrap().rect;
+    let strip = crate::timeline_ui::filmstrip_rect(rect);
+    let m = r.song().media_clip(&clip).unwrap().clone();
+    let tiles = crate::timeline_ui::filmstrip_tiles(strip, rect, &m, l.px_per_frame);
+    let mut trimmed = m.clone();
+    trimmed.in_frame = 40;
+    trimmed.start_frame += 40;
+    let later = egui::Rect::from_min_max(pos2(strip.left() + 40.0 * l.px_per_frame, strip.top()), strip.max);
+    let after = crate::timeline_ui::filmstrip_tiles(later, later, &trimmed, l.px_per_frame);
+    assert!(after.iter().all(|t| tiles.iter().any(|b| b.frame == t.frame && (b.rect.left() - t.rect.left()).abs() < 0.01)));
+    assert!(tiles.windows(2).all(|w| w[1].frame >= w[0].frame && (w[1].rect.left() - w[0].rect.right()).abs() < 0.01));
+}

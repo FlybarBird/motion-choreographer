@@ -4,6 +4,7 @@
 #![allow(dead_code)]
 
 mod app;
+mod frames;
 mod graph;
 mod link;
 mod lock_ui;

@@ -764,6 +764,71 @@ impl Shell {
                 ctx.data_mut(|d| d.insert_temp(rename_id, (id, name)));
             }
         }
+
+        self.stamped_drop_dialog(ctx);
+    }
+
+    /// A stamped file was dropped on a song its timecode does not fall inside.
+    fn stamped_drop_dialog(&mut self, ctx: &egui::Context) {
+        let s = &mut self.session;
+        let (Some(drop), Some(song)) = (s.stamped_drop.clone(), s.song.clone()) else {
+            s.stamped_drop = None;
+            return;
+        };
+        let info = &drop.media;
+        let file_start = info.start_tc.clone().unwrap_or_default();
+        let track = if info.kind == ptz_core::api::MediaKind::Video {
+            ptz_core::song::Track::Video
+        } else {
+            ptz_core::song::Track::Audio
+        };
+        let mut choice: Option<bool> = None;
+        let mut close = false;
+        egui::Modal::new(egui::Id::new("dlg_stamped_drop")).show(ctx, |ui| {
+            ui.set_width(430.0);
+            ui.heading(format!("{} starts at {file_start}", info.name));
+            ui.add_space(4.0);
+            ui.label(format!(
+                "That is outside {}, which runs from {} to {}.",
+                song.name,
+                s.timecode_at(0),
+                s.timecode_at(song.length_frames)
+            ));
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(
+                    "Setting the song start puts the file on its own timecode at the first frame. \
+                     Clips already on the timeline keep their places and take new timecodes.",
+                )
+                .color(MUTED),
+            );
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                if ui.add(egui::Button::new(format!("Set the song start to {file_start}")).fill(BLUE)).clicked() {
+                    choice = Some(true);
+                }
+                if ui.button("Place it where I dropped it").clicked() {
+                    choice = Some(false);
+                }
+                if ui.button("Cancel").clicked() {
+                    close = true;
+                }
+            });
+        });
+        if let Some(restart) = choice {
+            let at = if restart { 0 } else { drop.at_frame };
+            let placed = s.edit(|song, project| {
+                let base = if restart { edit::set_song_start(song, project, &file_start)? } else { song.clone() };
+                edit::add_media_clip(&base, project, &info.id, &info.name, track, info.duration_frames, at).map(|(song, _)| song)
+            });
+            if placed && !restart {
+                s.toast(format!("{} is off its timecode. The Inspector can move it back", info.name), false);
+            }
+            close = true;
+        }
+        if close || ctx.input(|i| i.key_pressed(Key::Escape)) {
+            s.stamped_drop = None;
+        }
     }
 
     fn toasts(&mut self, ctx: &egui::Context) {
