@@ -475,10 +475,7 @@ impl Show {
             return Err(Fail::refused("Save the song before committing"));
         }
         if entry.committed_clean() {
-            return Err(Fail::refused(format!(
-                "Revision {} already holds this song",
-                entry.revision().unwrap_or(0)
-            )));
+            return Err(Fail::refused(format!("Revision {} already holds this song", entry.revision().unwrap_or(0))));
         }
         let song = entry.song.clone();
         let by = self.lease.as_ref().map(|l| l.name.clone()).unwrap_or_default();
@@ -513,7 +510,10 @@ impl Show {
         for a in Axis::ALL {
             let l = project.axes.get(a);
             if !(l.min < l.max && l.max_speed > 0.0 && l.max_accel > 0.0 && l.settle_s >= 0.0) {
-                return Err(Fail::invalid(format!("{} limits are not usable: min must be below max, speeds above zero", a.label())));
+                return Err(Fail::invalid(format!(
+                    "{} limits are not usable: min must be below max, speeds above zero",
+                    a.label()
+                )));
             }
         }
         self.storage.save_project(&project).map_err(Fail::io)?;
@@ -664,10 +664,7 @@ impl Show {
         }
         self.transport = transport::apply(&before, action, true);
         let frame = self.frame_f.floor() as i64;
-        self.log(
-            "transport",
-            json!({ "action": action.key(), "by": self.who(client), "frame": frame, "state": self.transport }),
-        );
+        self.log("transport", json!({ "action": action.key(), "by": self.who(client), "frame": frame, "state": self.transport }));
         self.poke();
         Ok(())
     }

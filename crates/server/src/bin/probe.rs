@@ -199,9 +199,7 @@ impl Probe {
         texts.push(&g.hint);
         for text in texts {
             for named in transport::actions_named_in(text) {
-                self.check(g.allows(named), || {
-                    format!("[{}] \"{text}\" names {:?}, which is not enabled", short(&s), named)
-                });
+                self.check(g.allows(named), || format!("[{}] \"{text}\" names {:?}, which is not enabled", short(&s), named));
             }
         }
         self.check(g.primary.is_some_and(|p| g.allows(p)), || {
@@ -249,13 +247,21 @@ impl Probe {
                 if !enabled {
                     let reason = here.guidance.reason(action).unwrap_or("").to_string();
                     let result = self.api.act(action, &Self::request_for(action));
-                    self.check(
-                        matches!(&result, Err(ApiErr::Refused { code: 409, msg }) if *msg == reason),
-                        || format!("[{}] {:?} should be refused with \"{reason}\" but the server said {result:?}", short(&state), action),
-                    );
+                    self.check(matches!(&result, Err(ApiErr::Refused { code: 409, msg }) if *msg == reason), || {
+                        format!(
+                            "[{}] {:?} should be refused with \"{reason}\" but the server said {result:?}",
+                            short(&state),
+                            action
+                        )
+                    });
                     let after = self.settle()?;
                     self.check(after.transport == state, || {
-                        format!("[{}] a refused {:?} still changed the state to [{}]", short(&state), action, short(&after.transport))
+                        format!(
+                            "[{}] a refused {:?} still changed the state to [{}]",
+                            short(&state),
+                            action,
+                            short(&after.transport)
+                        )
                     });
                     row.push("--".to_string());
                     continue;
@@ -265,7 +271,12 @@ impl Probe {
                         self.check_status(&after);
                         let allowed = expected_after(&state, action);
                         self.check(allowed.contains(&after.transport), || {
-                            format!("[{}] {:?} led to [{}], which the rules do not allow", short(&state), action, short(&after.transport))
+                            format!(
+                                "[{}] {:?} led to [{}], which the rules do not allow",
+                                short(&state),
+                                action,
+                                short(&after.transport)
+                            )
                         });
                         if !recipes.iter().any(|(s, _)| *s == after.transport) {
                             let mut r = recipe.clone();
@@ -295,15 +306,12 @@ impl Probe {
         }
 
         // A watcher's E-Stop must work while the show is live.
-        if let Some((state, recipe)) =
-            recipes.iter().find(|(s, _)| s.output == Output::Armed && s.run == Run::Playing).cloned()
-        {
+        if let Some((state, recipe)) = recipes.iter().find(|(s, _)| s.output == Output::Armed && s.run == Run::Playing).cloned() {
             self.goto(&recipe, &state)?;
             let st = self.watcher.act(Action::Estop, &TransportRequest::default());
-            self.check(
-                matches!(&st, Ok(s) if s.transport.estop && !s.hardware_live && s.transport.run == Run::Stopped),
-                || format!("a watcher's E-Stop during a live run did not latch: {st:?}"),
-            );
+            self.check(matches!(&st, Ok(s) if s.transport.estop && !s.hardware_live && s.transport.run == Run::Stopped), || {
+                format!("a watcher's E-Stop during a live run did not latch: {st:?}")
+            });
         } else {
             self.fail("the probe never reached Armed and Playing".into());
         }
@@ -396,7 +404,14 @@ fn main() {
             let width = 36;
             print!("{:<width$}", "run     time output      rec estop");
             for a in Action::ALL {
-                print!(" {:<6}", &a.key()[..a.key().len().min(6)]);
+                let head = match a {
+                    Action::RecordOn => "rec+",
+                    Action::RecordOff => "rec-",
+                    Action::ResetEstop => "reset",
+                    Action::Disarm => "disarm",
+                    other => other.key(),
+                };
+                print!(" {head:<6}");
             }
             println!();
             for (state, row) in table.values() {

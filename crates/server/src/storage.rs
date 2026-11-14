@@ -220,12 +220,7 @@ impl Storage {
             return Err(std::io::Error::other("revision already exists"));
         }
         let bytes = serde_json::to_vec_pretty(song).map_err(std::io::Error::other)?;
-        let info = RevisionInfo {
-            number,
-            sha256: sha256_hex(&bytes),
-            committed_at: now_rfc3339(),
-            committed_by: by.to_string(),
-        };
+        let info = RevisionInfo { number, sha256: sha256_hex(&bytes), committed_at: now_rfc3339(), committed_by: by.to_string() };
         write_atomic(&path, &bytes)?;
         write_json(&dir.join(format!("{number:04}.meta.json")), &info)?;
         Ok(info)

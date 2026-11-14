@@ -64,15 +64,8 @@ pub fn seed(storage: &Storage) -> std::io::Result<()> {
         }
     }
 
-    let awards_bed = build(
-        &project,
-        "awards-bed",
-        "Awards Bed",
-        "02:00:00:00",
-        60.0,
-        &[(0.0, awards)],
-        &[(30.0, "Winner announced")],
-    );
+    let awards_bed =
+        build(&project, "awards-bed", "Awards Bed", "02:00:00:00", 60.0, &[(0.0, awards)], &[(30.0, "Winner announced")]);
 
     storage.save_project(&project)?;
     storage.save_presets(&presets)?;
