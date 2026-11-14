@@ -100,9 +100,24 @@ That writes two installers into `dist/`, for the kind of machine it was run on:
 | The app, with the show server as an option | `PTZ-Programmer-<version>-macos-<arch>.pkg` | `ptz-programmer-<version>-linux-<arch>.run` | Every station with a screen |
 | The show server alone | `PTZ-Server-<version>-macos-<arch>.pkg` | `ptz-server-<version>-linux-<arch>.run` | A machine that only runs the show |
 
-A Mac installer has to be built on a Mac: an Apple Silicon one on an Apple
-Silicon Mac, an Intel one on an Intel Mac. The machines you install on need
-none of the build tools.
+A Mac installer has to be built on a Mac, because macOS programs cannot be
+compiled anywhere else. It is built once; the machines you install on need
+none of the build tools. On the Mac that builds:
+
+1. Install the Xcode command line tools (`xcode-select --install`) and Rust
+   (see [To build the software](#to-build-the-software)).
+2. In the project folder, run `make package`. The first build takes several
+   minutes. The script checks both tools first and says what to run if one is
+   missing or too old, and it opens each installer again when it has made it,
+   to check that the parts are inside.
+3. The two `.pkg` files are in `dist/`. Copy them to the other Macs.
+
+`make package` builds for the kind of Mac it runs on. An Apple Silicon Mac
+also builds the pair for Intel Macs:
+
+```sh
+PTZ_TARGET=x86_64-apple-darwin make package
+```
 
 **Which parts go where.** The show server runs on one machine. Every station
 needs the app. So:
