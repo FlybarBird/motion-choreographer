@@ -265,6 +265,12 @@ armed, and can be withdrawn (**Withdraw acceptance**). Range, jump and keep-out
 problems can never be accepted, because they are about where the rig goes, not
 how late it gets there.
 
+An acceptance is of the move as it was when you accepted it. Change the move
+and it is withdrawn, and that includes changing it from somewhere else: point
+the move before it at a different preset, or delete that move, and this one
+starts from a different place. Look at it again and accept it again if it is
+still what you want.
+
 The limits themselves are in the project settings (Setup Guide, 7.5). If a
 limit is wrong, fix the limit there; do not accept your way round it.
 
