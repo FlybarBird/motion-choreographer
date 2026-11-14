@@ -501,7 +501,7 @@ fn clip_fill(kind: ClipKind, selected: bool) -> Color32 {
     if selected {
         mix(base, OFF_WHITE, 0.18)
     } else {
-        mix(base, CHARCOAL, 0.28)
+        mix(base, PANEL, 0.28)
     }
 }
 
@@ -672,14 +672,14 @@ fn paint_clip(painter: &Painter, l: &Layout, c: &ClipBox, song: &Song, s: &Sessi
                 let wave = if c.kind == ClipKind::Video {
                     let strip = filmstrip_rect(c.rect);
                     let pictures = p.with_clip_rect(visible.intersect(strip));
-                    pictures.rect_filled(strip, 0.0, mix(NAVY, CHARCOAL, 0.3));
+                    pictures.rect_filled(strip, 0.0, mix(BASE, PANEL, 0.3));
                     let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
                     for tile in filmstrip_tiles(strip, visible, m, l.px_per_frame) {
                         if let Some(texture) = s.frames.ready(&crate::frames::key(&m.media_id, tile.frame, true)) {
                             let tint = if selected { Color32::WHITE } else { Color32::from_gray(215) };
                             pictures.image(texture.id(), tile.rect, uv, tint);
                         }
-                        pictures.vline(tile.rect.left(), tile.rect.y_range(), Stroke::new(1.0, with_alpha(NAVY, 160)));
+                        pictures.vline(tile.rect.left(), tile.rect.y_range(), Stroke::new(1.0, with_alpha(BASE, 160)));
                     }
                     c.rect.with_min_y(strip.bottom() + 1.0).shrink2(vec2(0.0, 1.0))
                 } else {
@@ -697,7 +697,7 @@ fn paint_clip(painter: &Painter, l: &Layout, c: &ClipBox, song: &Song, s: &Sessi
                     // A plate under the name, so it reads over any picture.
                     let text_w = label.chars().count() as f32 * 6.2 + 10.0;
                     let plate = Rect::from_min_size(c.rect.left_top() + vec2(2.0, 2.0), vec2(text_w, 15.0));
-                    p.with_clip_rect(visible).rect_filled(plate, 3.0, with_alpha(NAVY, 190));
+                    p.with_clip_rect(visible).rect_filled(plate, 3.0, with_alpha(BASE, 190));
                 }
                 p.with_clip_rect(visible.shrink(2.0)).text(
                     c.rect.left_top() + vec2(6.0, 3.0),
@@ -875,7 +875,7 @@ fn paint(painter: &Painter, l: &Layout, song: &Song, s: &Session, playhead: f64)
 
     // Header column.
     let header = Rect::from_min_max(pos2(l.rect.left(), l.ruler.bottom()), pos2(l.body.left(), l.rect.bottom()));
-    painter.rect_filled(header, 0.0, CHARCOAL);
+    painter.rect_filled(header, 0.0, PANEL);
     for lane in &l.lanes {
         let y = lane.rect.center().y;
         match lane.lane {
@@ -903,7 +903,7 @@ fn paint(painter: &Painter, l: &Layout, song: &Song, s: &Session, playhead: f64)
                         Align2::CENTER_CENTER,
                         format!("{}", camera + 1),
                         FontId::proportional(11.0),
-                        NAVY,
+                        BASE,
                     );
                     let name = s.project.cameras.get(camera).map(|c| c.name.as_str()).unwrap_or("");
                     let text = painter.layout_no_wrap(name.to_string(), FontId::proportional(12.0), OFF_WHITE);
@@ -949,12 +949,12 @@ fn paint(painter: &Painter, l: &Layout, song: &Song, s: &Session, playhead: f64)
                 if let Some(c) = record_dot(l, camera, axis) {
                     if records && s.record_axes_shown().contains(&axis) {
                         let live = s.status.transport.record;
-                        painter.circle_filled(c, 5.5, if live { RED } else { mix(RED, CHARCOAL, 0.35) });
+                        painter.circle_filled(c, 5.5, if live { RED } else { mix(RED, PANEL, 0.35) });
                         if s.status.record.active {
                             painter.circle_stroke(c, 8.0, Stroke::new(1.5, RED));
                         }
                     } else {
-                        painter.circle_stroke(c, 5.0, Stroke::new(1.5, mix(RED, CHARCOAL, 0.55)));
+                        painter.circle_stroke(c, 5.0, Stroke::new(1.5, mix(RED, PANEL, 0.55)));
                     }
                 }
             }

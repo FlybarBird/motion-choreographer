@@ -25,8 +25,8 @@ fn media_card(ui: &mut Ui, info: &MediaInfo) -> egui::Response {
     let width = (ui.available_width() - 8.0).max(120.0);
     let (rect, resp) = ui.allocate_exact_size(vec2(width, 44.0), Sense::hover());
     let p = ui.painter();
-    p.rect_filled(rect, 5.0, mix(CHARCOAL, OFF_WHITE, 0.06));
-    p.rect_stroke(rect, 5.0, Stroke::new(1.0, mix(CHARCOAL, OFF_WHITE, 0.16)), StrokeKind::Inside);
+    p.rect_filled(rect, 5.0, mix(PANEL, OFF_WHITE, 0.06));
+    p.rect_stroke(rect, 5.0, Stroke::new(1.0, mix(PANEL, OFF_WHITE, 0.16)), StrokeKind::Inside);
     let badge = Rect::from_min_size(rect.left_top() + vec2(6.0, 6.0), vec2(32.0, 32.0));
     let (tag, color) = if info.kind == MediaKind::Video { ("VID", BLUE) } else { ("AUD", GREEN) };
     p.rect_filled(badge, 4.0, with_alpha(color, 40));
@@ -127,7 +127,7 @@ pub fn meters(ui: &mut Ui, s: &Session) {
         let y = rect.top() + 4.0 + row as f32 * 12.0;
         p.text(egui::pos2(rect.left(), y + 5.0), Align2::LEFT_CENTER, tag, FontId::monospace(9.5), MUTED);
         let bar = Rect::from_min_size(egui::pos2(rect.left() + 10.0, y), vec2(54.0, 10.0));
-        p.rect_filled(bar, 2.0, mix(CHARCOAL, NAVY, 0.6));
+        p.rect_filled(bar, 2.0, mix(PANEL, BASE, 0.6));
         let lit = meter_fraction(peak);
         if lit > 0.0 {
             let color = if peak >= 0.98 {
@@ -214,7 +214,7 @@ pub fn reference(ui: &mut Ui, s: &mut Session) {
             let at = fit(area.shrink(2.0), size.x / size.y.max(1.0));
             p.image(texture.id(), at, Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
             let strip = Rect::from_min_max(egui::pos2(at.left(), at.bottom() - 20.0), at.max);
-            p.rect_filled(strip, 0.0, with_alpha(NAVY, 170));
+            p.rect_filled(strip, 0.0, with_alpha(BASE, 170));
             p.text(strip.left_center() + vec2(6.0, 0.0), Align2::LEFT_CENTER, &clip.name, FontId::proportional(11.0), OFF_WHITE);
             let rate = s.project.rate;
             let code = info

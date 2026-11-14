@@ -865,7 +865,7 @@ fn paint(painter: &Painter, plot: &Plot, song: &Song, clip: Option<&MotionClip>,
 
     // Value gutter.
     let gutter = Rect::from_min_max(pos2(plot.rect.left(), plot.ruler.bottom()), pos2(plot.body.left(), plot.rect.bottom()));
-    painter.rect_filled(gutter, 0.0, CHARCOAL);
+    painter.rect_filled(gutter, 0.0, PANEL);
     painter.vline(plot.body.left(), plot.rect.y_range(), Stroke::new(1.0, LINE));
     let pg = painter.with_clip_rect(gutter);
     let active = g.active;

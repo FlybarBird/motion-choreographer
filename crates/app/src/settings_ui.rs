@@ -424,7 +424,7 @@ fn cameras(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::Project, 
         let status = s.status.camera(&camera.id);
         ui.horizontal(|ui| {
             let on = camera.id == selected;
-            let chip = egui::Button::new(RichText::new(format!("{}", i + 1)).strong().color(NAVY))
+            let chip = egui::Button::new(RichText::new(format!("{}", i + 1)).strong().color(BASE))
                 .fill(camera_color(i))
                 .stroke(egui::Stroke::new(if on { 2.0 } else { 0.0 }, OFF_WHITE))
                 .min_size(egui::vec2(26.0, 20.0));

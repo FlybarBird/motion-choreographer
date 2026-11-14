@@ -82,9 +82,9 @@ pub fn bar(ui: &mut Ui, s: &mut Session) {
                 let (word, ink) = state(s.status.camera(&camera.id), output);
                 let color = camera_color(i);
                 let text =
-                    RichText::new(format!("{} {}", i + 1, camera.name)).size(12.5).color(if on { NAVY } else { OFF_WHITE });
+                    RichText::new(format!("{} {}", i + 1, camera.name)).size(12.5).color(if on { BASE } else { OFF_WHITE });
                 let button = egui::Button::new(text)
-                    .fill(if on { color } else { mix(CHARCOAL, color, 0.16) })
+                    .fill(if on { color } else { mix(PANEL, color, 0.16) })
                     .stroke(Stroke::new(if on { 1.5 } else { 1.0 }, if on { OFF_WHITE } else { mix(LINE, color, 0.5) }))
                     .min_size(vec2(0.0, 24.0));
                 let r = ui.add(button).on_hover_text(detail(s, i));
@@ -94,7 +94,7 @@ pub fn bar(ui: &mut Ui, s: &mut Session) {
                 // The state sits under the chip's right corner, out of the name's way.
                 let dot = r.rect.right_top() + vec2(-5.0, 5.0);
                 ui.painter().circle_filled(dot, 3.5, ink);
-                ui.painter().circle_stroke(dot, 3.5, Stroke::new(1.0, if on { NAVY } else { CHARCOAL }));
+                ui.painter().circle_stroke(dot, 3.5, Stroke::new(1.0, if on { BASE } else { PANEL }));
                 if matches!(word, "held" | "fault" | "stopping" | "no answer" | "reading") {
                     ui.label(RichText::new(word).color(ink).small().strong());
                 }

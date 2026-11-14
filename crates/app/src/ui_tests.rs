@@ -62,8 +62,10 @@ pub fn rig_with(project: Project, presets: Vec<Preset>, song: Song) -> Rig {
     let harness = Harness::builder().with_size(vec2(1500.0, 920.0)).build_ui_state(
         move |ui, shell: &mut Shell| {
             if !themed {
+                // Fonts set on the context are bound from the next pass, so the first one draws nothing.
                 crate::theme::apply(ui.ctx());
                 themed = true;
+                return;
             }
             shell.ui(ui);
         },

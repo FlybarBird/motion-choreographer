@@ -208,7 +208,7 @@ fn paint_surface(ui: &Ui, s: &Session, surface: &Surface, stick: Jog, focused: b
     if live {
         p.line_segment([c, knob], Stroke::new(2.0, BLUE));
     }
-    p.circle(knob, 9.0, if live { BLUE } else { CHARCOAL }, Stroke::new(1.5, if dim { MUTED } else { OFF_WHITE }));
+    p.circle(knob, 9.0, if live { BLUE } else { PANEL }, Stroke::new(1.5, if dim { MUTED } else { OFF_WHITE }));
 
     for (axis, r) in surface.sliders {
         let v = stick.get(axis);
@@ -230,7 +230,7 @@ fn paint_surface(ui: &Ui, s: &Session, surface: &Surface, stick: Jog, focused: b
         p.circle(
             pos2(x, r.center().y),
             7.0,
-            if v != 0.0 { BLUE } else { CHARCOAL },
+            if v != 0.0 { BLUE } else { PANEL },
             Stroke::new(1.5, if dim { MUTED } else { OFF_WHITE }),
         );
     }
@@ -357,7 +357,7 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
             if s.project.cameras.len() > 1 {
                 let i = s.cam_index();
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(format!(" {} ", i + 1)).strong().color(NAVY).background_color(camera_color(i)));
+                    ui.label(RichText::new(format!(" {} ", i + 1)).strong().color(BASE).background_color(camera_color(i)));
                     ui.label(RichText::new(&s.cam().name).strong());
                     ui.label(
                         RichText::new("The controller, the readout and the stored pose are this camera's.").color(MUTED).small(),

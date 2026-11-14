@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Behind everything.
-pub const SKY: [u8; 3] = [8, 10, 22];
+pub const SKY: [u8; 3] = [9, 10, 12];
 /// Models above this many triangles are made ready on another thread, so the window does not stall.
 const BUILD_INLINE_BELOW: usize = 150_000;
 /// A frustum is drawn this far when its centre ray meets nothing.
