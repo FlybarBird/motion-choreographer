@@ -69,8 +69,12 @@ fn main() {
         Ok(running) => {
             // One write, errors ignored: a launcher may read the first line and close the pipe.
             use std::io::Write;
-            let banner =
-                format!("ptz-server {} listening on {}\ndata folder: {}\n", env!("CARGO_PKG_VERSION"), running.url(), data.display());
+            let banner = format!(
+                "ptz-server {} listening on {}\ndata folder: {}\n",
+                env!("CARGO_PKG_VERSION"),
+                running.url(),
+                data.display()
+            );
             let mut out = std::io::stdout();
             let _ = out.write_all(banner.as_bytes());
             let _ = out.flush();
