@@ -142,6 +142,7 @@ pub struct Show {
     loaded_tx: mpsc::Sender<(String, Result<Vec<f32>, String>)>,
     loaded_rx: mpsc::Receiver<(String, Result<Vec<f32>, String>)>,
     audio_drift: f64,
+    clock: SteadyClock,
     frame_f: f64,
     lease: Option<Lease>,
     lease_ttl: Duration,
@@ -224,6 +225,7 @@ impl Show {
             loaded_tx,
             loaded_rx,
             audio_drift: 0.0,
+            clock: SteadyClock::default(),
             frame_f: 0.0,
             lease: None,
             lease_ttl: cfg.lease_ttl,
@@ -849,6 +851,7 @@ impl Show {
     }
 
     pub fn act(&mut self, client: &str, action: Action, req: &TransportRequest) -> Res<()> {
+        self.clock.reset();
         let ctx = self.context(client);
         transport::check(&self.transport, &ctx, action).map_err(|b| Fail::refused(b.text))?;
         let rate = self.rate();
@@ -1156,7 +1159,7 @@ impl Show {
             // One reading of the audio clock per tick: the playhead and the drift figure share it.
             let audio_pos = self.audio.position(self.rate());
             if self.transport.run == Run::Playing && self.transport.time != TimeMode::LockedExternal {
-                let f = audio_pos;
+                let f = self.clock.follow(audio_pos, now, self.rate().fps());
                 if f >= length {
                     self.frame_f = length;
                     self.event(Event::SongEnded);
@@ -1255,6 +1258,44 @@ fn pass_id_of(song: &Song, clip: &str) -> Option<String> {
     song.motion_clip(clip).and_then(|c| c.recorded_pass.clone())
 }
 
+/// The audio device says where it is once per callback, and callbacks land a millisecond
+/// early or late. The playhead follows the device through a slow filter, so it advances
+/// evenly and still cannot drift from the sound.
+#[derive(Default)]
+struct SteadyClock {
+    /// The last answer, when it was given, and the device position it was given for.
+    last: Option<(f64, Instant, f64)>,
+}
+
+impl SteadyClock {
+    /// Share of the difference from the device taken up on each reading.
+    const GAIN: f64 = 0.05;
+    /// Further from the device than this is a start or a seek, not jitter.
+    const SNAP_S: f64 = 0.05;
+
+    fn follow(&mut self, device: f64, now: Instant, fps: f64) -> f64 {
+        let at = match self.last {
+            // A device that has not moved has not started yet, or has just been cued.
+            Some((at, then, was)) if device != was => {
+                let coasted = at + now.duration_since(then).as_secs_f64() * fps;
+                let off = device - coasted;
+                if off.abs() > Self::SNAP_S * fps {
+                    device
+                } else {
+                    coasted + off * Self::GAIN
+                }
+            }
+            _ => device,
+        };
+        self.last = Some((at, now, device));
+        at
+    }
+
+    fn reset(&mut self) {
+        self.last = None;
+    }
+}
+
 /// Start the 60 Hz tick thread. It stops when the last other handle is dropped.
 pub fn spawn_tick(show: &Shared) {
     let weak = Arc::downgrade(show);
@@ -1277,4 +1318,40 @@ pub fn spawn_tick(show: &Shared) {
             }
         })
         .expect("tick thread");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_playhead_follows_the_device_without_its_callback_jitter() {
+        let fps = 25.0;
+        let start = Instant::now();
+        let mut clock = SteadyClock::default();
+        let mut seed = 11u32;
+        let mut worst_step = 0.0f64;
+        let mut last = 0.0;
+        for tick in 0..600u64 {
+            let now = start + Duration::from_micros(tick * 16_667);
+            let true_pos = tick as f64 * 0.016_667 * fps;
+            // Up to a millisecond either way, like a callback that ran early or late.
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            let jitter = ((seed >> 8) as f64 / (1 << 24) as f64 - 0.5) * 0.002 * fps;
+            let at = clock.follow(true_pos + jitter, now, fps);
+            if tick > 0 {
+                worst_step = worst_step.max((at - last - 0.016_667 * fps).abs());
+            }
+            last = at;
+            assert!((at - true_pos).abs() <= 0.001 * fps, "tick {tick}: {at} against {true_pos}");
+        }
+        // Raw readings step unevenly by up to 2 ms; the playhead by a tenth of that.
+        assert!(worst_step < 0.0002 * fps, "{worst_step}");
+
+        // A seek is taken at once, not eased into.
+        let now = start + Duration::from_secs(11);
+        assert_eq!(clock.follow(40.0, now, fps), 40.0);
+        clock.reset();
+        assert_eq!(clock.follow(7.0, now + Duration::from_millis(16), fps), 7.0);
+    }
 }

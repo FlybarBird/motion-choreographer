@@ -69,7 +69,12 @@ fn the_seeded_click_plays_at_two_and_a_half_seconds_and_status_agrees() {
         let st = api.status().unwrap();
         assert!(st.frame_f + 1e-9 >= last, "the playhead never runs backwards: {} then {}", last, st.frame_f);
         last = st.frame_f;
-        assert_eq!(st.audio.drift_frames, 0.0, "free-run: the playhead is the audio clock");
+        // The playhead follows the device clock with the callback jitter taken out: 0.05 frames is 2 ms.
+        assert!(
+            st.audio.drift_frames.abs() < 0.05,
+            "free-run: the playhead is {} frames off the audio clock",
+            st.audio.drift_frames
+        );
         assert_eq!(st.audio.peak_right, 0.0, "Right is routed Silent");
         if st.audio.peak_left > 0.3 {
             heard_at = Some(st.frame_f);
