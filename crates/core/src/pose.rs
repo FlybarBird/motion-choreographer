@@ -300,12 +300,7 @@ pub struct InputConfig {
 
 impl Default for InputConfig {
     fn default() -> Self {
-        InputConfig {
-            ltc_device: String::new(),
-            ltc_channel: 0,
-            mtc_port: String::new(),
-            artnet_bind: "0.0.0.0:6454".into(),
-        }
+        InputConfig { ltc_device: String::new(), ltc_channel: 0, mtc_port: String::new(), artnet_bind: "0.0.0.0:6454".into() }
     }
 }
 

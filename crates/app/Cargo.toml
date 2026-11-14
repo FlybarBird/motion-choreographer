@@ -3,6 +3,7 @@ name = "ptz-app"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
 description = "PTZ Programmer desktop app"
 
 [[bin]]
@@ -10,7 +11,7 @@ name = "ptz-app"
 path = "src/main.rs"
 
 [dependencies]
-ptz-core = { workspace = true }
+ptz-core = { workspace = true, features = ["client"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 eframe = { workspace = true }

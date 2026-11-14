@@ -34,12 +34,7 @@ pub fn control_points(k0: &Key, k1: &Key) -> ((f64, f64), (f64, f64), (f64, f64)
     let len = (f1 - f0).max(0.0);
     let out_x = k0.out_handle[0].clamp(0.0, len);
     let in_x = k1.in_handle[0].clamp(-len, 0.0);
-    (
-        (f0, k0.value),
-        (f0 + out_x, k0.value + k0.out_handle[1]),
-        (f1 + in_x, k1.value + k1.in_handle[1]),
-        (f1, k1.value),
-    )
+    ((f0, k0.value), (f0 + out_x, k0.value + k0.out_handle[1]), (f1 + in_x, k1.value + k1.in_handle[1]), (f1, k1.value))
 }
 
 pub fn cubic(a: f64, b: f64, c: f64, d: f64, t: f64) -> f64 {
@@ -232,9 +227,7 @@ impl<'a> Evaluator<'a> {
 
     /// Index into `song.motion` of the clip driving `axis` at `frame`.
     pub fn clip_index_at(&self, axis: Axis, frame: i64) -> Option<usize> {
-        self.seg_at(axis, frame as f64)
-            .filter(|s| frame < s.start + s.duration)
-            .map(|s| s.clip)
+        self.seg_at(axis, frame as f64).filter(|s| frame < s.start + s.duration).map(|s| s.clip)
     }
 
     /// Index of the clip that most recently started driving `axis` at or before

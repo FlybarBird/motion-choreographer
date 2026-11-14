@@ -273,7 +273,12 @@ mod tests {
                     // The frame ends where the next one starts.
                     let spf = 48000.0 * rate.den() as f64 / rate.num() as f64;
                     let expect_end = (n - first + 1) as f64 * spf;
-                    assert!((r.end_sample as f64 - expect_end).abs() < 3.0, "{} ended at {} not {expect_end}", r.tc, r.end_sample);
+                    assert!(
+                        (r.end_sample as f64 - expect_end).abs() < 3.0,
+                        "{} ended at {} not {expect_end}",
+                        r.tc,
+                        r.end_sample
+                    );
                 }
                 assert!(got[0].tc.to_frames(rate) <= first + 1);
             }

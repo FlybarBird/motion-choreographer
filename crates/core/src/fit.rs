@@ -91,11 +91,7 @@ mod tests {
     use crate::song::Ease;
 
     fn max_error(samples: &[f64], keys: &[Key]) -> f64 {
-        samples
-            .iter()
-            .enumerate()
-            .map(|(i, s)| (keys_value(keys, i as f64).unwrap() - s).abs())
-            .fold(0.0, f64::max)
+        samples.iter().enumerate().map(|(i, s)| (keys_value(keys, i as f64).unwrap() - s).abs()).fold(0.0, f64::max)
     }
 
     #[test]

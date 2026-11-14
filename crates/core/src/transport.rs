@@ -42,13 +42,8 @@ pub struct TransportState {
 }
 
 impl TransportState {
-    pub const IDLE: TransportState = TransportState {
-        run: Run::Stopped,
-        time: TimeMode::FreeRun,
-        output: Output::Rehearse,
-        record: false,
-        estop: false,
-    };
+    pub const IDLE: TransportState =
+        TransportState { run: Run::Stopped, time: TimeMode::FreeRun, output: Output::Rehearse, record: false, estop: false };
 
     /// True only while the server may command hardware.
     pub fn hardware_live(&self) -> bool {
@@ -166,13 +161,7 @@ pub struct Context {
 impl Context {
     /// A lease holder with a committed, clean, feasible song and a ready rig.
     pub fn ready() -> Context {
-        Context {
-            has_lease: true,
-            song_loaded: true,
-            committed_clean: true,
-            blocking_issues: 0,
-            adapter_problem: None,
-        }
+        Context { has_lease: true, song_loaded: true, committed_clean: true, blocking_issues: 0, adapter_problem: None }
     }
 }
 
@@ -213,9 +202,7 @@ pub fn check(s: &TransportState, ctx: &Context, action: Action) -> Result<(), Bl
         Play => match s.run {
             Run::Playing => blocked("Already playing", &[]),
             Run::WaitingForCode => blocked("Already waiting for code", &[]),
-            Run::Stopped if positioning => {
-                blocked("The rig is still moving to the playhead. Wait, or Disarm", &[Disarm])
-            }
+            Run::Stopped if positioning => blocked("The rig is still moving to the playhead. Wait, or Disarm", &[Disarm]),
             Run::Stopped => Ok(()),
         },
         Stop => match s.run {
@@ -262,10 +249,7 @@ pub fn check(s: &TransportState, ctx: &Context, action: Action) -> Result<(), Bl
                 blocked("Commit the song first", &[])
             } else if ctx.blocking_issues > 0 {
                 let n = ctx.blocking_issues;
-                blocked(
-                    format!("Fix or accept {n} timeline issue{} first", if n == 1 { "" } else { "s" }),
-                    &[],
-                )
+                blocked(format!("Fix or accept {n} timeline issue{} first", if n == 1 { "" } else { "s" }), &[])
             } else if let Some(problem) = &ctx.adapter_problem {
                 blocked(problem.clone(), &[])
             } else {
@@ -467,12 +451,9 @@ pub fn guidance(s: &TransportState, ctx: &Context) -> Guidance {
         (Action::Stop, "Stop", hint.into(), &[])
     } else {
         match s.output {
-            Output::Positioning => (
-                Action::Disarm,
-                "Disarm",
-                "Arming: the rig is moving to the pose at the playhead.".into(),
-                &[],
-            ),
+            Output::Positioning => {
+                (Action::Disarm, "Disarm", "Arming: the rig is moving to the pose at the playhead.".into(), &[])
+            }
             Output::Armed => {
                 if s.locked() {
                     (
@@ -516,8 +497,7 @@ pub fn guidance(s: &TransportState, ctx: &Context) -> Guidance {
 /// Actions whose labels appear as whole words in `text`. Longer labels win, so
 /// "Reset E-Stop" is not also counted as "E-Stop" or "Stop".
 pub fn actions_named_in(text: &str) -> Vec<Action> {
-    let mut labels: Vec<(&str, Action)> =
-        Action::ALL.into_iter().flat_map(|a| a.labels().iter().map(move |l| (*l, a))).collect();
+    let mut labels: Vec<(&str, Action)> = Action::ALL.into_iter().flat_map(|a| a.labels().iter().map(move |l| (*l, a))).collect();
     labels.sort_by_key(|(l, _)| std::cmp::Reverse(l.len()));
     let mut text = text.to_string();
     let mut found = Vec::new();
@@ -553,13 +533,7 @@ mod tests {
                 for committed_clean in [true, false] {
                     for blocking_issues in [0, 1, 3] {
                         for adapter_problem in [None, Some("AutoPod is not calibrated".to_string())] {
-                            out.push(Context {
-                                has_lease,
-                                song_loaded,
-                                committed_clean,
-                                blocking_issues,
-                                adapter_problem,
-                            });
+                            out.push(Context { has_lease, song_loaded, committed_clean, blocking_issues, adapter_problem });
                         }
                     }
                 }
