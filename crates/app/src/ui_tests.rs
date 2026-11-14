@@ -260,6 +260,28 @@ fn clicking_the_ruler_seeks_and_space_asks_for_the_primary_action() {
     assert_eq!(acts, vec![ptz_core::transport::Action::Play]);
 }
 
+#[test]
+fn space_does_not_release_a_latched_e_stop() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut r = rig(Song::new("s", "Test Song", "01:00:00:00", 1500));
+    {
+        let s = &mut r.harness.state_mut().session;
+        s.status.transport.estop = true;
+        s.status.guidance = ptz_core::transport::guidance(&s.status.transport, &ptz_core::transport::Context::ready());
+        assert_eq!(s.status.guidance.primary, Some(ptz_core::transport::Action::ResetEstop));
+    }
+    r.harness.run_steps(2);
+    let acts = |r: &Rig| -> Vec<_> { r.cmds.try_iter().filter_map(|c| if let Cmd::Act(a, _) = c { Some(a) } else { None }).collect() };
+
+    r.harness.key_press(egui::Key::Space);
+    r.harness.run_steps(2);
+    assert_eq!(acts(&r), vec![], "the latch is released by its own button, never by the transport key");
+
+    r.harness.get_by_label("Reset E-Stop").click();
+    r.harness.run_steps(2);
+    assert_eq!(acts(&r), vec![ptz_core::transport::Action::ResetEstop]);
+}
+
 fn click_media() -> ptz_core::api::MediaInfo {
     ptz_core::api::MediaInfo {
         id: "click".into(),
