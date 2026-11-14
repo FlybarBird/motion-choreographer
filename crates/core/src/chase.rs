@@ -108,6 +108,13 @@ impl Chase {
             self.in_sequence = 0;
             return;
         }
+        // The same frame again straight after itself is a second copy of one packet (Art-Net
+        // heard on two interfaces). It says nothing new; the first copy keeps the time. A parked
+        // source repeats a frame time apart, and is still caught below.
+        if self.have_reading && !r.locate && r.frames == self.last_frames && ((t - self.last_time) * self.rate.fps()).abs() < 0.5
+        {
+            return;
+        }
         // Rolling code advances; a source that repeats one frame is parked.
         let in_sequence = self.have_reading
             && !r.locate
@@ -338,6 +345,28 @@ mod tests {
         let mut c = Chase::new(R, 8, 1.0);
         let t = roll(&mut c, day - 500.0, 10, 0.0);
         c.on_reading(reading(20.0), t);
+        assert_eq!(c.state(), ChaseState::Syncing);
+        assert!(c.take_jump());
+    }
+
+    #[test]
+    fn a_reading_that_arrives_twice_does_not_drop_lock() {
+        // Art-Net on a machine with two interfaces delivers every packet twice.
+        let mut c = Chase::new(R, 8, 1.0);
+        let mut t = 0.0;
+        for i in 0..30 {
+            c.tick(t);
+            c.on_reading(reading(1000.0 + i as f64), t);
+            c.on_reading(reading(1000.0 + i as f64), t + 0.0005);
+            t += 1.0 / 25.0;
+        }
+        assert_eq!(c.state(), ChaseState::Locked);
+        assert!(!c.take_jump());
+        // The copy does not move the clock either: the code is where the first one put it.
+        assert!((c.code_at(t - 0.02).unwrap() - 1029.5).abs() < 1e-6);
+
+        // The same frame again a whole frame later is a parked source, and that is still a jump.
+        c.on_reading(reading(1029.0), t);
         assert_eq!(c.state(), ChaseState::Syncing);
         assert!(c.take_jump());
     }
