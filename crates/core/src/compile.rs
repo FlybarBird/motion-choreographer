@@ -213,8 +213,10 @@ fn compile_camera(
                     }
                 }
             }
-            if f > 0 && f < last && !is_jump(fi) && !is_jump(fi + 1) {
-                let accel = (v(f + 1) - 2.0 * value + v(f - 1)).abs() * fps * fps;
+            if !is_jump(fi) && !is_jump(fi + 1) {
+                // The rig stands still before the first frame and after the last, so a move that
+                // leaves at speed on frame 0, or is still moving on the last frame, is judged there too.
+                let accel = (v((f + 1).min(last)) - 2.0 * value + v(f.saturating_sub(1))).abs() * fps * fps;
                 if accel > lim.max_accel * SLACK {
                     let c = ev.clip_index_at(axis, fi).or_else(|| ev.clip_index_at(axis, fi - 1));
                     if let Some(c) = c {
@@ -741,5 +743,32 @@ mod tests {
         refresh_auto(&mut song, &p);
         assert_eq!(song.motion[0].end_frame(), day, "clamped to the end of the longest song, where it shows as an issue");
         assert!(song.validate(p.rate).is_ok());
+    }
+
+    #[test]
+    fn a_sharp_start_or_stop_is_judged_on_the_first_and_last_frame_of_the_song_too() {
+        // 40 degrees in two seconds is inside the speed limit, but ease out leaves at full
+        // speed and ease in stops dead: 838 degrees per second squared against a limit of 240.
+        let p = Project::default();
+        let sharp = |start: i64, ease: Ease, length: i64| {
+            let mut song = Song::new("s", "S", "01:00:00:00", length);
+            let mut clip = pan_move(start, 50, 40.0, false);
+            if let ClipBody::PresetMove { ease: e, .. } = &mut clip.body {
+                *e = ease;
+            }
+            song.motion.push(clip);
+            assert!(song.validate(p.rate).is_ok());
+            let issues = compile(&song, &p).issues;
+            assert!(issues.len() <= 1, "{issues:?}");
+            issues.first().map(|i| (matches!(i, Issue::TooMuchAcceleration { axis: Axis::Pan, .. }), i.frame()))
+        };
+        // The rig stands still before the song starts: leaving at speed on frame 0 is as sharp as on frame 1.
+        assert_eq!(sharp(1, Ease::EaseOut, 200), Some((true, 1)));
+        assert_eq!(sharp(0, Ease::EaseOut, 200), Some((true, 0)));
+        // And it stands still once the song has ended: a move that ends with the song stops as dead as one that does not.
+        assert_eq!(sharp(10, Ease::EaseIn, 61), Some((true, 60)));
+        assert_eq!(sharp(10, Ease::EaseIn, 60), Some((true, 60)));
+        // A gentle move in the same places is clean.
+        assert_eq!(sharp(0, Ease::EaseInOut, 50), None);
     }
 }
