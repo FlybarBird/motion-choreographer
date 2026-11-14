@@ -148,7 +148,7 @@ mod tests {
         assert!(close(lens.sensor_height_mm(), 20.025, 1e-9));
         assert!(close(lens.focal_mm(0.0), 28.0, 1e-9) && close(lens.focal_mm(1.0), 135.0, 1e-9));
         // 2 atan(17.8 / 28) and 2 atan(10.0125 / 28).
-        assert!(close(lens.hfov_deg(0.0), 64.87, 0.01), "{}", lens.hfov_deg(0.0));
+        assert!(close(lens.hfov_deg(0.0), 64.89, 0.01), "{}", lens.hfov_deg(0.0));
         assert!(close(lens.vfov_deg(0.0), 39.35, 0.01), "{}", lens.vfov_deg(0.0));
         assert!(close(lens.hfov_deg(1.0), 15.02, 0.01), "{}", lens.hfov_deg(1.0));
         assert!(close(lens.vfov_deg(1.0), 8.48, 0.01), "{}", lens.vfov_deg(1.0));
