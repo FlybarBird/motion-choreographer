@@ -128,3 +128,22 @@ pub fn dock_style(egui_style: &egui::Style) -> egui_dock::Style {
     s.overlay.selection_color = with_alpha(BLUE, 90);
     s
 }
+
+/// One colour per camera, used for its chip, its lane and its marker on the stage.
+pub fn camera_color(index: usize) -> Color32 {
+    const COLORS: [Color32; 12] = [
+        Color32::from_rgb(0x43, 0x81, 0xc1),
+        Color32::from_rgb(0x5a, 0xff, 0x15),
+        Color32::from_rgb(0xff, 0xb0, 0x20),
+        Color32::from_rgb(0xd0, 0x7a, 0xe0),
+        Color32::from_rgb(0x4f, 0xd6, 0xc8),
+        Color32::from_rgb(0xf0, 0x6a, 0x6a),
+        Color32::from_rgb(0xe0, 0xd8, 0x5a),
+        Color32::from_rgb(0x8f, 0x9c, 0xff),
+        Color32::from_rgb(0xf0, 0x8a, 0x5b),
+        Color32::from_rgb(0x6a, 0xd0, 0x8a),
+        Color32::from_rgb(0xe0, 0x6a, 0xb0),
+        Color32::from_rgb(0xb8, 0xc0, 0xcc),
+    ];
+    COLORS[index % COLORS.len()]
+}

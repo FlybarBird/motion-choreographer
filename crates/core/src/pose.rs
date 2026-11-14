@@ -1,6 +1,7 @@
 //! Axes, poses and project settings. Values are real units; hardware counts
 //! appear only inside adapters.
 
+use crate::camera::{first_camera, CameraConfig, OnFault, Stage, MAX_CAMERAS};
 use crate::time::FrameRate;
 use serde::{Deserialize, Serialize};
 
@@ -353,17 +354,19 @@ impl Default for InputConfig {
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
-#[serde(default)]
+#[serde(from = "ProjectFile")]
 pub struct Project {
     pub rate: FrameRate,
     pub routing: Routing,
-    pub axes: AxisTable,
-    pub keep_out: Vec<KeepOutRule>,
     pub freewheel_frames: u32,
     /// LTC generator level, 0 to 1.
     pub ltc_level: f32,
     pub inputs: InputConfig,
-    pub rig: RigConfig,
+    pub on_fault: OnFault,
+    pub stage: Stage,
+    /// One to twelve, in the order they are numbered for the operator. `validate` refuses
+    /// anything else, and the server only ever holds a project that passed it.
+    pub cameras: Vec<CameraConfig>,
 }
 
 impl Default for Project {
@@ -371,13 +374,148 @@ impl Default for Project {
         Project {
             rate: FrameRate::F25,
             routing: Routing::default(),
-            axes: AxisTable::default(),
-            keep_out: Vec::new(),
             freewheel_frames: 8,
             ltc_level: 0.5,
             inputs: InputConfig::default(),
-            rig: RigConfig::default(),
+            on_fault: OnFault::default(),
+            stage: Stage::default(),
+            cameras: vec![CameraConfig::default()],
         }
+    }
+}
+
+/// `project.json` as any version wrote it. Before a project could hold several
+/// cameras its one rig, limits and keep-out rules sat at the top level.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct ProjectFile {
+    rate: Option<FrameRate>,
+    routing: Option<Routing>,
+    freewheel_frames: Option<u32>,
+    ltc_level: Option<f32>,
+    inputs: Option<InputConfig>,
+    on_fault: OnFault,
+    stage: Stage,
+    /// Absent in a file from before cameras; an empty list is a mistake, kept so it can be refused.
+    cameras: Option<Vec<CameraConfig>>,
+    axes: Option<AxisTable>,
+    keep_out: Option<Vec<KeepOutRule>>,
+    rig: Option<RigConfig>,
+}
+
+impl From<ProjectFile> for Project {
+    fn from(f: ProjectFile) -> Project {
+        let d = Project::default();
+        let cameras = f.cameras.unwrap_or_else(|| {
+            vec![CameraConfig {
+                axes: f.axes.unwrap_or_default(),
+                keep_out: f.keep_out.unwrap_or_default(),
+                rig: f.rig.unwrap_or_default(),
+                ..CameraConfig::default()
+            }]
+        });
+        Project {
+            rate: f.rate.unwrap_or(d.rate),
+            routing: f.routing.unwrap_or(d.routing),
+            freewheel_frames: f.freewheel_frames.unwrap_or(d.freewheel_frames),
+            ltc_level: f.ltc_level.unwrap_or(d.ltc_level),
+            inputs: f.inputs.unwrap_or(d.inputs),
+            on_fault: f.on_fault,
+            stage: f.stage,
+            cameras,
+        }
+    }
+}
+
+impl Project {
+    pub fn camera(&self, id: &str) -> Option<&CameraConfig> {
+        self.cameras.iter().find(|c| c.id == id)
+    }
+
+    pub fn camera_mut(&mut self, id: &str) -> Option<&mut CameraConfig> {
+        self.cameras.iter_mut().find(|c| c.id == id)
+    }
+
+    pub fn camera_index(&self, id: &str) -> Option<usize> {
+        self.cameras.iter().position(|c| c.id == id)
+    }
+
+    /// The first camera. A project always has one.
+    pub fn first(&self) -> &CameraConfig {
+        &self.cameras[0]
+    }
+
+    pub fn first_mut(&mut self) -> &mut CameraConfig {
+        &mut self.cameras[0]
+    }
+
+    /// Limits of a camera. A camera that is no longer in the project gets the defaults,
+    /// so its clips can still be drawn and judged.
+    pub fn axes_of(&self, id: &str) -> AxisTable {
+        self.camera(id).map(|c| c.axes).unwrap_or_default()
+    }
+
+    /// "3 Stage left": the camera's number in the list and its name.
+    pub fn label(&self, id: &str) -> String {
+        match self.camera_index(id) {
+            Some(i) => format!("{} {}", i + 1, self.cameras[i].name),
+            None => "Missing camera".into(),
+        }
+    }
+
+    /// `"3 Stage left: "` in front of a message when there is more than one camera to tell apart.
+    pub fn prefix(&self, id: &str) -> String {
+        if self.cameras.len() > 1 {
+            format!("{}: ", self.label(id))
+        } else {
+            String::new()
+        }
+    }
+
+    /// The lowest `camN` no camera uses.
+    pub fn free_camera_id(&self) -> String {
+        (1..).map(|n| format!("cam{n}")).find(|id| self.camera(id).is_none()).unwrap_or_default()
+    }
+
+    /// Why this project cannot be used, as operator text.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.cameras.is_empty() {
+            return Err("A project needs at least one camera".into());
+        }
+        if self.cameras.len() > MAX_CAMERAS {
+            return Err(format!("A project can hold {MAX_CAMERAS} cameras; this one has {}", self.cameras.len()));
+        }
+        for (i, cam) in self.cameras.iter().enumerate() {
+            let label = format!("Camera {}", i + 1);
+            let id_ok = !cam.id.is_empty() && cam.id.len() <= 32 && cam.id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+            if !id_ok {
+                return Err(format!("{label} has an id that cannot be used"));
+            }
+            if self.cameras[..i].iter().any(|other| other.id == cam.id) {
+                return Err(format!("{label} shares its id with another camera"));
+            }
+            if cam.name.trim().is_empty() {
+                return Err(format!("{label} needs a name"));
+            }
+            let label = format!("{} {}", i + 1, cam.name.trim());
+            for a in Axis::ALL {
+                let l = cam.axes.get(a);
+                let usable = l.min < l.max && l.max_speed > 0.0 && l.max_accel > 0.0 && l.settle_s >= 0.0;
+                if !usable || ![l.min, l.max, l.max_speed, l.max_accel, l.settle_s].iter().all(|v| v.is_finite()) {
+                    return Err(format!(
+                        "{}{} limits are not usable: min must be below max, speeds above zero",
+                        if self.cameras.len() > 1 { format!("{label}: ") } else { String::new() },
+                        a.label()
+                    ));
+                }
+            }
+            cam.lens.validate().map_err(|why| format!("{label}: {why}"))?;
+            cam.mount.validate().map_err(|why| format!("{label}: {why}"))?;
+        }
+        if let Some(model) = &self.stage.model {
+            model.validate()?;
+        }
+        Ok(())
     }
 }
 
@@ -387,9 +525,131 @@ pub struct Preset {
     pub id: String,
     pub name: String,
     pub pose: Pose,
+    /// The camera this pose was read on. A pose only means something on that rig.
+    #[serde(default = "first_camera")]
+    pub camera: String,
     /// Camera preset number when this came from an FR7.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub camera_number: Option<u32>,
     #[serde(default)]
     pub has_thumbnail: bool,
+}
+
+impl Preset {
+    /// A preset of the first camera with no picture, as the simulator and the tests make them.
+    pub fn new(id: &str, name: &str, pose: Pose) -> Preset {
+        Preset { id: id.into(), name: name.into(), pose, camera: first_camera(), camera_number: None, has_thumbnail: false }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::camera::FIRST_CAMERA;
+
+    /// `project.json` as stage 5 wrote it: one rig at the top level.
+    const OLD: &str = r#"{
+      "rate": "25", "routing": { "left": "program", "right": "ltc" },
+      "axes": {
+        "pan": { "min": -100, "max": 100, "max_speed": 40, "max_accel": 200, "settle_s": 0.2 },
+        "tilt": { "min": -30, "max": 90, "max_speed": 60, "max_accel": 240, "settle_s": 0.2 },
+        "zoom": { "min": 0, "max": 1, "max_speed": 0.25, "max_accel": 1.5, "settle_s": 0.1 },
+        "focus": { "min": 0, "max": 1, "max_speed": 0.5, "max_accel": 3, "settle_s": 0.1 },
+        "elevation": { "min": 0, "max": 500, "max_speed": 43, "max_accel": 120, "settle_s": 0.3 }
+      },
+      "keep_out": [{ "name": "Desk", "when_axis": "elevation", "when": "below", "when_value": 200,
+                     "then_axis": "tilt", "must_be": "above", "must_value": -10 }],
+      "freewheel_frames": 12, "ltc_level": 0.4,
+      "inputs": { "ltc_device": "", "ltc_channel": 1, "mtc_port": "", "artnet_bind": "0.0.0.0:6454" },
+      "rig": { "kind": "hardware", "fr7_host": "192.168.60.201", "autopod_host": "192.168.60.204" }
+    }"#;
+
+    #[test]
+    fn a_one_rig_project_becomes_a_one_camera_project_with_nothing_lost() {
+        let project: Project = serde_json::from_str(OLD).unwrap();
+        assert_eq!(project.cameras.len(), 1);
+        let cam = project.first();
+        assert_eq!((cam.id.as_str(), cam.name.as_str()), (FIRST_CAMERA, "Camera 1"));
+        assert_eq!((cam.axes.pan.max, cam.axes.pan.max_speed, cam.axes.elevation.max), (100.0, 40.0, 500.0));
+        assert_eq!(cam.keep_out.len(), 1);
+        assert_eq!(cam.keep_out[0].name, "Desk");
+        assert_eq!((cam.rig.kind, cam.rig.fr7_host.as_str()), (RigKind::Hardware, "192.168.60.201"));
+        assert_eq!(cam.rig.autopod_host, "192.168.60.204");
+        assert_eq!((project.freewheel_frames, project.ltc_level, project.inputs.ltc_channel), (12, 0.4, 1));
+        assert_eq!(project.routing.right, ChannelRoute::Ltc);
+        assert_eq!(cam.lens, crate::lens::Lens::default());
+        assert_eq!(cam.mount, crate::camera::Mount::default());
+        assert!(project.stage.show_builtin && project.stage.model.is_none());
+        assert!(project.validate().is_ok());
+
+        // Written back, it is in the new shape and reads the same.
+        let text = serde_json::to_string(&project).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert!(v.get("axes").is_none() && v.get("rig").is_none() && v["cameras"][0]["rig"]["fr7_host"] == "192.168.60.201");
+        assert_eq!(serde_json::from_str::<Project>(&text).unwrap(), project);
+
+        // An empty file is a default project.
+        assert_eq!(serde_json::from_str::<Project>("{}").unwrap(), Project::default());
+    }
+
+    #[test]
+    fn a_project_that_cannot_be_used_says_which_camera() {
+        let mut p = Project::default();
+        assert!(p.validate().is_ok());
+        assert_eq!(p.label(FIRST_CAMERA), "1 Camera 1");
+        assert_eq!(p.prefix(FIRST_CAMERA), "", "one camera needs no telling apart");
+        for n in 2..=12 {
+            let id = p.free_camera_id();
+            assert_eq!(id, format!("cam{n}"));
+            p.cameras.push(CameraConfig::new(&id, &format!("Camera {n}")));
+        }
+        assert!(p.validate().is_ok());
+        assert_eq!(p.prefix("cam3"), "3 Camera 3: ");
+        assert_eq!(p.label("gone"), "Missing camera");
+        assert_eq!(p.axes_of("gone"), AxisTable::default());
+
+        let mut thirteen = p.clone();
+        thirteen.cameras.push(CameraConfig::new("cam13", "One too many"));
+        assert_eq!(thirteen.validate().unwrap_err(), "A project can hold 12 cameras; this one has 13");
+        let mut none = p.clone();
+        none.cameras.clear();
+        assert_eq!(none.validate().unwrap_err(), "A project needs at least one camera");
+
+        let mut twin = p.clone();
+        twin.cameras[4].id = "cam2".into();
+        assert_eq!(twin.validate().unwrap_err(), "Camera 5 shares its id with another camera");
+        let mut blank = p.clone();
+        blank.cameras[2].name = "  ".into();
+        assert_eq!(blank.validate().unwrap_err(), "Camera 3 needs a name");
+        let mut odd = p.clone();
+        odd.cameras[1].id = "cam 2/x".into();
+        assert_eq!(odd.validate().unwrap_err(), "Camera 2 has an id that cannot be used");
+
+        let mut limits = p.clone();
+        limits.cameras[6].name = "Balcony".into();
+        limits.cameras[6].axes.tilt.min = 200.0;
+        assert_eq!(
+            limits.validate().unwrap_err(),
+            "7 Balcony: Tilt limits are not usable: min must be below max, speeds above zero"
+        );
+        let mut lens = p.clone();
+        lens.cameras[0].lens.tele_mm = 10.0;
+        assert_eq!(lens.validate().unwrap_err(), "1 Camera 1: the tele end cannot be shorter than the wide end");
+        let mut mount = p.clone();
+        mount.cameras[11].mount.base_height_mm = -1.0;
+        assert_eq!(mount.validate().unwrap_err(), "12 Camera 12: the base height must be between 0 and 5000 mm");
+
+        // Removing a camera frees its id for the next one added.
+        p.cameras.remove(3);
+        assert_eq!(p.free_camera_id(), "cam4");
+    }
+
+    #[test]
+    fn a_preset_from_before_cameras_belongs_to_the_first() {
+        let preset: Preset = serde_json::from_str(
+            r#"{ "id": "wide", "name": "Wide", "pose": { "pan": 0, "tilt": 0, "zoom": 0, "focus": 0.5, "elevation": 0 } }"#,
+        )
+        .unwrap();
+        assert_eq!(preset.camera, FIRST_CAMERA);
+    }
 }

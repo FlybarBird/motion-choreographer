@@ -244,8 +244,14 @@ async fn delete_preset(State(app): State<App>, Client(c): Client, Path(id): Path
     Ok(Json(s.presets.clone()))
 }
 
-async fn sync_presets(State(app): State<App>, Client(c): Client) -> Reply<Vec<Preset>> {
-    Ok(Json(lock(&app.show).sync_presets(&c)?))
+#[derive(Deserialize, Default)]
+struct OfCamera {
+    #[serde(default)]
+    camera: Option<String>,
+}
+
+async fn sync_presets(State(app): State<App>, Client(c): Client, Query(q): Query<OfCamera>) -> Reply<Vec<Preset>> {
+    Ok(Json(lock(&app.show).sync_presets(&c, q.camera.as_deref())?))
 }
 
 async fn preset_thumb(State(app): State<App>, Path(id): Path<String>) -> Result<Response, Fail> {
@@ -256,9 +262,9 @@ async fn preset_thumb(State(app): State<App>, Path(id): Path<String>) -> Result<
     }
 }
 
-async fn rig_jog(State(app): State<App>, Client(c): Client, Json(jog): Json<Jog>) -> Reply<Status> {
+async fn rig_jog(State(app): State<App>, Client(c): Client, Json(req): Json<JogRequest>) -> Reply<Status> {
     let mut s = lock(&app.show);
-    s.jog(&c, jog)?;
+    s.jog(&c, req.camera.as_deref(), req.jog)?;
     Ok(Json(s.status(&c)))
 }
 

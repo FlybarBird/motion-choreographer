@@ -38,6 +38,8 @@ pub struct Graph {
     pub speed: bool,
     /// Value at the bottom and top of the plot, per axis: each curve has its own scale.
     pub ranges: [(f64, f64); 5],
+    /// The camera whose curves are drawn: the shown clip's, else the selected one.
+    pub camera: String,
     /// What the ranges were last fitted to.
     fitted: Option<String>,
     drag: Option<Drag>,
@@ -52,6 +54,7 @@ impl Default for Graph {
             active: Axis::Pan,
             speed: false,
             ranges: [(0.0, 1.0); 5],
+            camera: ptz_core::camera::first_camera(),
             fitted: None,
             drag: None,
             probe: None,
@@ -206,7 +209,7 @@ pub fn hit(plot: &Plot, song: &Song, clip: Option<&MotionClip>, graph: &Graph, s
     }
     let frame = plot.frame_at(pos.x);
     if frame >= clip.start_frame as f64 && frame <= clip.end_frame() as f64 {
-        let ev = Evaluator::new(song);
+        let ev = Evaluator::new(song, &clip.camera);
         for axis in order.iter().filter(shown) {
             // A steep curve crosses several pixels of height in one of width.
             let ys: Vec<f32> = [-3.0f32, 0.0, 3.0]
@@ -363,7 +366,7 @@ impl Graph {
                 let others: Vec<(Axis, usize)> =
                     selection.iter().filter(|k| k.0 == clip && k.1 != axis).map(|k| (k.1, k.2)).collect();
                 // Values stay inside the axis's range.
-                let lim = project.axes.get(axis);
+                let lim = *project.axes_of(&c.camera).get(axis);
                 for (_, index) in &same {
                     if let Some(k) = c.keys(axis).get(*index) {
                         dvalue = dvalue.clamp((lim.min - k.value).min(0.0), (lim.max - k.value).max(0.0));
@@ -433,7 +436,8 @@ impl Graph {
 
     /// Scale each axis to the values it takes over `frames`, with room around them.
     pub fn fit_values(&mut self, song: &Song, project: &Project, frames: (i64, i64), keys: &[(Axis, Key, i64)]) {
-        let ev = Evaluator::new(song);
+        let ev = Evaluator::new(song, &self.camera);
+        let limits = project.axes_of(&self.camera);
         let (from, to) = (frames.0 as f64, frames.1.max(frames.0 + 1) as f64);
         for axis in Axis::ALL {
             let (mut lo, mut hi) = (f64::MAX, f64::MIN);
@@ -449,7 +453,7 @@ impl Graph {
                 take(k.value + k.in_handle[1]);
                 take(k.value + k.out_handle[1]);
             }
-            let lim = project.axes.get(axis);
+            let lim = limits.get(axis);
             let least = (lim.max - lim.min) * 0.04;
             if hi - lo < least {
                 let mid = (hi + lo) / 2.0;
@@ -476,9 +480,10 @@ pub fn over_limit(speeds: &[f64], limit: f64) -> Vec<(i64, i64)> {
     out
 }
 
-/// The clip the editor shows: the selected one, else the one under the playhead.
+/// The clip the editor shows: the selected one, else the selected camera's clip under the playhead.
 pub fn target_clip<'a>(
     song: &'a Song,
+    camera: &str,
     selection: &BTreeSet<String>,
     key_selection: &BTreeSet<KeyRef>,
     playhead: f64,
@@ -489,7 +494,10 @@ pub fn target_clip<'a>(
         .or_else(|| key_selection.iter().next().and_then(|k| song.motion_clip(&k.0)))
         .or_else(|| {
             let f = playhead.floor() as i64;
-            song.motion.iter().filter(|c| c.start_frame <= f && f <= c.end_frame()).max_by_key(|c| (c.is_keys(), c.start_frame))
+            song.motion
+                .iter()
+                .filter(|c| c.camera == camera && c.start_frame <= f && f <= c.end_frame())
+                .max_by_key(|c| (c.is_keys(), c.start_frame))
         })
 }
 
@@ -501,7 +509,8 @@ pub fn add_key_at_playhead(s: &mut Session) {
     } else {
         Axis::ALL.into_iter().filter(|a| s.axis_lanes.contains(a)).collect()
     };
-    s.edit(|song, project| edit::add_key(song, project, &axes, frame));
+    let camera = s.cam_id().to_string();
+    s.edit(|song, project| edit::add_key(song, project, &camera, &axes, frame));
 }
 
 fn selected_in(s: &Session, clip: &str) -> Vec<(Axis, usize)> {
@@ -642,8 +651,11 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
         return;
     };
     let playhead = s.playhead();
-    let clip_id = target_clip(&song, &s.timeline.selection, &s.timeline.key_selection, playhead).map(|c| c.id.clone());
+    let clip_id =
+        target_clip(&song, s.cam_id(), &s.timeline.selection, &s.timeline.key_selection, playhead).map(|c| c.id.clone());
     let clip = clip_id.as_deref().and_then(|id| song.motion_clip(id)).cloned();
+    // The curves drawn are one camera's: the shown clip's, else the selected camera's.
+    s.graph.camera = clip.as_ref().map(|c| c.camera.clone()).unwrap_or_else(|| s.cam_id().to_string());
     let mut frame_it = toolbar(ui, s, clip.as_ref());
 
     let (resp, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
@@ -879,7 +891,7 @@ fn paint(painter: &Painter, plot: &Plot, song: &Song, clip: Option<&MotionClip>,
             ink,
         );
 
-        let ev = Evaluator::new(song);
+        let ev = Evaluator::new(song, &g.camera);
         let order = axis_order(active);
         for axis in order.iter().rev().filter(|a| g.visible[a.index()]) {
             let color = axis_color(*axis);
@@ -969,7 +981,8 @@ fn paint_speed(painter: &Painter, plot: &Plot, s: &Session, gutter: &Painter) {
         gutter.text(pos2(plot.body.left() - 8.0, y), Align2::RIGHT_CENTER, label, FontId::proportional(10.5), MUTED);
     }
     let active = g.active;
-    let lim = s.project.axes.get(active);
+    let limits = s.project.axes_of(&g.camera);
+    let lim = limits.get(active);
     gutter.text(
         pos2(plot.body.left() - 8.0, limit_y),
         Align2::RIGHT_CENTER,
@@ -985,10 +998,10 @@ fn paint_speed(painter: &Painter, plot: &Plot, s: &Session, gutter: &Painter) {
         axis_color(active),
     );
 
-    let poses = &s.compiled.poses;
+    let poses = s.compiled.poses(&g.camera);
     let mut worst: Vec<(Axis, f64, i64)> = Vec::new();
     for axis in axis_order(active).iter().rev().filter(|a| g.visible[a.index()]) {
-        let top = s.project.axes.get(*axis).max_speed;
+        let top = limits.get(*axis).max_speed;
         let speeds = speed_profile(poses, *axis, s.project.rate);
         if speeds.is_empty() {
             continue;
@@ -1049,6 +1062,7 @@ mod tests {
     use super::*;
     use ptz_core::eval::{keys_value, pose_at};
     use ptz_core::song::ClipBody;
+    use ptz_core::FIRST_CAMERA as CAM;
     use std::collections::BTreeMap;
 
     fn song_with_keys() -> (Song, Project, String) {
@@ -1060,7 +1074,7 @@ mod tests {
             vec![Key::new(0, 0.0, Interp::Bezier), Key::new(100, 30.0, Interp::Bezier), Key::new(200, 10.0, Interp::Bezier)],
         );
         curves.insert(Axis::Zoom, vec![Key::new(0, 0.2, Interp::Linear), Key::new(200, 0.6, Interp::Linear)]);
-        let (song, id) = edit::punch_keys(&song, &project, 100, 200, curves, None).unwrap();
+        let (song, id) = edit::punch_keys(&song, &project, CAM, 100, 200, curves, None).unwrap();
         (song, project, id)
     }
 
@@ -1102,7 +1116,7 @@ mod tests {
         let key1 = plot.key_pos(c, Axis::Pan, &c.keys(Axis::Pan)[1]);
         assert_eq!(hit(&plot, &song, Some(c), &g, &sel, key1 + vec2(3.0, -2.0)), Hit::Key { axis: Axis::Pan, index: 1 });
 
-        let ev = Evaluator::new(&song);
+        let ev = Evaluator::new(&song, CAM);
         let on_curve = pos2(plot.x_of(150.0), plot.y_of(Axis::Pan, ev.axis_at(Axis::Pan, 150.0)));
         assert!(matches!(hit(&plot, &song, Some(c), &g, &sel, on_curve), Hit::Curve { axis: Axis::Pan, .. }));
         assert_eq!(hit(&plot, &song, Some(c), &g, &sel, pos2(plot.x_of(150.0), plot.body.bottom() - 2.0)), Hit::Empty);
@@ -1153,7 +1167,7 @@ mod tests {
         let Outcome::Preview(clamped) = g.drag_to(&plot, &song, &project, &mut sel, far, NO_MODS) else { panic!("no preview") };
         let k = clamped.motion_clip(&id).unwrap().keys(Axis::Pan)[1];
         assert_eq!(k.frame, 199);
-        assert_eq!(k.value, project.axes.get(Axis::Pan).max);
+        assert_eq!(k.value, project.first().axes.get(Axis::Pan).max);
         assert!(g.release());
     }
 
@@ -1225,7 +1239,7 @@ mod tests {
     #[test]
     fn speed_view_marks_exactly_the_stretch_the_feasibility_check_flags() {
         let project = Project::default();
-        let top = project.axes.get(Axis::Pan).max_speed;
+        let top = project.first().axes.get(Axis::Pan).max_speed;
         let fps = project.rate.fps();
         // 100 degrees in one second is over a 60 degree per second limit; the slow return is not.
         let song = Song::new("s", "S", "01:00:00:00", 400);
@@ -1234,9 +1248,9 @@ mod tests {
             Axis::Pan,
             vec![Key::new(0, 0.0, Interp::Linear), Key::new(25, 100.0, Interp::Linear), Key::new(225, 0.0, Interp::Linear)],
         );
-        let (song, id) = edit::punch_keys(&song, &project, 50, 225, curves, None).unwrap();
+        let (song, id) = edit::punch_keys(&song, &project, CAM, 50, 225, curves, None).unwrap();
         let compiled = ptz_core::compile::compile(&song, &project);
-        let speeds = speed_profile(&compiled.poses, Axis::Pan, project.rate);
+        let speeds = speed_profile(compiled.poses(CAM), Axis::Pan, project.rate);
         assert_eq!(over_limit(&speeds, top), vec![(50, 74)]);
         assert!((speeds[60] - 100.0).abs() < 1e-6 && (speeds[100] + 100.0 / 8.0).abs() < 1e-6);
         let flagged: Vec<_> = compiled
@@ -1253,8 +1267,11 @@ mod tests {
         assert_eq!(flagged[0].0, id);
         assert!((50..=74).contains(&flagged[0].1) && (flagged[0].2 - 100.0 * fps / 25.0).abs() < 1e-6);
         // A move inside the limit marks nothing.
-        assert!(over_limit(&speed_profile(&compiled.poses, Axis::Tilt, project.rate), project.axes.get(Axis::Tilt).max_speed)
-            .is_empty());
+        assert!(over_limit(
+            &speed_profile(compiled.poses(CAM), Axis::Tilt, project.rate),
+            project.first().axes.get(Axis::Tilt).max_speed
+        )
+        .is_empty());
 
         // The limit line is where a speed equal to the limit is drawn, and faster is above it.
         let (_, plot) = plot_for(&song, &project, &id);
@@ -1269,12 +1286,12 @@ mod tests {
         let (song, other) = edit::insert_preset_move(&song, &project, &preset, 400).unwrap();
         let none: BTreeSet<String> = BTreeSet::new();
         let no_keys: BTreeSet<KeyRef> = BTreeSet::new();
-        assert_eq!(target_clip(&song, &none, &no_keys, 20.0).map(|c| c.id.clone()), None);
-        assert_eq!(target_clip(&song, &none, &no_keys, 150.0).map(|c| c.id.clone()), Some(id.clone()));
-        assert_eq!(target_clip(&song, &BTreeSet::from([other.clone()]), &no_keys, 150.0).map(|c| c.id.clone()), Some(other));
+        assert_eq!(target_clip(&song, CAM, &none, &no_keys, 20.0).map(|c| c.id.clone()), None);
+        assert_eq!(target_clip(&song, CAM, &none, &no_keys, 150.0).map(|c| c.id.clone()), Some(id.clone()));
+        assert_eq!(target_clip(&song, CAM, &BTreeSet::from([other.clone()]), &no_keys, 150.0).map(|c| c.id.clone()), Some(other));
         let keyed = BTreeSet::from([(id.clone(), Axis::Pan, 0)]);
-        assert_eq!(target_clip(&song, &none, &keyed, 500.0).map(|c| c.id.clone()), Some(id.clone()));
+        assert_eq!(target_clip(&song, CAM, &none, &keyed, 500.0).map(|c| c.id.clone()), Some(id.clone()));
         assert!(matches!(song.motion_clip(&id).unwrap().body, ClipBody::Keys { .. }));
-        assert_eq!(pose_at(&song, 200).pan, 30.0);
+        assert_eq!(pose_at(&song, CAM, 200).pan, 30.0);
     }
 }

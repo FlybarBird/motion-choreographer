@@ -23,6 +23,9 @@ pub enum Refusal {
     KeysBeyondTrim,
     NoRoom,
     Empty,
+    /// A preset holds one camera's pose; it cannot be the target of another camera's move.
+    OtherCamera,
+    NoSuchCamera,
 }
 
 impl fmt::Display for Refusal {
@@ -38,6 +41,8 @@ impl fmt::Display for Refusal {
             Refusal::KeysBeyondTrim => write!(f, "The clip cannot be trimmed past its keys"),
             Refusal::NoRoom => write!(f, "There is no room here"),
             Refusal::Empty => write!(f, "Nothing is selected"),
+            Refusal::OtherCamera => write!(f, "That preset belongs to another camera"),
+            Refusal::NoSuchCamera => write!(f, "That camera is not in the project"),
         }
     }
 }
@@ -65,14 +70,16 @@ fn grow(song: &mut Song, end: i64) {
     }
 }
 
-/// Drop a preset on a frame. The move ends on the preset and starts from the
-/// pose already programmed there. Returns the new clip's id.
+/// Drop a preset on a frame. The move is for the preset's camera: it ends on the
+/// preset and starts from the pose already programmed for that camera there.
+/// Returns the new clip's id.
 pub fn insert_preset_move(song: &Song, project: &Project, preset: &Preset, frame: i64) -> Result<(Song, String), Refusal> {
     let mut next = song.clone();
     let frame = frame.max(0);
     let id = next.next_id("c");
     let clip = MotionClip {
         id: id.clone(),
+        camera: preset.camera.clone(),
         start_frame: frame,
         duration_frames: 1,
         axes: Axis::ALL.to_vec(),
@@ -96,8 +103,12 @@ pub fn drop_preview(song: &Song, project: &Project, preset: &Preset, frame: i64)
     let (next, id) = insert_preset_move(song, project, preset, frame)?;
     let clip = next.motion_clip(&id).ok_or(Refusal::NotFound)?;
     let wanted = suggested_duration(&next, clip, project).unwrap_or(clip.duration_frames);
-    let from_name =
-        song.motion.iter().filter(|c| c.end_frame() <= frame.max(0)).max_by_key(|c| c.start_frame).and_then(|c| match &c.body {
+    let from_name = song
+        .motion
+        .iter()
+        .filter(|c| c.camera == preset.camera && c.end_frame() <= frame.max(0))
+        .max_by_key(|c| c.start_frame)
+        .and_then(|c| match &c.body {
             ClipBody::PresetMove { to, .. } => Some(to.name.clone()),
             _ => None,
         });
@@ -269,7 +280,30 @@ pub fn set_from(song: &Song, project: &Project, id: &str, from: FromPose) -> Edi
 
 pub fn set_to(song: &Song, project: &Project, id: &str, preset: &Preset) -> Edit {
     let mut next = song.clone();
+    if next.motion_clip(id).ok_or(Refusal::NotFound)?.camera != preset.camera {
+        return Err(Refusal::OtherCamera);
+    }
     *preset_body(&mut next, id)?.2 = PresetRef::of(preset);
+    finish(next, project)
+}
+
+/// Hand clips to another camera. Refused where that camera already moves.
+pub fn set_camera(song: &Song, project: &Project, ids: &[String], camera: &str) -> Edit {
+    if project.camera(camera).is_none() {
+        return Err(Refusal::NoSuchCamera);
+    }
+    let mut next = song.clone();
+    let mut any = false;
+    for c in next.motion.iter_mut().filter(|c| ids.contains(&c.id)) {
+        any = true;
+        if c.camera != camera {
+            c.camera = camera.to_string();
+            c.accepted = None;
+        }
+    }
+    if !any {
+        return Err(Refusal::Empty);
+    }
     finish(next, project)
 }
 
@@ -288,7 +322,7 @@ fn to_keys_in_place(song: &mut Song, id: &str) -> Result<(), Refusal> {
     let ClipBody::PresetMove { to, ease, .. } = &clip.body else {
         return Ok(());
     };
-    let ev = Evaluator::new(song);
+    let ev = Evaluator::new(song, &clip.camera);
     let mut curves = BTreeMap::new();
     for &axis in &clip.axes {
         let from = ev.value_at_start(&clip, axis);
@@ -338,10 +372,10 @@ fn insert_key_sorted(keys: &mut Vec<Key>, at: i64, fallback: f64) {
     }
 }
 
-/// `K`: add a key on each axis at a song frame, holding the current value.
-/// Extends the keys clip that ends before the frame when it can; otherwise
+/// `K`: add a key on each of a camera's axes at a song frame, holding the current
+/// value. Extends the keys clip that ends before the frame when it can; otherwise
 /// starts a new one.
-pub fn add_key(song: &Song, project: &Project, axes: &[Axis], frame: i64) -> Edit {
+pub fn add_key(song: &Song, project: &Project, camera: &str, axes: &[Axis], frame: i64) -> Edit {
     if axes.is_empty() {
         return Err(Refusal::Empty);
     }
@@ -349,13 +383,13 @@ pub fn add_key(song: &Song, project: &Project, axes: &[Axis], frame: i64) -> Edi
     let mut next = song.clone();
     let mut fresh: Vec<Axis> = Vec::new();
     for &axis in axes {
-        let value = Evaluator::new(&next).axis_at(axis, frame as f64);
+        let value = Evaluator::new(&next, camera).axis_at(axis, frame as f64);
         // A clip covering the frame, or a keys clip ending exactly on it.
         let covering = next
-            .motion
-            .iter()
-            .find(|c| c.has_axis(axis) && c.start_frame <= frame && frame < c.end_frame())
-            .or_else(|| next.motion.iter().find(|c| c.has_axis(axis) && c.is_keys() && frame == c.end_frame()))
+            .clip_on_axis_at(camera, axis, frame)
+            .or_else(|| {
+                next.motion.iter().find(|c| c.camera == camera && c.has_axis(axis) && c.is_keys() && frame == c.end_frame())
+            })
             .map(|c| (c.id.clone(), c.is_keys(), frame < c.end_frame()));
         if let Some((id, is_keys, strictly)) = covering {
             if is_keys {
@@ -373,13 +407,17 @@ pub fn add_key(song: &Song, project: &Project, axes: &[Axis], frame: i64) -> Edi
         let prev = next
             .motion
             .iter()
-            .filter(|c| c.has_axis(axis) && c.end_frame() <= frame)
+            .filter(|c| c.camera == camera && c.has_axis(axis) && c.end_frame() <= frame)
             .max_by_key(|c| c.start_frame)
             .filter(|c| c.is_keys())
             .cloned();
         let extended = prev.is_some_and(|p| {
             let blocked = next.motion.iter().any(|o| {
-                o.id != p.id && o.axes.iter().any(|a| p.has_axis(*a)) && o.start_frame < frame && o.end_frame() > p.start_frame
+                o.id != p.id
+                    && o.camera == camera
+                    && o.axes.iter().any(|a| p.has_axis(*a))
+                    && o.start_frame < frame
+                    && o.end_frame() > p.start_frame
             });
             if blocked {
                 return false;
@@ -402,12 +440,12 @@ pub fn add_key(song: &Song, project: &Project, axes: &[Axis], frame: i64) -> Edi
         let room = next
             .motion
             .iter()
-            .filter(|o| o.start_frame > frame && o.axes.iter().any(|a| fresh.contains(a)))
+            .filter(|o| o.camera == camera && o.start_frame > frame && o.axes.iter().any(|a| fresh.contains(a)))
             .map(|o| o.start_frame - frame)
             .min()
             .unwrap_or(i64::MAX);
         let duration = project.rate.nominal().min(room).max(1);
-        let ev = Evaluator::new(&next);
+        let ev = Evaluator::new(&next, camera);
         let mut curves = BTreeMap::new();
         for &axis in &fresh {
             curves.insert(axis, vec![Key::new(0, ev.axis_at(axis, frame as f64), Interp::Bezier)]);
@@ -415,6 +453,7 @@ pub fn add_key(song: &Song, project: &Project, axes: &[Axis], frame: i64) -> Edi
         let id = next.next_id("c");
         next.motion.push(MotionClip {
             id,
+            camera: camera.to_string(),
             start_frame: frame,
             duration_frames: duration,
             axes: Axis::ALL.into_iter().filter(|a| fresh.contains(a)).collect(),
@@ -442,7 +481,7 @@ pub fn add_key_at(song: &Song, project: &Project, clip: &str, axis: Axis, local:
         return Err(Refusal::NotFound);
     }
     let local = local.clamp(0, c.duration_frames);
-    let current = Evaluator::new(&next).axis_at(axis, (c.start_frame + local) as f64);
+    let current = Evaluator::new(&next, &c.camera).axis_at(axis, (c.start_frame + local) as f64);
     let keys = keys_mut(&mut next, clip, axis)?;
     insert_key_sorted(keys, local, current);
     if let (Some(v), Some(k)) = (value, keys.iter_mut().find(|k| k.frame == local)) {
@@ -730,13 +769,14 @@ pub fn clear_acceptance(song: &Song, project: &Project, clip: &str) -> Edit {
     finish(next, project)
 }
 
-/// Write a recorded pass onto the timeline. The new keys clip replaces whatever
-/// was on its axes over `[start, start + duration)`. A clip that is partly
+/// Write a camera's recorded pass onto the timeline. The new keys clip replaces
+/// whatever that camera had on its axes over `[start, start + duration)`. A clip that is partly
 /// covered is trimmed or split; a preset move becomes keys first so the part
 /// that remains is unchanged. Returns the new clip's id.
 pub fn punch_keys(
     song: &Song,
     project: &Project,
+    camera: &str,
     start: i64,
     duration: i64,
     curves: BTreeMap<Axis, Vec<Key>>,
@@ -752,7 +792,9 @@ pub fn punch_keys(
     let hit: Vec<String> = next
         .motion
         .iter()
-        .filter(|c| c.start_frame < end && start < c.end_frame() && c.axes.iter().any(|a| rec_axes.contains(a)))
+        .filter(|c| {
+            c.camera == camera && c.start_frame < end && start < c.end_frame() && c.axes.iter().any(|a| rec_axes.contains(a))
+        })
         .map(|c| c.id.clone())
         .collect();
     for id in &hit {
@@ -761,7 +803,7 @@ pub fn punch_keys(
     // Give every shared axis an explicit curve, so a split piece does not
     // start holding the recorded clip's end value instead of its own.
     let ev_values: Vec<(String, Axis, f64)> = {
-        let ev = Evaluator::new(&next);
+        let ev = Evaluator::new(&next, camera);
         hit.iter()
             .filter_map(|id| next.motion_clip(id))
             .flat_map(|c| {
@@ -819,6 +861,7 @@ pub fn punch_keys(
             let id = next.next_id("c");
             next.motion.push(MotionClip {
                 id,
+                camera: camera.to_string(),
                 start_frame: old.start_frame,
                 duration_frames: start - old.start_frame,
                 axes: shared.clone(),
@@ -831,6 +874,7 @@ pub fn punch_keys(
             let id = next.next_id("c");
             next.motion.push(MotionClip {
                 id,
+                camera: camera.to_string(),
                 start_frame: end,
                 duration_frames: old.end_frame() - end,
                 axes: shared.clone(),
@@ -844,6 +888,7 @@ pub fn punch_keys(
     let id = next.next_id("c");
     next.motion.push(MotionClip {
         id: id.clone(),
+        camera: camera.to_string(),
         start_frame: start,
         duration_frames: duration,
         axes: rec_axes,
@@ -862,14 +907,20 @@ mod tests {
     use crate::eval::pose_at;
     use crate::pose::Pose;
 
+    const CAM: &str = crate::camera::FIRST_CAMERA;
+
     fn preset(name: &str, pan: f64, elevation: f64) -> Preset {
-        Preset {
-            id: name.to_lowercase().replace(' ', "-"),
-            name: name.into(),
-            pose: Pose { pan, tilt: 2.0, zoom: 0.3, focus: 0.5, elevation },
-            camera_number: None,
-            has_thumbnail: false,
-        }
+        Preset::new(&name.to_lowercase().replace(' ', "-"), name, Pose { pan, tilt: 2.0, zoom: 0.3, focus: 0.5, elevation })
+    }
+
+    fn preset_on(camera: &str, name: &str, pan: f64) -> Preset {
+        Preset { camera: camera.into(), ..preset(name, pan, 100.0) }
+    }
+
+    fn two_cameras() -> (Song, Project) {
+        let (song, mut p) = base();
+        p.cameras.push(crate::camera::CameraConfig::new("cam2", "Stage left"));
+        (song, p)
     }
 
     fn base() -> (Song, Project) {
@@ -929,7 +980,7 @@ mod tests {
             let keyed = convert_to_keys(&song, &p, &b).unwrap();
             assert!(keyed.motion_clip(&b).unwrap().is_keys());
             for f in 0..=song.length_frames {
-                assert_eq!(pose_at(&song, f), pose_at(&keyed, f), "frame {f} ease {ease:?}");
+                assert_eq!(pose_at(&song, CAM, f), pose_at(&keyed, CAM, f), "frame {f} ease {ease:?}");
             }
         }
     }
@@ -937,28 +988,28 @@ mod tests {
     #[test]
     fn keys_add_move_delete() {
         let (song, p) = base();
-        let song = add_key(&song, &p, &[Axis::Pan, Axis::Tilt], 100).unwrap();
+        let song = add_key(&song, &p, CAM, &[Axis::Pan, Axis::Tilt], 100).unwrap();
         assert_eq!(song.motion.len(), 1);
         let id = song.motion[0].id.clone();
         // A second K later extends the same clip.
-        let song = add_key(&song, &p, &[Axis::Pan], 220).unwrap();
+        let song = add_key(&song, &p, CAM, &[Axis::Pan], 220).unwrap();
         assert_eq!(song.motion.len(), 1);
         assert_eq!(song.motion[0].duration_frames, 120);
         assert_eq!(song.motion[0].keys(Axis::Pan).len(), 2);
 
         let song = move_key(&song, &p, &id, Axis::Pan, 1, 120, 40.0).unwrap();
-        assert_eq!(pose_at(&song, 220).pan, 40.0);
-        assert!(pose_at(&song, 160).pan > 0.0 && pose_at(&song, 160).pan < 40.0);
+        assert_eq!(pose_at(&song, CAM, 220).pan, 40.0);
+        assert!(pose_at(&song, CAM, 160).pan > 0.0 && pose_at(&song, CAM, 160).pan < 40.0);
 
         // A key cannot cross its neighbour.
         let song2 = move_key(&song, &p, &id, Axis::Pan, 1, -50, 40.0).unwrap();
         assert_eq!(song2.motion[0].keys(Axis::Pan)[1].frame, 1);
 
         // Adding a key in the middle of a bezier keeps the curve.
-        let mid = add_key(&song, &p, &[Axis::Pan], 150).unwrap();
+        let mid = add_key(&song, &p, CAM, &[Axis::Pan], 150).unwrap();
         assert_eq!(mid.motion[0].keys(Axis::Pan).len(), 3);
         for f in 100..=220 {
-            assert!((pose_at(&song, f).pan - pose_at(&mid, f).pan).abs() < 1e-7);
+            assert!((pose_at(&song, CAM, f).pan - pose_at(&mid, CAM, f).pan).abs() < 1e-7);
         }
 
         let song = delete_keys(&song, &p, &id, &[(Axis::Pan, 0), (Axis::Pan, 1), (Axis::Tilt, 0)]).unwrap();
@@ -969,7 +1020,7 @@ mod tests {
     fn key_under_a_preset_move_asks_for_conversion() {
         let (song, p) = base();
         let (song, _) = insert_preset_move(&song, &p, &preset("A", 35.0, 250.0), 20).unwrap();
-        assert_eq!(add_key(&song, &p, &[Axis::Pan], 30).unwrap_err(), Refusal::ConvertFirst(Axis::Pan));
+        assert_eq!(add_key(&song, &p, CAM, &[Axis::Pan], 30).unwrap_err(), Refusal::ConvertFirst(Axis::Pan));
     }
 
     #[test]
@@ -981,12 +1032,12 @@ mod tests {
 
         let mut curves = BTreeMap::new();
         curves.insert(Axis::Pan, vec![Key::new(0, 5.0, Interp::Linear), Key::new(100, 9.0, Interp::Linear)]);
-        let (punched, id) = punch_keys(&song, &p, 200, 100, curves, Some("pass1".into())).unwrap();
+        let (punched, id) = punch_keys(&song, &p, CAM, 200, 100, curves, Some("pass1".into())).unwrap();
         assert!(punched.validate(p.rate).is_ok());
         assert_eq!(punched.motion_clip(&id).unwrap().axes, vec![Axis::Pan]);
 
         for f in 0..=song.length_frames {
-            let (o, n) = (pose_at(&song, f), pose_at(&punched, f));
+            let (o, n) = (pose_at(&song, CAM, f), pose_at(&punched, CAM, f));
             for axis in [Axis::Tilt, Axis::Zoom, Axis::Focus, Axis::Elevation] {
                 assert!((o.get(axis) - n.get(axis)).abs() < 1e-7, "{axis:?} changed at {f}");
             }
@@ -994,8 +1045,8 @@ mod tests {
                 assert!((o.pan - n.pan).abs() < 1e-6, "pan changed outside the pass at {f}: {} vs {}", o.pan, n.pan);
             }
         }
-        assert_eq!(pose_at(&punched, 200).pan, 5.0);
-        assert!((pose_at(&punched, 250).pan - 7.0).abs() < 1e-9);
+        assert_eq!(pose_at(&punched, CAM, 200).pan, 5.0);
+        assert!((pose_at(&punched, CAM, 250).pan - 7.0).abs() < 1e-9);
     }
 
     #[test]
@@ -1050,7 +1101,7 @@ mod tests {
                 (4, Some(id)) => convert_to_keys(&song, &p, &id),
                 (5, Some(id)) => set_axes(&song, &p, &id, &[Axis::ALL[rnd(5) as usize], Axis::ALL[rnd(5) as usize]]),
                 (6, Some(id)) => duplicate(&song, &p, &[id]).map(|r| r.0),
-                (7, Some(_)) => add_key(&song, &p, &[Axis::ALL[rnd(5) as usize]], rnd(1400)),
+                (7, Some(_)) => add_key(&song, &p, CAM, &[Axis::ALL[rnd(5) as usize]], rnd(1400)),
                 (_, Some(id)) => delete(&song, &p, &[id]),
             };
             if let Ok(next) = result {
@@ -1062,5 +1113,84 @@ mod tests {
             assert!(song.validate(p.rate).is_ok());
         }
         assert!(applied > 500, "only {applied} edits applied");
+    }
+
+    #[test]
+    fn a_dropped_preset_makes_a_move_for_its_own_camera() {
+        let (song, p) = two_cameras();
+        let (song, a) = insert_preset_move(&song, &p, &preset("Wide", 20.0, 100.0), 100).unwrap();
+        // The second camera may move over the same frames.
+        let (song, b) = insert_preset_move(&song, &p, &preset_on("cam2", "Keys", -30.0), 110).unwrap();
+        assert_eq!(song.motion_clip(&a).unwrap().camera, "cam1");
+        assert_eq!(song.motion_clip(&b).unwrap().camera, "cam2");
+        assert_eq!(pose_at(&song, CAM, 1000).pan, 20.0);
+        assert_eq!(pose_at(&song, "cam2", 1000).pan, -30.0);
+        // But not twice itself.
+        let err = insert_preset_move(&song, &p, &preset_on("cam2", "Drums", 5.0), 115).unwrap_err();
+        assert!(matches!(err, Refusal::Invalid(Invalid::Overlap { .. })));
+
+        // The drop preview names the preset this camera's last move ended on.
+        let preview = drop_preview(&song, &p, &preset_on("cam2", "Drums", 5.0), 900).unwrap();
+        assert_eq!(preview.from_name.as_deref(), Some("Keys"));
+        let preview = drop_preview(&song, &p, &preset("Close", 5.0, 100.0), 900).unwrap();
+        assert_eq!(preview.from_name.as_deref(), Some("Wide"));
+
+        // A move's target stays a preset of its camera.
+        assert_eq!(set_to(&song, &p, &a, &preset_on("cam2", "Keys", -30.0)).unwrap_err(), Refusal::OtherCamera);
+        assert_eq!(Refusal::OtherCamera.to_string(), "That preset belongs to another camera");
+        assert!(set_to(&song, &p, &b, &preset_on("cam2", "Drums", 5.0)).is_ok());
+    }
+
+    #[test]
+    fn keys_and_recorded_passes_touch_one_camera() {
+        let (song, p) = two_cameras();
+        let (song, a) = insert_preset_move(&song, &p, &preset("A", 60.0, 400.0), 100).unwrap();
+        let song = set_custom_duration(&song, &p, &a, 400).unwrap();
+
+        // K on the second camera, in the middle of the first camera's move, starts a keys clip there.
+        let keyed = add_key(&song, &p, "cam2", &[Axis::Pan], 200).unwrap();
+        assert_eq!(keyed.motion.len(), 2);
+        assert_eq!(keyed.motion[1].camera, "cam2");
+        assert_eq!(add_key(&song, &p, CAM, &[Axis::Pan], 200).unwrap_err(), Refusal::ConvertFirst(Axis::Pan));
+        let keyed = add_key(&keyed, &p, "cam2", &[Axis::Pan], 300).unwrap();
+        assert_eq!(keyed.motion.len(), 2, "the second K extends that camera's clip");
+        assert_eq!(keyed.motion[1].keys(Axis::Pan).len(), 2);
+
+        // A pass recorded on the second camera leaves the first camera's move whole.
+        let mut curves = BTreeMap::new();
+        curves.insert(Axis::Pan, vec![Key::new(0, 5.0, Interp::Linear), Key::new(100, 9.0, Interp::Linear)]);
+        let (punched, id) = punch_keys(&song, &p, "cam2", 200, 100, curves.clone(), Some("pass1".into())).unwrap();
+        assert_eq!(punched.motion_clip(&id).unwrap().camera, "cam2");
+        assert!(punched.motion_clip(&a).unwrap().is_preset_move());
+        for f in 0..=song.length_frames {
+            assert_eq!(pose_at(&song, CAM, f), pose_at(&punched, CAM, f));
+        }
+        assert_eq!(pose_at(&punched, "cam2", 250).pan, 7.0);
+
+        // The same pass on the first camera splits its move, and the pieces stay on that camera.
+        let (punched, _) = punch_keys(&song, &p, CAM, 200, 100, curves, None).unwrap();
+        assert!(punched.motion.len() >= 3);
+        assert!(punched.motion.iter().all(|c| c.camera == CAM));
+    }
+
+    #[test]
+    fn clips_can_be_handed_to_another_camera_where_it_is_free() {
+        let (song, p) = two_cameras();
+        let (song, a) = insert_preset_move(&song, &p, &preset("A", 60.0, 400.0), 100).unwrap();
+        let (song, b) = insert_preset_move(&song, &p, &preset_on("cam2", "B", 10.0), 120).unwrap();
+        assert!(matches!(
+            set_camera(&song, &p, std::slice::from_ref(&a), "cam2"),
+            Err(Refusal::Invalid(Invalid::Overlap { .. }))
+        ));
+        let song = move_clip(&song, &p, &b, 900).unwrap();
+        let moved = set_camera(&song, &p, std::slice::from_ref(&a), "cam2").unwrap();
+        assert_eq!(moved.motion_clip(&a).unwrap().camera, "cam2");
+        assert_eq!(pose_at(&moved, CAM, 800), moved.home_pose);
+        assert_eq!(set_camera(&song, &p, &[a], "cam5").unwrap_err(), Refusal::NoSuchCamera);
+        assert_eq!(set_camera(&song, &p, &["nothing".into()], "cam2").unwrap_err(), Refusal::Empty);
+
+        // Copies stay on their camera.
+        let (copied, ids) = duplicate(&song, &p, std::slice::from_ref(&b)).unwrap();
+        assert_eq!(copied.motion_clip(&ids[0]).unwrap().camera, "cam2");
     }
 }

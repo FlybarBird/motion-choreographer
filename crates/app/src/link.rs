@@ -44,8 +44,10 @@ pub enum Cmd {
     PutProject(Box<Project>),
     StorePreset(StorePreset),
     DeletePreset(String),
-    SyncPresets,
-    Jog(Jog),
+    /// Read one camera's presets from its rig.
+    SyncPresets(String),
+    /// Hand control of one camera.
+    Jog(String, Jog),
     Upload(PathBuf),
     SetMediaTc {
         id: String,
@@ -280,7 +282,7 @@ fn coalesce(batch: Vec<Cmd>) -> Vec<Cmd> {
     let mut out: Vec<Cmd> = Vec::with_capacity(batch.len());
     for cmd in batch {
         let replaces_last = match (out.last(), &cmd) {
-            (Some(Cmd::Jog(_)), Cmd::Jog(_)) => true,
+            (Some(Cmd::Jog(a, _)), Cmd::Jog(b, _)) => a == b,
             (Some(Cmd::PutProject(_)), Cmd::PutProject(_)) => true,
             (Some(Cmd::Act(Action::Seek, _)), Cmd::Act(Action::Seek, _)) => true,
             (Some(Cmd::PutWorking { song: a, .. }), Cmd::PutWorking { song: b, .. }) => a.id == b.id,
@@ -417,12 +419,12 @@ impl Worker {
                 Ok(p) => self.emit(Event::Presets(p)),
                 Err(e) => self.refused("Delete preset", e),
             },
-            Cmd::SyncPresets => match self.api.post_empty::<Vec<Preset>>("/presets/sync") {
+            Cmd::SyncPresets(camera) => match self.api.sync_presets(&camera) {
                 Ok(p) => self.emit(Event::SyncAccepted(p)),
                 Err(e) => self.refused("Sync presets", e),
             },
-            Cmd::Jog(jog) => {
-                if let Err(e) = self.api.jog(&jog) {
+            Cmd::Jog(camera, jog) => {
+                if let Err(e) = self.api.jog(&camera, &jog) {
                     if !jog.is_zero() {
                         self.refused("Rig controller", e);
                     }
@@ -677,14 +679,14 @@ mod tests {
             seek(9),
             Cmd::PutWorking { seq: 1, song: song("one") },
             Cmd::PutWorking { seq: 2, song: song("two") },
-            Cmd::Jog(Jog { pan: 0.1, ..Jog::default() }),
-            Cmd::Jog(Jog { pan: 0.9, ..Jog::default() }),
+            Cmd::Jog("cam1".into(), Jog { pan: 0.1, ..Jog::default() }),
+            Cmd::Jog("cam1".into(), Jog { pan: 0.9, ..Jog::default() }),
         ]);
         assert_eq!(out.len(), 5);
         assert!(matches!(&out[0], Cmd::Act(Action::Seek, r) if r.frame == Some(3)));
         assert!(matches!(&out[1], Cmd::Act(Action::Play, _)));
         assert!(matches!(&out[2], Cmd::Act(Action::Seek, r) if r.frame == Some(9)));
         assert!(matches!(&out[3], Cmd::PutWorking { seq: 2, song } if song.name == "two"));
-        assert!(matches!(&out[4], Cmd::Jog(j) if j.pan == 0.9));
+        assert!(matches!(&out[4], Cmd::Jog(_, j) if j.pan == 0.9));
     }
 }

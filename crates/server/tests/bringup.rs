@@ -144,24 +144,31 @@ fn the_checklist_measures_what_the_rig_does_and_its_report_sets_up_the_project()
     api.take_lease("ptz-bringup", false).unwrap();
     let mut project = api.project().unwrap();
     let before = project.clone();
-    let changes = loaded.settings.apply(&mut project);
+    let changes = loaded.settings.apply(&mut project.cameras[0]);
     assert!(changes.iter().any(|c| c.starts_with("Pan counts inverted")), "{changes:?}");
     assert!(changes.iter().any(|c| c.starts_with("AutoPod+ height map: 3")));
-    assert_eq!(project.rig.kind, before.rig.kind, "the rig kind is the operator's to switch");
-    assert!(project.axes.pan.max_speed <= before.axes.pan.max_speed);
-    assert!(project.axes.elevation.max_speed <= before.axes.elevation.max_speed);
-    assert_eq!(loaded.settings.apply(&mut project), Vec::<String>::new(), "applying twice changes nothing more");
+    assert_eq!(project.cameras[0].rig.kind, before.cameras[0].rig.kind, "the rig kind is the operator's to switch");
+    assert!(project.cameras[0].axes.pan.max_speed <= before.cameras[0].axes.pan.max_speed);
+    assert!(project.cameras[0].axes.elevation.max_speed <= before.cameras[0].axes.elevation.max_speed);
+    assert_eq!(loaded.settings.apply(&mut project.cameras[0]), Vec::<String>::new(), "applying twice changes nothing more");
 
     // The project it made drives the same rig: it connects, arms and reaches the playhead.
-    project.rig.kind = RigKind::Hardware;
-    project.rig.fr7_password = fr7.password.clone();
+    project.cameras[0].rig.kind = RigKind::Hardware;
+    project.cameras[0].rig.fr7_password = fr7.password.clone();
     api.put_project(&project).unwrap();
-    wait_for(&api, |s| s.adapters.len() == 2 && s.adapters.iter().all(|a| a.connected) && s.adapters[1].calibrated == Some(true));
+    wait_for(&api, |s| {
+        s.first().adapters.len() == 2
+            && s.first().adapters.iter().all(|a| a.connected)
+            && s.first().adapters[1].calibrated == Some(true)
+    });
     let st = api.status().unwrap();
-    assert!((st.rig_pose.pan - 12.0).abs() < 0.1, "pan reads the right way round: {:?}", st.rig_pose);
-    assert!((st.rig_pose.elevation - 100.0).abs() < 3.0, "{:?}", st.rig_pose);
+    assert!((st.first().rig_pose.pan - 12.0).abs() < 0.1, "pan reads the right way round: {:?}", st.first().rig_pose);
+    assert!((st.first().rig_pose.elevation - 100.0).abs() < 3.0, "{:?}", st.first().rig_pose);
     let mark: Preset = api
-        .post("/presets", &StorePreset { name: "Mark".into(), pose: Some(Pose { pan: 30.0, elevation: 160.0, ..Pose::home() }) })
+        .post(
+            "/presets",
+            &StorePreset { name: "Mark".into(), pose: Some(Pose { pan: 30.0, elevation: 160.0, ..Pose::home() }), camera: None },
+        )
         .unwrap();
     let created = api.new_song("After bring-up", None).unwrap();
     let id = created.song.id.clone();

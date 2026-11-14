@@ -120,7 +120,9 @@ pub fn seed(storage: &Storage) -> std::io::Result<()> {
     pan[1].out_handle = [reach, 0.0];
     pan[2].in_handle = [-reach, 0.0];
     let curves = BTreeMap::from([(Axis::Pan, pan)]);
-    if let Ok((next, _)) = edit::punch_keys(&opening, &project, secs(&project, 78.0), 2 * drift, curves, None) {
+    if let Ok((next, _)) =
+        edit::punch_keys(&opening, &project, ptz_core::FIRST_CAMERA, secs(&project, 78.0), 2 * drift, curves, None)
+    {
         opening = next;
     }
 

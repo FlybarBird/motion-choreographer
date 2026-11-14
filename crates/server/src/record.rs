@@ -13,6 +13,9 @@ use std::collections::BTreeMap;
 pub struct RecordedPass {
     pub id: String,
     pub song_id: String,
+    /// The camera that was recorded. Passes from before a project could hold several are the first camera's.
+    #[serde(default = "ptz_core::camera::first_camera")]
+    pub camera: String,
     pub recorded_at: String,
     pub rate: FrameRate,
     /// Timeline frame of the first sample.
@@ -39,6 +42,7 @@ pub fn fit_pass(samples: &BTreeMap<Axis, Vec<f64>>, scale: f64) -> BTreeMap<Axis
 /// frame, interpolated between the readings either side of it.
 #[derive(Clone, Debug)]
 pub struct Capture {
+    pub camera: String,
     pub axes: Vec<Axis>,
     start_frame: i64,
     poses: Vec<Pose>,
@@ -50,8 +54,8 @@ fn lerp(a: &Pose, b: &Pose, t: f64) -> Pose {
 }
 
 impl Capture {
-    pub fn new(axes: Vec<Axis>) -> Capture {
-        Capture { axes, start_frame: 0, poses: Vec::new(), last: None }
+    pub fn new(camera: &str, axes: Vec<Axis>) -> Capture {
+        Capture { camera: camera.to_string(), axes, start_frame: 0, poses: Vec::new(), last: None }
     }
 
     /// The rig was at `pose` when the transport was at `stamp` frames.
@@ -105,7 +109,7 @@ mod tests {
 
     #[test]
     fn whole_frames_are_interpolated_between_readings() {
-        let mut c = Capture::new(vec![Axis::Pan]);
+        let mut c = Capture::new(ptz_core::FIRST_CAMERA, vec![Axis::Pan]);
         let at = |pan: f64| Pose { pan, ..Pose::home() };
         // Readings at 60 Hz against 25 fps: 0.4 frames apart, value equal to the stamp.
         for i in 0..=50 {
@@ -125,7 +129,7 @@ mod tests {
 
     #[test]
     fn a_pass_that_starts_on_a_frame_keeps_that_frame() {
-        let mut c = Capture::new(vec![Axis::Tilt]);
+        let mut c = Capture::new(ptz_core::FIRST_CAMERA, vec![Axis::Tilt]);
         c.feed(0.0, Pose { tilt: 3.0, ..Pose::home() });
         c.feed(2.5, Pose { tilt: 8.0, ..Pose::home() });
         assert_eq!(c.start_frame(), 0);
@@ -139,9 +143,9 @@ mod tests {
     fn a_scripted_jog_plays_back_on_the_frames_it_was_recorded_at() {
         let project = Project::default();
         let fps = project.rate.fps();
-        let top = project.axes.get(Axis::Pan).max_speed;
+        let top = project.first().axes.get(Axis::Pan).max_speed;
         let mut sim = Simulator::new();
-        let mut cap = Capture::new(vec![Axis::Pan]);
+        let mut cap = Capture::new(ptz_core::FIRST_CAMERA, vec![Axis::Pan]);
         let dt = 1.0 / 60.0;
         let mut t = 0.0f64;
         while t * fps <= 260.0 {
@@ -149,7 +153,7 @@ mod tests {
             let jog = if (100.0..200.0).contains(&frame) { 10.0 / top } else { 0.0 };
             cap.feed(frame, sim.pose());
             sim.jog(Jog { pan: jog, ..Jog::default() }).unwrap();
-            sim.tick(dt, &project.axes);
+            sim.tick(dt, &project.first().axes);
             t += dt;
         }
         let samples = cap.samples();
@@ -160,16 +164,18 @@ mod tests {
         assert!(curves[&Axis::Pan].len() <= 10, "{} keys", curves[&Axis::Pan].len());
 
         let song = Song::new("s", "S", "01:00:00:00", 400);
-        let (song, clip) = edit::punch_keys(&song, &project, cap.start_frame(), frames - 1, curves, Some("p".into())).unwrap();
+        let (song, clip) =
+            edit::punch_keys(&song, &project, ptz_core::FIRST_CAMERA, cap.start_frame(), frames - 1, curves, Some("p".into()))
+                .unwrap();
         assert!(song.motion_clip(&clip).is_some_and(|c| c.recorded_pass.as_deref() == Some("p")));
         // The simulator ramps up to speed and back down like a real head, so the move
         // trails the script by half a ramp.
-        let ramp_s = 10.0 / (project.axes.get(Axis::Pan).max_accel * crate::rig::JOG_ACCEL);
+        let ramp_s = 10.0 / (project.first().axes.get(Axis::Pan).max_accel * crate::rig::JOG_ACCEL);
         let trail = 10.0 * ramp_s / 2.0;
         let per_frame = 10.0 / fps;
         for f in 0..frames {
             let scripted = ((f as f64).clamp(100.0, 200.0) - 100.0) * per_frame;
-            let played = pose_at(&song, f).pan;
+            let played = pose_at(&song, ptz_core::FIRST_CAMERA, f).pan;
             assert!(played <= scripted + 0.05 + 1e-9, "frame {f}: played {played} is ahead of the script at {scripted}");
             // The fit tolerance, the trail, plus the tick the jog took to arrive at each end.
             assert!(played >= scripted - trail - 0.05 - 10.0 * dt - 1e-9, "frame {f}: played {played}, scripted {scripted}");
@@ -179,6 +185,6 @@ mod tests {
         // What the rig did by hand, the rig can do again.
         let issues = ptz_core::compile::compile(&song, &project).issues;
         assert!(issues.is_empty(), "{issues:?}");
-        assert!((pose_at(&song, 150).pan - (20.0 - trail)).abs() < 0.25);
+        assert!((pose_at(&song, ptz_core::FIRST_CAMERA, 150).pan - (20.0 - trail)).abs() < 0.25);
     }
 }

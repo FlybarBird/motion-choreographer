@@ -745,7 +745,7 @@ impl Shell {
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     if ui.add(egui::Button::new("Move the camera and sync").fill(AMBER)).clicked() {
-                        s.link.send(Cmd::SyncPresets);
+                        s.link.send(Cmd::SyncPresets(s.cam_id().to_string()));
                         s.confirm_sync = false;
                     }
                     if ui.button("Cancel").clicked() {

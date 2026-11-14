@@ -16,6 +16,8 @@ use ptz_core::transport::{Action, Run, TimeMode};
 use ptz_server::media::{click_track, wav};
 use std::time::{Duration, Instant};
 
+const CAM: &str = ptz_core::FIRST_CAMERA;
+
 /// A broadcast WAV whose time reference says it starts at `tc`.
 fn stamped_wav(tc: &str, rate: FrameRate, seconds: f64) -> Vec<u8> {
     let start = Timecode::parse_at(tc, rate).unwrap().to_frames(rate);
@@ -173,7 +175,7 @@ fn a_stamped_file_lands_on_its_code_locks_the_playhead_and_a_recorded_pan_replay
     let st = do_act(&api, Action::Play);
     assert_eq!(st.transport.run, Run::Playing, "the server rolls the file itself, so there is nothing to wait for");
     assert!((first as f64..first as f64 + 3.0).contains(&st.frame_f), "playback began at the file, not at {}", st.frame_f);
-    let jog = Jog { pan: 8.0 / project.axes.get(Axis::Pan).max_speed, ..Jog::default() };
+    let jog = Jog { pan: 8.0 / project.cameras[0].axes.get(Axis::Pan).max_speed, ..Jog::default() };
     let mut recorded: Vec<(f64, f64)> = Vec::new();
     let mut codes: Vec<(f64, String)> = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -185,21 +187,21 @@ fn a_stamped_file_lands_on_its_code_locks_the_playhead_and_a_recorded_pan_replay
         assert_eq!(st.lock.last_code.as_deref(), Some(st.timecode.as_str()));
         assert!(st.audio.drift_frames.abs() < 0.05, "the file is the clock: {} frames of drift", st.audio.drift_frames);
         if recorded.last().is_none_or(|l| st.frame_f > l.0) {
-            recorded.push((st.frame_f, st.rig_pose.pan));
+            recorded.push((st.frame_f, st.first().rig_pose.pan));
             codes.push((st.frame_f, st.timecode.clone()));
         }
         if st.frame_f >= 470.0 {
             break;
         }
         let held = (380.0..440.0).contains(&st.frame_f);
-        api.jog(&if held { jog } else { Jog::default() }).unwrap();
+        api.jog(CAM, &if held { jog } else { Jog::default() }).unwrap();
         std::thread::sleep(Duration::from_millis(8));
     }
     do_act(&api, Action::Stop);
     let song = working(&api, "walk-in");
     let pass = song.motion.iter().find(|c| c.recorded_pass.is_some()).expect("the pass is on the timeline");
     assert_eq!(pass.start_frame, first, "the pass begins on the file's first frame");
-    let moved = pose_at_f(&song, 460.0).pan - pose_at_f(&song, 370.0).pan;
+    let moved = pose_at_f(&song, CAM, 460.0).pan - pose_at_f(&song, CAM, 370.0).pan;
     assert!(moved.abs() > 10.0, "the pan was recorded: it travels {moved} degrees");
 
     // Cue, Play to code: the pan replays on the same timecodes.
@@ -212,13 +214,13 @@ fn a_stamped_file_lands_on_its_code_locks_the_playhead_and_a_recorded_pan_replay
         if st.frame_f >= 465.0 || st.transport.run != Run::Playing {
             break;
         }
-        assert_eq!(st.pose_source, PoseSource::Timeline);
+        assert_eq!(st.first().pose_source, PoseSource::Timeline);
         if let Some(was) = lookup(&recorded, st.frame_f) {
             assert!(
-                (st.pose.pan - was).abs() < 0.3,
+                (st.first().pose.pan - was).abs() < 0.3,
                 "at {} the pan was recorded at {was} and replays at {}",
                 st.timecode,
-                st.pose.pan
+                st.first().pose.pan
             );
             // The same frame carries the same code as it did during the pass.
             let then = codes.iter().find(|(f, _)| f.floor() == st.frame_f.floor()).map(|(_, tc)| tc.clone());

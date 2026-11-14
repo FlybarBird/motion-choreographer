@@ -713,6 +713,7 @@ impl Worker {
                     job.out.push(DevicePreset {
                         preset: Preset {
                             id: String::new(),
+                            camera: ptz_core::camera::first_camera(),
                             name,
                             pose: Pose {
                                 pan: settled.pan,

@@ -958,6 +958,7 @@ mod tests {
             id: id.into(),
             name: name.into(),
             pose: Pose { pan, tilt: 0.0, zoom: 0.2, focus: 0.5, elevation },
+            camera: ptz_core::camera::first_camera(),
             camera_number: None,
             has_thumbnail: false,
         };

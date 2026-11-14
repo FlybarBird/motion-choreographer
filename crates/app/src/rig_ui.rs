@@ -216,7 +216,7 @@ fn paint_surface(ui: &Ui, s: &Session, surface: &Surface, stick: Jog, focused: b
         p.text(
             r.right_top() + vec2(0.0, -4.0),
             Align2::RIGHT_BOTTOM,
-            axis.format(s.status.rig_pose.get(axis)),
+            axis.format(s.cam_status().rig_pose.get(axis)),
             FontId::monospace(11.0),
             if dim { MUTED } else { OFF_WHITE },
         );
@@ -279,7 +279,7 @@ fn controller(ui: &mut Ui, s: &mut Session) {
     let stick = combine(from_pointer, from_keys, 1.0);
     let want = if why.is_some() { Jog::default() } else { combine(from_pointer, from_keys, s.rig.speed) };
     if let Some(jog) = s.rig.due(want, Instant::now()) {
-        s.link.send(Cmd::Jog(jog));
+        s.link.send(Cmd::Jog(s.cam_id().to_string(), jog));
     }
     if !want.is_zero() {
         ui.ctx().request_repaint_after(SEND_EVERY);
@@ -325,10 +325,11 @@ fn live_state(ui: &mut Ui, s: &Session) {
         return;
     }
     section(ui, "Tracking");
-    let tol = s.project.rig.tolerance;
+    let tol = s.cam().rig.tolerance;
+    let error = s.cam_status().error;
     egui::Grid::new("rig_tracking").num_columns(3).spacing([12.0, 5.0]).show(ui, |ui| {
         for axis in Axis::ALL {
-            let error = tel.error.get(axis);
+            let error = error.get(axis);
             let share = (error.abs() / tol.get(axis).max(1e-9)) as f32;
             let ink = if share > 1.0 {
                 RED
@@ -353,10 +354,10 @@ fn live_state(ui: &mut Ui, s: &Session) {
 pub fn show(ui: &mut Ui, s: &mut Session) {
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         egui::Frame::new().inner_margin(egui::Margin::symmetric(10, 8)).show(ui, |ui| {
-            if s.status.adapters.is_empty() {
+            if s.cam_status().adapters.is_empty() {
                 note(ui, "The server has not reported a rig.");
             }
-            for a in &s.status.adapters {
+            for a in &s.cam_status().adapters {
                 ui.horizontal(|ui| {
                     let (dot, word) = match (a.connected, a.calibrated) {
                         (false, _) => (RED, "not answering".to_string()),
@@ -413,8 +414,8 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
             section(ui, "Position");
             egui::Grid::new("rig_pose").num_columns(3).spacing([12.0, 5.0]).show(ui, |ui| {
                 for axis in Axis::ALL {
-                    let lim = s.project.axes.get(axis);
-                    let value = s.status.rig_pose.get(axis);
+                    let lim = s.cam().axes.get(axis);
+                    let value = s.cam_status().rig_pose.get(axis);
                     ui.label(RichText::new(axis.label()).color(axis_color(axis)));
                     ui.label(RichText::new(axis.format(value)).monospace());
                     let (bar, _) = ui.allocate_exact_size(vec2(90.0, 6.0), Sense::hover());
@@ -439,7 +440,8 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
                     .on_disabled_hover_text("Take the edit lease to store presets");
                 if r.clicked() {
                     let name = s.rig.preset_name.trim().to_string();
-                    s.link.send(Cmd::StorePreset(StorePreset { name, pose: Some(s.status.rig_pose) }));
+                    let (pose, camera) = (Some(s.cam_status().rig_pose), Some(s.cam_id().to_string()));
+                    s.link.send(Cmd::StorePreset(StorePreset { name, pose, camera }));
                     s.rig.preset_name.clear();
                 }
             });

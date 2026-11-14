@@ -118,28 +118,12 @@ pub trait RigAdapter: Send {
 }
 
 pub fn seeded_presets() -> Vec<Preset> {
+    let preset =
+        |number: u32, id: &str, name: &str, pose: Pose| Preset { camera_number: Some(number), ..Preset::new(id, name, pose) };
     vec![
-        Preset {
-            id: "stage-wide".into(),
-            name: "Stage Wide".into(),
-            pose: Pose { pan: 0.0, tilt: 2.0, zoom: 0.05, focus: 0.45, elevation: 120.0 },
-            camera_number: Some(1),
-            has_thumbnail: false,
-        },
-        Preset {
-            id: "lectern-mcu".into(),
-            name: "Lectern MCU".into(),
-            pose: Pose { pan: -24.0, tilt: 1.5, zoom: 0.62, focus: 0.5, elevation: 310.0 },
-            camera_number: Some(2),
-            has_thumbnail: false,
-        },
-        Preset {
-            id: "awards-two-shot".into(),
-            name: "Awards Two-Shot".into(),
-            pose: Pose { pan: 18.0, tilt: 0.5, zoom: 0.38, focus: 0.48, elevation: 220.0 },
-            camera_number: Some(3),
-            has_thumbnail: false,
-        },
+        preset(1, "stage-wide", "Stage Wide", Pose { pan: 0.0, tilt: 2.0, zoom: 0.05, focus: 0.45, elevation: 120.0 }),
+        preset(2, "lectern-mcu", "Lectern MCU", Pose { pan: -24.0, tilt: 1.5, zoom: 0.62, focus: 0.5, elevation: 310.0 }),
+        preset(3, "awards-two-shot", "Awards Two-Shot", Pose { pan: 18.0, tilt: 0.5, zoom: 0.38, focus: 0.48, elevation: 220.0 }),
     ]
 }
 

@@ -16,6 +16,7 @@ pub fn presets() -> Vec<Preset> {
         id: id.into(),
         name: name.into(),
         pose: Pose { pan, tilt, zoom, focus: 0.5, elevation },
+        camera: ptz_core::camera::first_camera(),
         camera_number: None,
         has_thumbnail: false,
     };
@@ -382,7 +383,7 @@ fn keys_song() -> (Song, String) {
     );
     curves.insert(Axis::Zoom, vec![Key::new(0, 0.2, Interp::Linear), Key::new(200, 0.6, Interp::Linear)]);
     let empty = Song::new("s", "Test Song", "01:00:00:00", 600);
-    ptz_core::edit::punch_keys(&empty, &Project::default(), 100, 200, curves, None).unwrap()
+    ptz_core::edit::punch_keys(&empty, &Project::default(), ptz_core::FIRST_CAMERA, 100, 200, curves, None).unwrap()
 }
 
 impl Rig {
@@ -401,7 +402,7 @@ impl Rig {
     }
 
     fn jogs(&self) -> Vec<Jog> {
-        self.cmds.try_iter().filter_map(|c| if let Cmd::Jog(j) = c { Some(j) } else { None }).collect()
+        self.cmds.try_iter().filter_map(|c| if let Cmd::Jog(_, j) = c { Some(j) } else { None }).collect()
     }
 
     fn toasts(&self) -> Vec<String> {
@@ -538,7 +539,7 @@ fn the_rig_pad_sends_velocity_while_held_and_stops_on_release() {
     r.harness.key_down(egui::Key::ArrowLeft);
     r.harness.run_steps(3);
     let cmds: Vec<Cmd> = r.cmds.try_iter().collect();
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::Jog(j) if (j.pan + speed).abs() < 1e-9)), "{}", cmds.len());
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::Jog(_, j) if (j.pan + speed).abs() < 1e-9)), "{}", cmds.len());
     assert!(!cmds.iter().any(|c| matches!(c, Cmd::Act(Action::Seek, _))), "the arrow did not scrub");
     r.harness.key_up(egui::Key::ArrowLeft);
     r.harness.run_steps(3);
@@ -619,8 +620,16 @@ fn a_recorded_pass_arriving_from_the_server_is_one_undo_step_and_opens_in_the_gr
     // What the server sends after a pass: the song with a recorded keys clip punched in.
     let mut curves = std::collections::BTreeMap::new();
     curves.insert(Axis::Pan, vec![Key::new(0, 0.0, Interp::Bezier), Key::new(120, 40.0, Interp::Bezier)]);
-    let (recorded, clip) =
-        ptz_core::edit::punch_keys(&before, &Project::default(), 0, 120, curves, Some("pass-0001".into())).unwrap();
+    let (recorded, clip) = ptz_core::edit::punch_keys(
+        &before,
+        &Project::default(),
+        ptz_core::FIRST_CAMERA,
+        0,
+        120,
+        curves,
+        Some("pass-0001".into()),
+    )
+    .unwrap();
     let working = WorkingSong { song: recorded.clone(), edit_counter: 1, dirty: true, revision: None, issues: Vec::new() };
     r.events.send(Event::Working(Box::new(working), Why::Reload)).unwrap();
     r.harness.run_steps(3);
@@ -632,7 +641,7 @@ fn a_recorded_pass_arriving_from_the_server_is_one_undo_step_and_opens_in_the_gr
     r.harness.state_mut().show_tab(Tab::Graph);
     r.harness.run_steps(3);
     let s = &r.harness.state().session;
-    let shown = crate::graph::target_clip(r.song(), &s.timeline.selection, &s.timeline.key_selection, s.playhead());
+    let shown = crate::graph::target_clip(r.song(), s.cam_id(), &s.timeline.selection, &s.timeline.key_selection, s.playhead());
     assert_eq!(shown.map(|c| c.id.clone()), Some(clip));
 
     // One undo restores everything the pass replaced.
@@ -853,7 +862,8 @@ fn arm_says_that_it_moves_the_rig_and_a_fault_is_shown_until_it_is_cleared() {
         s.status.transport.output = Output::Positioning;
         s.status.hardware_live = true;
         s.status.telemetry.hardware = true;
-        s.status.telemetry.error.pan = 1.4;
+        s.status.cameras[0].hardware = true;
+        s.status.cameras[0].error.pan = 1.4;
     }
     r.harness.state_mut().show_tab(Tab::Rig);
     r.harness.run_steps(3);
@@ -878,7 +888,7 @@ fn arm_says_that_it_moves_the_rig_and_a_fault_is_shown_until_it_is_cleared() {
 fn syncing_presets_from_a_real_rig_asks_first_and_is_refused_while_live() {
     use egui_kittest::kittest::Queryable as _;
     let mut r = rig(Song::new("s", "Test Song", "01:00:00:00", 1500));
-    let synced = |r: &Rig| r.cmds.try_iter().filter(|c| matches!(c, Cmd::SyncPresets)).count();
+    let synced = |r: &Rig| r.cmds.try_iter().filter(|c| matches!(c, Cmd::SyncPresets(_))).count();
 
     // The simulator has nothing to move: one click syncs.
     r.harness.get_by_label("Sync from rig").click();
@@ -886,7 +896,7 @@ fn syncing_presets_from_a_real_rig_asks_first_and_is_refused_while_live() {
     assert_eq!(synced(&r), 1);
 
     // A real camera travels to every preset, so the click only asks.
-    r.harness.state_mut().session.status.telemetry.hardware = true;
+    r.harness.state_mut().session.status.cameras[0].hardware = true;
     r.harness.run_steps(2);
     r.harness.get_by_label("Sync from rig").click();
     r.harness.run_steps(3);
@@ -906,7 +916,7 @@ fn syncing_presets_from_a_real_rig_asks_first_and_is_refused_while_live() {
 
     // The server's answer on hardware is only that it began; progress comes with the status.
     r.events.send(Event::SyncAccepted(presets())).unwrap();
-    r.harness.state_mut().session.status.telemetry.preset_sync = Some("Recalling preset 2 of 3: Lectern".into());
+    r.harness.state_mut().session.status.cameras[0].preset_sync = Some("Recalling preset 2 of 3: Lectern".into());
     r.harness.run_steps(3);
     assert!(r.toasts().iter().any(|t| t.contains("It moves to each one in turn")), "{:?}", r.toasts());
     r.harness.get_by_label("Recalling preset 2 of 3: Lectern");
@@ -918,7 +928,7 @@ fn syncing_presets_from_a_real_rig_asks_first_and_is_refused_while_live() {
     // Armed, the button is off: the camera is not free to travel.
     {
         let s = &mut r.harness.state_mut().session;
-        s.status.telemetry.preset_sync = None;
+        s.status.cameras[0].preset_sync = None;
         s.status.transport.output = Output::Armed;
     }
     r.harness.run_steps(3);
@@ -953,6 +963,7 @@ fn a_keep_out_rule_is_added_and_edited_in_the_project_settings_and_blocks_the_so
             id: "low".into(),
             name: "Low".into(),
             pose: Pose { tilt: -20.0, elevation: 50.0, ..Pose::home() },
+            camera: ptz_core::camera::first_camera(),
             camera_number: None,
             has_thumbnail: false,
         };
@@ -970,7 +981,7 @@ fn a_keep_out_rule_is_added_and_edited_in_the_project_settings_and_blocks_the_so
     r.harness.run_steps(3);
     r.press("Add a keep-out rule");
     let sent = projects(&r);
-    let rule = &sent.last().expect("the project was sent").keep_out[0];
+    let rule = &sent.last().expect("the project was sent").cameras[0].keep_out[0];
     assert_eq!(rule.describe(), "when elevation is below 200 mm, tilt must be above -10.0°");
     assert_eq!(rule.name, "Rule 1");
     // The local compile already shows it: the move now breaks the rule, and that cannot be accepted.
@@ -980,7 +991,7 @@ fn a_keep_out_rule_is_added_and_edited_in_the_project_settings_and_blocks_the_so
 
     r.press("Remove");
     let sent = projects(&r);
-    assert!(sent.last().unwrap().keep_out.is_empty());
+    assert!(sent.last().unwrap().cameras[0].keep_out.is_empty());
     assert_eq!(r.blocking(), 0);
 }
 
@@ -996,9 +1007,9 @@ fn rig_settings_switch_to_hardware_and_take_a_height_from_the_leg_box() {
     assert!(r.harness.query_by_label("FR7 address").is_none(), "the simulator has no addresses to set");
     {
         let s = &mut r.harness.state_mut().session;
-        s.project.rig.kind = ptz_core::pose::RigKind::Hardware;
-        s.project.rig.autopod_host = "10.0.0.31".into();
-        s.status.adapters = vec![ptz_core::api::AdapterStatus {
+        s.project.cameras[0].rig.kind = ptz_core::pose::RigKind::Hardware;
+        s.project.cameras[0].rig.autopod_host = "10.0.0.31".into();
+        s.status.cameras[0].adapters = vec![ptz_core::api::AdapterStatus {
             name: "AutoPod+".into(),
             connected: true,
             detail: "10.0.0.31:80 answers in 3.0 ms".into(),
@@ -1013,7 +1024,7 @@ fn rig_settings_switch_to_hardware_and_take_a_height_from_the_leg_box() {
     r.harness.get_by_label("0 of 3 heights. Arm is refused until the map has three; ptz-bringup measures them with you.");
     r.press("Add the current height");
     let sent = projects(&r);
-    let map = &sent.last().expect("the project was sent").rig.autopod_calibration;
+    let map = &sent.last().expect("the project was sent").cameras[0].rig.autopod_calibration;
     assert_eq!(map.len(), 1);
     assert_eq!(map[0].raw, 9120.0);
     r.harness.get_by_label("1 of 3 heights. Arm is refused until the map has three; ptz-bringup measures them with you.");

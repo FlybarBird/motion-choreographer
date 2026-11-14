@@ -15,9 +15,10 @@ ptz-bringup: measure the real rig and write the values the project needs
 
 Usage:
   ptz-bringup --fr7 <host[:port]> --autopod <host[:port]> [options]
-  ptz-bringup --apply <report.json> [--server http://127.0.0.1:8787] [--access-key <key>]
+  ptz-bringup --apply <report.json> [--camera <number or id>] [--server http://127.0.0.1:8787]
+                    [--access-key <key>]
   ptz-bringup fakes [--fr7 127.0.0.1:52381] [--fr7-http 127.0.0.1:8088] [--autopod 127.0.0.1:8089]
-                    [--picture <file.jpg>]
+                    [--count <1 to 12>] [--picture <file.jpg>]
 
 Checklist options:
   --fr7 <host[:port]>      The FR7's address. VISCA over IP is UDP port 52381.
@@ -37,12 +38,15 @@ Every step that moves the rig says what it will do and asks first. It moves
 from wherever the rig stands and brings it back. Keep a hand on the camera's
 own stop: this tool is what measures how long a stop takes.
 
---apply takes the edit lease, writes the report's values into the server's
-project and releases the lease. Top speeds are only ever lowered.
+--apply takes the edit lease, writes the report's values into one camera of
+the server's project and releases the lease. --camera names it by its number
+in the camera list or by its id; without it the values go to camera 1. Top
+speeds are only ever lowered. Each rig is measured and applied on its own.
 
 `fakes` runs stand-ins for both devices on this machine, to try the software
 against. The fake FR7's web login is admin / fr7-password. --picture gives it
-a JPEG to serve as every preset's picture.
+a JPEG to serve as every preset's picture. --count runs that many rigs, each
+on the next ports up from the ones given.
 ";
 
 fn fail(msg: &str) -> ! {
@@ -99,13 +103,27 @@ impl Operator for Console {
     }
 }
 
-fn apply(path: &Path, server: &str, key: Option<&str>) {
+fn apply(path: &Path, camera: Option<&str>, server: &str, key: Option<&str>) {
     let report = Report::load(path).unwrap_or_else(|e| fail(&e));
     let api = Api::new(server, "ptz-bringup", key);
     let mut project = api.project().unwrap_or_else(|e| fail(&format!("{server}: {}", e.message())));
-    let changes = report.settings.apply(&mut project);
+    let at = match camera {
+        None => 0,
+        Some(name) => name
+            .parse::<usize>()
+            .ok()
+            .and_then(|n| n.checked_sub(1))
+            .filter(|i| *i < project.cameras.len())
+            .or_else(|| project.camera_index(name))
+            .unwrap_or_else(|| {
+                let list: Vec<String> = project.cameras.iter().map(|c| format!("{} ({})", project.label(&c.id), c.id)).collect();
+                fail(&format!("the project has no camera {name}. It has: {}", list.join(", ")))
+            }),
+    };
+    let label = project.label(&project.cameras[at].id);
+    let changes = report.settings.apply(&mut project.cameras[at]);
     if changes.is_empty() {
-        println!("The project already holds every value in {}.", path.display());
+        println!("Camera {label} already holds every value in {}.", path.display());
         return;
     }
     if let Err(e) = api.take_lease("ptz-bringup", false) {
@@ -115,13 +133,23 @@ fn apply(path: &Path, server: &str, key: Option<&str>) {
     let _ = api.release_lease();
     match result {
         Ok(_) => {
-            println!("Applied {} to the project at {server}:", path.display());
+            println!("Applied {} to camera {label} of the project at {server}:", path.display());
             for c in changes {
                 println!("  {c}");
             }
-            println!("The rig kind is not changed. Switch it to Hardware in the app's rig settings when the rig is ready.");
+            println!(
+                "The rig kind is not changed. Switch this camera to Hardware in the app's rig settings when the rig is ready."
+            );
         }
         Err(e) => fail(&format!("the server refused the project: {}", e.message())),
+    }
+}
+
+/// `host:port` with the port moved up by `by`.
+fn port_up(addr: &str, by: u16) -> String {
+    match addr.rsplit_once(':').and_then(|(host, port)| Some((host, port.parse::<u16>().ok()?))) {
+        Some((host, port)) => format!("{host}:{}", port.checked_add(by).unwrap_or_else(|| fail("the ports run past 65535"))),
+        None => fail(&format!("{addr} needs a port, as in 127.0.0.1:8089")),
     }
 }
 
@@ -129,6 +157,7 @@ fn fakes(mut args: impl Iterator<Item = String>) {
     let (mut visca_at, mut http_at, mut pod_at) =
         (format!("127.0.0.1:{}", visca::PORT), "127.0.0.1:8088".to_string(), "127.0.0.1:8089".to_string());
     let mut picture = None::<PathBuf>;
+    let mut count = 1u16;
     while let Some(arg) = args.next() {
         let mut value = |name: &str| args.next().unwrap_or_else(|| fail(&format!("{name} needs a value")));
         match arg.as_str() {
@@ -136,29 +165,49 @@ fn fakes(mut args: impl Iterator<Item = String>) {
             "--fr7-http" => http_at = value("--fr7-http"),
             "--autopod" => pod_at = value("--autopod"),
             "--picture" => picture = Some(PathBuf::from(value("--picture"))),
+            "--count" => {
+                count =
+                    value("--count").parse().ok().filter(|n| (1..=12).contains(n)).unwrap_or_else(|| fail("--count is 1 to 12"));
+            }
             other => fail(&format!("unknown option {other} for fakes")),
         }
     }
-    let fr7 =
-        FakeFr7::start_on(&visca_at, &http_at).unwrap_or_else(|e| fail(&format!("fake FR7 on {visca_at} and {http_at}: {e}")));
-    if let Some(path) = picture {
-        fr7.set_picture(std::fs::read(&path).unwrap_or_else(|e| fail(&format!("{}: {e}", path.display()))));
+    let picture = picture.map(|path| std::fs::read(&path).unwrap_or_else(|e| fail(&format!("{}: {e}", path.display()))));
+    let mut rigs = Vec::new();
+    for n in 0..count {
+        // The web interface and the leg box sit on neighbouring ports, so each rig takes the next pair.
+        let (visca_at, http_at, pod_at) = (port_up(&visca_at, n), port_up(&http_at, 2 * n), port_up(&pod_at, 2 * n));
+        let fr7 = FakeFr7::start_on(&visca_at, &http_at)
+            .unwrap_or_else(|e| fail(&format!("fake FR7 on {visca_at} and {http_at}: {e}")));
+        if let Some(jpeg) = &picture {
+            fr7.set_picture(jpeg.clone());
+        }
+        let pod = FakeAutoPod::start_on(&pod_at).unwrap_or_else(|e| fail(&format!("fake AutoPod+ on {pod_at}: {e}")));
+        if count > 1 {
+            println!("Rig {}", n + 1);
+        }
+        println!(
+            "Fake FR7:      VISCA over IP on {} (UDP), web interface on {} (login {} / {})",
+            fr7.visca, fr7.http, fr7.user, fr7.password
+        );
+        println!("Fake AutoPod+: {} (calibrated; height map in raw counts: {:?})", pod.addr, FakeAutoPod::height_map());
+        rigs.push((fr7, pod));
     }
-    let pod = FakeAutoPod::start_on(&pod_at).unwrap_or_else(|e| fail(&format!("fake AutoPod+ on {pod_at}: {e}")));
-    println!(
-        "Fake FR7:     VISCA over IP on {} (UDP), web interface on {} (login {} / {})",
-        fr7.visca, fr7.http, fr7.user, fr7.password
-    );
-    println!("Fake AutoPod+: {} (calibrated; height map in raw counts: {:?})", pod.addr, FakeAutoPod::height_map());
     println!("These are stand-ins, not a rig. Ctrl-C to stop.\n");
-    let mut shown = String::new();
+    let mut shown = vec![String::new(); rigs.len()];
     loop {
-        let (pan, tilt, zoom, focus) = fr7.pose();
-        let line =
-            format!("pan {pan:7.2}  tilt {tilt:6.2}  zoom {zoom:.3}  focus {focus:.3}  elevation {:6.1} mm", pod.height_mm());
-        if line != shown {
-            println!("{line}");
-            shown = line;
+        for (n, (fr7, pod)) in rigs.iter().enumerate() {
+            let (pan, tilt, zoom, focus) = fr7.pose();
+            let line =
+                format!("pan {pan:7.2}  tilt {tilt:6.2}  zoom {zoom:.3}  focus {focus:.3}  elevation {:6.1} mm", pod.height_mm());
+            if line != shown[n] {
+                if count > 1 {
+                    println!("rig {:>2}  {line}", n + 1);
+                } else {
+                    println!("{line}");
+                }
+                shown[n] = line;
+            }
         }
         std::thread::sleep(Duration::from_millis(500));
     }
@@ -174,6 +223,7 @@ fn main() {
     let mut password = std::env::var("PTZ_FR7_PASSWORD").unwrap_or_default();
     let (mut steps, mut quick, mut yes) = (Vec::new(), false, false);
     let (mut report_path, mut from, mut apply_path) = (None::<PathBuf>, None::<PathBuf>, None::<PathBuf>);
+    let mut camera = None::<String>;
     let mut server = format!("http://127.0.0.1:{}", ptz_core::api::DEFAULT_PORT);
     let mut key = std::env::var("PTZ_ACCESS_KEY").ok();
     while let Some(arg) = args.next() {
@@ -194,6 +244,7 @@ fn main() {
             "--quick" => quick = true,
             "--yes" => yes = true,
             "--apply" => apply_path = Some(PathBuf::from(value("--apply"))),
+            "--camera" => camera = Some(value("--camera")),
             "--server" => server = value("--server"),
             "--access-key" => key = Some(value("--access-key")),
             "--version" => {
@@ -208,7 +259,7 @@ fn main() {
         }
     }
     if let Some(path) = apply_path {
-        return apply(&path, &server, key.as_deref());
+        return apply(&path, camera.as_deref(), &server, key.as_deref());
     }
     if fr7_host.is_none() && autopod.is_none() {
         print!("{HELP}");

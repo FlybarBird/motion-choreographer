@@ -198,8 +198,8 @@ fn rehearse_plays_in_real_time_and_stops_at_the_end() {
     let st = api.act(Action::Seek, &TransportRequest { frame: Some(500), ..Default::default() }).unwrap();
     assert_eq!(st.frame, 500);
     assert_eq!(st.timecode, "01:00:20:00");
-    assert!((st.pose.pan - -24.0).abs() < 1e-6, "{:?}", st.pose);
-    assert_eq!(st.pose_source, PoseSource::Timeline);
+    assert!((st.first().pose.pan - -24.0).abs() < 1e-6, "{:?}", st.first().pose);
+    assert_eq!(st.first().pose_source, PoseSource::Timeline);
 
     // Playing off the end stops at the last frame and leaves Play available.
     let len = st.song.unwrap().length_frames;
