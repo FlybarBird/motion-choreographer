@@ -376,8 +376,9 @@ own lens and its own place on the stage.
 | Move a clip to another camera | Drag it to that camera's lane |
 
 A preset belongs to one camera, because the same framing from a different
-position is a different pose. A preset dropped on a lane belongs to that
-lane's camera.
+position is a different pose. Wherever you drop it, the move lands on that
+camera's lane, not the lane under the pointer. To give a move to another
+camera afterwards, drag it to that camera's lane.
 
 Ways to work that keep twelve lanes manageable:
 
@@ -514,7 +515,9 @@ unless all of these hold:
 When you press it, every camera's rig travels to its pose at the playhead, at
 a share of its top speed (half, unless the rig settings say otherwise). The bar
 reads **ARMING**, then **ARMED** when every axis of every camera has arrived.
-While armed, the song, the presets and the project settings cannot be changed.
+While armed, the song and the project settings cannot be changed. Presets can
+still be stored and deleted; a move keeps its own copy of the pose, so the
+armed song does not change.
 
 Put the playhead where you want the cameras to be *before* you arm. Arming at
 the start of the song sends every camera to its opening position.
@@ -533,6 +536,7 @@ tolerance.
 | Pause the show | **Stop** | Holds where it is. Stays armed. |
 | Go back to the start | **Cue** | Stops, and travels to the pose at the start. The bar reads ARMING until it is there. |
 | Jump elsewhere while stopped | Click the ruler | Travels to the pose there, the same way |
+| (Locked to timecode) the incoming code jumps | Nothing | Travels to the pose at the new code, the same way |
 | Finish | **Disarm** | Returns to Rehearse. Nothing more is sent. |
 
 ### When a camera is held
@@ -558,6 +562,11 @@ report standing still, cuts output, and latches. It works from any station, in
 any state, with or without the edit lease. While it is latched nothing can
 move the rig. When it is safe, **Reset E-Stop**; you then arm again from
 scratch.
+
+E-STOP is a command the server sends over the network. It is not a hardware
+emergency stop: if the server or the network is down it cannot reach the rig.
+Know where the AutoPod+'s own stop control and the power are, and use them if
+the screen does not answer.
 
 Use it without hesitating. It costs a few seconds; a camera in the wrong place
 costs more.
