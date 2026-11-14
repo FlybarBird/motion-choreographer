@@ -231,6 +231,79 @@ fn action_button(ui: &mut Ui, s: &mut Session, action: Action, glyph: &str, labe
     false
 }
 
+/// E-STOP is this size in every state and at every window size.
+const ESTOP_SIZE: egui::Vec2 = vec2(108.0, 34.0);
+/// A row of buttons in the transport bar is as high as its tallest control.
+const BUTTON_ROW: f32 = ESTOP_SIZE.y;
+/// The hint is left out where there is not even room for the mark that says it was cut short.
+const HINT_LEAST: f32 = 16.0;
+
+/// How the left of the transport bar is laid out. Its first row ends where the meters and the stop
+/// control begin; what does not fit there goes onto rows under it, which have the whole width of the bar.
+#[derive(Clone, Copy)]
+struct Flow {
+    /// The width of the bar.
+    width: f32,
+    /// What the bar may paint on.
+    clip: egui::Rect,
+}
+
+impl Flow {
+    /// Something of this size comes next: it starts a new row unless this one has room for it.
+    fn make_room(&self, ui: &mut Ui, size: egui::Vec2) {
+        let row_begun = ui.cursor().left() > ui.max_rect().left() + 0.5;
+        if row_begun && size.x > ui.available_size_before_wrap().x {
+            ui.end_row();
+            ui.set_max_width(self.width);
+            ui.set_clip_rect(self.clip);
+            ui.set_row_height(size.y);
+        }
+    }
+
+    /// Controls that stay together: when the row has no room for all of them, all of them go
+    /// to the next row. They are given the width they were laid out at last.
+    fn together(&self, ui: &mut Ui, key: &str, height: f32, add: impl FnOnce(&mut Ui)) {
+        let id = egui::Id::new(("transport_group", key));
+        let known = ui.data(|d| d.get_temp::<f32>(id)).unwrap_or(0.0);
+        self.make_room(ui, vec2(known, height));
+        let laid = ui.allocate_ui_with_layout(vec2(known, height), Layout::left_to_right(Align::Center), add);
+        let width = laid.response.rect.width();
+        if (width - known).abs() > 0.5 {
+            ui.data_mut(|d| d.insert_temp(id, width));
+            // They were given room for another width: lay the bar out again before it is shown.
+            ui.ctx().request_discard("the transport bar changed");
+        }
+    }
+
+    /// A sentence, whole: on the next row when this one has no room for it, and over several
+    /// lines when it is longer than the bar is wide.
+    fn sentence(&self, ui: &mut Ui, text: RichText) {
+        let galley =
+            egui::WidgetText::from(text).into_galley(ui, Some(egui::TextWrapMode::Wrap), self.width, egui::TextStyle::Body);
+        let size = vec2(galley.size().x.min(self.width), galley.size().y);
+        self.make_room(ui, size);
+        ui.allocate_ui_with_layout(size, Layout::left_to_right(Align::Center), |ui| ui.add(egui::Label::new(galley)));
+    }
+
+    /// The one-line hint is the first thing to give way. It has what is left of its row and is cut short
+    /// there, with the whole of it under the pointer; it never opens a row, so the bar does not grow for it.
+    fn hint(&self, ui: &mut Ui, text: &str) {
+        let left = ui.available_size_before_wrap().x;
+        if text.is_empty() || left < HINT_LEAST {
+            return;
+        }
+        let text = RichText::new(text).color(MUTED);
+        let whole = egui::WidgetText::from(text.clone()).into_galley(
+            ui,
+            Some(egui::TextWrapMode::Extend),
+            f32::INFINITY,
+            egui::TextStyle::Body,
+        );
+        let size = vec2(whole.size().x.min(left), whole.size().y);
+        ui.allocate_ui_with_layout(size, Layout::left_to_right(Align::Center), |ui| ui.add(egui::Label::new(text).truncate()));
+    }
+}
+
 /// The icon that stands for a transport action wherever it is offered.
 fn action_glyph(action: Action) -> &'static str {
     match action {
@@ -495,15 +568,17 @@ impl Shell {
     fn transport(&mut self, ui: &mut Ui) {
         let s = &mut self.session;
         let t = s.status.transport;
+        let flow = Flow { width: ui.available_width(), clip: ui.clip_rect() };
         ui.horizontal(|ui| {
-            // E-Stop is always first to be laid out on the right, and always enabled.
+            // The stop control is laid out first and takes its place at the right. What is left of the
+            // row is all the rest may use: it goes onto further rows instead of running on under the button.
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if t.estop {
                     let reset = action_glyph(Action::ResetEstop);
                     action_button(ui, s, Action::ResetEstop, reset, "Reset E-Stop", Look::Solid(AMBER), 130.0);
                     chip(ui, "E-STOP LATCHED", RED, true);
                 } else {
-                    let r = icon_button(ui, true, icon::WARNING_OCTAGON, "E-STOP", Look::Solid(RED), vec2(108.0, 34.0));
+                    let r = icon_button(ui, true, icon::WARNING_OCTAGON, "E-STOP", Look::Solid(RED), ESTOP_SIZE);
                     if r.on_hover_text("Stop all motion now. Works from any station, with or without the lease").clicked() {
                         s.act(Action::Estop);
                     }
@@ -512,7 +587,10 @@ impl Shell {
                 crate::media_ui::meters(ui, s);
                 ui.add_space(4.0);
 
-                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                let room = ui.available_rect_before_wrap();
+                ui.with_layout(Layout::left_to_right(Align::Center).with_main_wrap(true), |ui| {
+                    // Should anything still be wider than the room it has, it is cut off there, not drawn over the meters and the stop.
+                    ui.shrink_clip_rect(egui::Rect::everything_left_of(room.right()));
                     let frame = s.playhead().floor() as i64;
                     let ink = if t.estop {
                         RED
@@ -521,56 +599,67 @@ impl Shell {
                     } else {
                         OFF_WHITE
                     };
-                    egui::Frame::new()
-                        .fill(BASE)
-                        .stroke(Stroke::new(1.0, LINE))
-                        .corner_radius(7)
-                        .inner_margin(egui::Margin::symmetric(12, 3))
-                        .show(ui, |ui| ui.label(RichText::new(s.timecode_at(frame)).monospace().size(22.0).color(ink)));
-                    ui.add_space(4.0);
-
                     // The main button: whatever the server says is the next step.
                     let g = s.status.guidance.clone();
                     let primary = g.primary.filter(|a| *a != Action::Estop && *a != Action::ResetEstop);
                     let live = t.output != Output::Rehearse;
-                    match primary {
-                        Some(action) => {
-                            let look = match action {
-                                Action::Play if live => Look::Solid(GREEN),
-                                Action::Stop => Look::Solid(OFF_WHITE),
-                                _ => Look::Solid(ACCENT),
-                            };
-                            action_button(ui, s, action, action_glyph(action), &g.primary_label, look, 124.0);
+                    flow.together(ui, "run", BUTTON_ROW, |ui| {
+                        egui::Frame::new()
+                            .fill(BASE)
+                            .stroke(Stroke::new(1.0, LINE))
+                            .corner_radius(7)
+                            .inner_margin(egui::Margin::symmetric(12, 3))
+                            .show(ui, |ui| ui.label(RichText::new(s.timecode_at(frame)).monospace().size(22.0).color(ink)));
+                        ui.add_space(4.0);
+                        match primary {
+                            Some(action) => {
+                                let look = match action {
+                                    Action::Play if live => Look::Solid(GREEN),
+                                    Action::Stop => Look::Solid(OFF_WHITE),
+                                    _ => Look::Solid(ACCENT),
+                                };
+                                action_button(ui, s, action, action_glyph(action), &g.primary_label, look, 124.0);
+                            }
+                            None => {
+                                icon_button(ui, false, icon::PLAY, "Rehearse", Look::Plain, vec2(124.0, 30.0))
+                                    .on_disabled_hover_text(g.hint.clone());
+                            }
                         }
-                        None => {
-                            icon_button(ui, false, icon::PLAY, "Rehearse", Look::Plain, vec2(124.0, 30.0))
-                                .on_disabled_hover_text(g.hint.clone());
+                        if primary != Some(Action::Stop) {
+                            action_button(ui, s, Action::Stop, icon::STOP, "Stop", Look::Plain, 0.0);
                         }
-                    }
-                    if primary != Some(Action::Stop) {
-                        action_button(ui, s, Action::Stop, icon::STOP, "Stop", Look::Plain, 0.0);
-                    }
-                    action_button(ui, s, Action::Cue, icon::SKIP_BACK, "Cue", Look::Plain, 0.0);
+                        action_button(ui, s, Action::Cue, icon::SKIP_BACK, "Cue", Look::Plain, 0.0);
+                    });
                     ui.add_space(6.0);
 
-                    if t.locked() {
-                        action_button(ui, s, Action::Unlock, icon::LOCK_SIMPLE_OPEN, "Unlock", Look::Plain, 0.0);
-                    } else {
-                        crate::lock_ui::lock_menu(ui, s);
-                    }
-                    if t.output == Output::Rehearse {
-                        action_button(ui, s, Action::Arm, icon::POWER, ARM_LABEL, Look::Outline(GREEN), 0.0);
-                    } else {
-                        action_button(ui, s, Action::Disarm, icon::PROHIBIT, "Disarm", Look::Outline(AMBER), 0.0);
-                    }
-                    if t.record {
-                        action_button(ui, s, Action::RecordOff, icon::RECORD, "Record off", Look::Solid(RED), 0.0);
-                    } else {
-                        action_button(ui, s, Action::RecordOn, icon::RECORD, "Record", Look::Outline(RED), 0.0);
-                    }
+                    flow.together(ui, "modes", BUTTON_ROW, |ui| {
+                        if t.locked() {
+                            action_button(ui, s, Action::Unlock, icon::LOCK_SIMPLE_OPEN, "Unlock", Look::Plain, 0.0);
+                        } else {
+                            crate::lock_ui::lock_menu(ui, s);
+                        }
+                        if t.output == Output::Rehearse {
+                            action_button(ui, s, Action::Arm, icon::POWER, ARM_LABEL, Look::Outline(GREEN), 0.0);
+                        } else {
+                            action_button(ui, s, Action::Disarm, icon::PROHIBIT, "Disarm", Look::Outline(AMBER), 0.0);
+                        }
+                        if t.record {
+                            action_button(ui, s, Action::RecordOff, icon::RECORD, "Record off", Look::Solid(RED), 0.0);
+                        } else {
+                            action_button(ui, s, Action::RecordOn, icon::RECORD, "Record", Look::Outline(RED), 0.0);
+                        }
+                    });
                     ui.add_space(6.0);
-                    crate::lock_ui::state_chips(ui, s);
-                    ui.add(egui::Label::new(RichText::new(&g.hint).color(MUTED)).truncate());
+
+                    flow.together(ui, "state", chip_height(ui), |ui| crate::lock_ui::state_chips(ui, s, flow.width));
+                    // What is wrong is said in full, on as many lines as it takes.
+                    if let Some(problem) = &s.status.lock.problem {
+                        flow.sentence(ui, RichText::new(problem).color(AMBER));
+                    }
+                    if let Some(fault) = &s.status.telemetry.fault {
+                        flow.sentence(ui, RichText::new(fault).color(RED).strong());
+                    }
+                    flow.hint(ui, &g.hint);
                 });
             });
         });

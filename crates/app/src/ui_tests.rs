@@ -54,12 +54,20 @@ pub fn three_cameras() -> (Project, Vec<Preset>) {
     (project, all)
 }
 
+/// The size the window opens at, and the smallest it can be made (main.rs).
+pub const DEFAULT_WINDOW: egui::Vec2 = vec2(1500.0, 920.0);
+pub const SMALLEST_WINDOW: egui::Vec2 = vec2(1100.0, 700.0);
+
 pub fn rig_with(project: Project, presets: Vec<Preset>, song: Song) -> Rig {
+    rig_sized(DEFAULT_WINDOW, project, presets, song)
+}
+
+pub fn rig_sized(window: egui::Vec2, project: Project, presets: Vec<Preset>, song: Song) -> Rig {
     let (link, cmds, events) = Link::detached();
     let session = Session::offline(link, project, presets, song);
     let shell = Shell::new(session, None);
     let mut themed = false;
-    let harness = Harness::builder().with_size(vec2(1500.0, 920.0)).build_ui_state(
+    let harness = Harness::builder().with_size(window).build_ui_state(
         move |ui, shell: &mut Shell| {
             if !themed {
                 // Fonts set on the context are bound from the next pass, so the first one draws nothing.
@@ -1778,3 +1786,6 @@ fn servers_this_station_reached_are_remembered_newest_first() {
     assert_eq!(recent.len(), 5);
     assert_eq!(recent[0], "http://host8:8787");
 }
+
+mod picture;
+mod safety;

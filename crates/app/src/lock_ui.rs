@@ -71,14 +71,18 @@ pub fn lock_menu(ui: &mut Ui, s: &mut Session) {
     }
 }
 
-/// The five transport fields, each as its own chip.
-pub fn state_chips(ui: &mut Ui, s: &Session) {
+/// The transport fields, each as its own chip. Together they are never wider than `row`:
+/// a source name too long for that is cut short, and is whole under the pointer.
+pub fn state_chips(ui: &mut Ui, s: &Session, row: f32) {
     let t = s.status.transport;
-    match t.output {
+    let output = match t.output {
         Output::Rehearse => chip(ui, "REHEARSE", MUTED, false).on_hover_text("Nothing is sent to the rig"),
         Output::Positioning => chip(ui, "ARMING", AMBER, true).on_hover_text("The rig is moving to the pose at the playhead"),
         Output::Armed => chip(ui, "ARMED", GREEN, true).on_hover_text("Play moves the rig"),
     };
+    let gap = ui.spacing().item_spacing.x;
+    let rec = if t.record { chip_width(ui, "REC") + gap } else { 0.0 };
+    let room = (row - output.rect.width() - gap - rec).max(0.0);
     match t.time {
         TimeMode::FreeRun => chip(ui, "FREE RUN", MUTED, false).on_hover_text("The server's own clock drives the playhead"),
         _ => {
@@ -90,7 +94,9 @@ pub fn state_chips(ui: &mut Ui, s: &Session) {
                 (ChaseState::Freewheel, _) => ("FREEWHEEL", AMBER, true),
                 _ => ("LOCK:", MUTED, false),
             };
-            let r = chip(ui, &format!("{word} {name}"), color, solid);
+            let text = format!("{word} {name}");
+            let cut = chip_width(ui, &text) > room;
+            let r = chip_within(ui, &text, color, solid, room);
             let mut tip = match &lock.last_code {
                 Some(code) => format!("Last code {code}"),
                 None => "No code has arrived yet".to_string(),
@@ -101,16 +107,13 @@ pub fn state_chips(ui: &mut Ui, s: &Session) {
             if let Some(p) = &lock.problem {
                 tip = p.clone();
             }
+            if cut {
+                tip = format!("{text}\n{tip}");
+            }
             r.on_hover_text(tip)
         }
     };
     if t.record {
         chip(ui, "REC", RED, true).on_hover_text("Play writes the rig's movement onto the record axes");
-    }
-    if let Some(p) = &s.status.lock.problem {
-        ui.label(RichText::new(p).color(AMBER));
-    }
-    if let Some(f) = &s.status.telemetry.fault {
-        ui.label(RichText::new(f).color(RED).strong());
     }
 }
