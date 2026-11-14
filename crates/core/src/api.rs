@@ -100,8 +100,11 @@ pub struct AdapterStatus {
     pub raw_position: Option<f64>,
 }
 
-#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub struct RecordStatus {
+    /// The camera Record writes for.
+    #[serde(default = "crate::camera::first_camera")]
+    pub camera: String,
     /// Axes that Record will write.
     pub axes: Vec<Axis>,
     /// A pass is being captured now.
@@ -109,18 +112,45 @@ pub struct RecordStatus {
     pub frames: i64,
 }
 
+impl Default for RecordStatus {
+    fn default() -> Self {
+        RecordStatus { camera: crate::camera::first_camera(), axes: Vec::new(), active: false, frames: 0 }
+    }
+}
+
+/// The show as a whole. Each camera's own state is in `Status::cameras`.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
 #[serde(default)]
 pub struct Telemetry {
+    /// The first camera fault, named by camera when the project has several.
+    pub fault: Option<String>,
+    /// E-Stop was pressed and some rig has not yet reported that it stands still.
+    pub halting: bool,
+    /// Progress of a preset sync that is moving a camera.
+    pub preset_sync: Option<String>,
+    /// At least one camera is real hardware, not the simulator.
+    pub hardware: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+#[serde(default)]
+pub struct CameraStatus {
+    pub id: String,
+    /// What the monitor shows for this camera.
+    pub pose: Pose,
+    pub pose_source: PoseSource,
+    pub rig_pose: Pose,
     /// Rig position minus target per axis while live.
     pub error: Pose,
     pub fault: Option<String>,
-    /// E-Stop was pressed and the rig has not yet reported that it stands still.
+    /// Faulted while live and left standing where it stopped; the others carry on.
+    pub held: bool,
+    /// E-Stop was pressed and this rig has not yet reported that it stands still.
     pub halting: bool,
-    /// Progress of a preset sync that is moving the camera.
     pub preset_sync: Option<String>,
-    /// The rig is real hardware, not the simulator.
+    /// Real hardware, not the simulator.
     pub hardware: bool,
+    pub adapters: Vec<AdapterStatus>,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
@@ -133,18 +163,33 @@ pub struct Status {
     pub frame_f: f64,
     pub timecode: String,
     pub rate: FrameRate,
-    pub pose: Pose,
-    pub pose_source: PoseSource,
-    pub rig_pose: Pose,
+    /// One per camera of the project, in the project's order. Never empty.
+    pub cameras: Vec<CameraStatus>,
     pub hardware_live: bool,
     pub lease: Option<LeaseStatus>,
     pub you_hold_lease: bool,
     pub guidance: Guidance,
     pub audio: AudioStatus,
     pub lock: LockStatus,
-    pub adapters: Vec<AdapterStatus>,
     pub record: RecordStatus,
     pub telemetry: Telemetry,
+}
+
+impl Status {
+    pub fn camera(&self, id: &str) -> Option<&CameraStatus> {
+        self.cameras.iter().find(|c| c.id == id)
+    }
+
+    /// The first camera: the whole rig of a one-camera project.
+    pub fn first(&self) -> &CameraStatus {
+        static NONE: std::sync::OnceLock<CameraStatus> = std::sync::OnceLock::new();
+        self.cameras.first().unwrap_or_else(|| NONE.get_or_init(CameraStatus::default))
+    }
+
+    /// Every adapter of every camera.
+    pub fn adapters(&self) -> impl Iterator<Item = &AdapterStatus> {
+        self.cameras.iter().flat_map(|c| c.adapters.iter())
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
@@ -207,6 +252,9 @@ pub struct TransportRequest {
     /// Axes for Record. Omitted keeps the current selection.
     #[serde(default)]
     pub axes: Option<Vec<Axis>>,
+    /// Camera for Record. Omitted keeps the current one.
+    #[serde(default)]
+    pub camera: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug, Default)]
@@ -233,6 +281,15 @@ impl Jog {
     pub fn is_zero(&self) -> bool {
         Axis::ALL.iter().all(|a| self.get(*a) == 0.0)
     }
+}
+
+/// A jog and the camera it is for. Without a camera it drives the first.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+pub struct JogRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera: Option<String>,
+    #[serde(flatten)]
+    pub jog: Jog,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -332,6 +389,9 @@ pub struct StorePreset {
     /// Omitted stores the rig's current pose.
     #[serde(default)]
     pub pose: Option<Pose>,
+    /// The camera the preset is for. Omitted is the first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]

@@ -8,7 +8,8 @@ use crate::hw::autopod;
 use crate::hw::fr7::{self, Fr7, Fr7Config};
 use crate::hw::visca::{self, Turn};
 use crate::rig::Drive;
-use ptz_core::pose::{AxisTable, CalPoint, Pose, Project};
+use ptz_core::camera::CameraConfig;
+use ptz_core::pose::{AxisTable, CalPoint, Pose};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -136,9 +137,9 @@ pub struct Settings {
 }
 
 impl Settings {
-    /// Write the findings into a project. Returns one line per value that changed.
-    /// A top speed is only ever lowered: the limits someone set by hand stay the ceiling.
-    pub fn apply(&self, project: &mut Project) -> Vec<String> {
+    /// Write the findings into the camera they were measured on. Returns one line per value
+    /// that changed. A top speed is only ever lowered: the limits someone set by hand stay the ceiling.
+    pub fn apply(&self, camera: &mut CameraConfig) -> Vec<String> {
         let mut changes = Vec::new();
         fn set<T: PartialEq + std::fmt::Debug>(changes: &mut Vec<String>, what: &str, slot: &mut T, value: Option<T>) {
             if let Some(v) = value {
@@ -148,7 +149,7 @@ impl Settings {
                 }
             }
         }
-        let rig = &mut project.rig;
+        let rig = &mut camera.rig;
         set(&mut changes, "FR7 address", &mut rig.fr7_host, self.fr7_host.clone());
         set(&mut changes, "FR7 web port", &mut rig.fr7_http_port, self.fr7_http_port);
         set(&mut changes, "FR7 user", &mut rig.fr7_user, self.fr7_user.clone());
@@ -176,7 +177,7 @@ impl Settings {
         }
         set(&mut changes, "Pan tolerance", &mut rig.tolerance.pan, self.tolerance_pan);
         set(&mut changes, "Tilt tolerance", &mut rig.tolerance.tilt, self.tolerance_tilt);
-        let axes = &mut project.axes;
+        let axes = &mut camera.axes;
         let lower = |changes: &mut Vec<String>, what: &str, slot: &mut f64, value: Option<f64>| {
             if let Some(v) = value.filter(|v| *v > 0.0 && *v < *slot) {
                 changes.push(format!("{what}: {} -> {}", slot, v));
@@ -265,9 +266,9 @@ impl Report {
         if let Some(d) = &self.decision {
             out.push_str(&format!("\nDecision: {d}\n"));
         }
-        let changes = self.settings.apply(&mut Project::default());
+        let changes = self.settings.apply(&mut CameraConfig::default());
         if !changes.is_empty() {
-            out.push_str("\nAgainst a new project, applying this report would set:\n");
+            out.push_str("\nAgainst a new camera, applying this report would set:\n");
             for c in changes {
                 out.push_str(&format!("  {c}\n"));
             }

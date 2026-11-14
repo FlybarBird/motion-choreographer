@@ -11,7 +11,7 @@ use crate::rig::{DevicePreset, Drive, PoseReading, RigAdapter, Simulator};
 use autopod::{AutoPod, PodConfig};
 use fr7::{Fr7, Fr7Config};
 use ptz_core::api::AdapterStatus;
-use ptz_core::pose::{Axis, AxisTable, Pose, Preset, Project, RigConfig, RigKind};
+use ptz_core::pose::{Axis, AxisTable, Pose, Preset, RigConfig, RigKind};
 use std::time::{Duration, Instant};
 
 /// Each device is read and commanded twenty times a second.
@@ -169,10 +169,10 @@ impl RigAdapter for HardwareRig {
     }
 }
 
-/// The rig the project asks for.
-pub fn build(project: &Project) -> Box<dyn RigAdapter> {
-    match project.rig.kind {
+/// The rig one camera's settings ask for.
+pub fn build(rig: &RigConfig, axes: &AxisTable) -> Box<dyn RigAdapter> {
+    match rig.kind {
         RigKind::Simulator => Box::new(Simulator::new()),
-        RigKind::Hardware => Box::new(HardwareRig::start(&project.rig, &project.axes)),
+        RigKind::Hardware => Box::new(HardwareRig::start(rig, axes)),
     }
 }

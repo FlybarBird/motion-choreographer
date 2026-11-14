@@ -234,12 +234,13 @@ impl Api {
         self.get("/presets")
     }
 
-    pub fn sync_presets(&self) -> ApiResult<Vec<Preset>> {
-        self.post_empty("/presets/sync")
+    /// Read one camera's stored presets into the preset list.
+    pub fn sync_presets(&self, camera: &str) -> ApiResult<Vec<Preset>> {
+        self.post_empty(&format!("/presets/sync?camera={}", encode_query(camera)))
     }
 
-    pub fn jog(&self, jog: &Jog) -> ApiResult<Status> {
-        self.post("/rig/jog", jog)
+    pub fn jog(&self, camera: &str, jog: &Jog) -> ApiResult<Status> {
+        self.post("/rig/jog", &JogRequest { camera: Some(camera.to_string()), jog: *jog })
     }
 
     pub fn media(&self) -> ApiResult<Vec<MediaInfo>> {

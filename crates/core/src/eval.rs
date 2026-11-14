@@ -149,8 +149,9 @@ pub struct Evaluator<'a> {
 }
 
 impl<'a> Evaluator<'a> {
-    pub fn new(song: &'a Song) -> Evaluator<'a> {
-        let mut order: Vec<usize> = (0..song.motion.len()).collect();
+    /// One camera's motion. Clip indices still index `song.motion`.
+    pub fn new(song: &'a Song, camera: &str) -> Evaluator<'a> {
+        let mut order: Vec<usize> = (0..song.motion.len()).filter(|i| song.motion[*i].camera == camera).collect();
         order.sort_by_key(|i| (song.motion[*i].start_frame, *i));
         let lanes = Axis::ALL.map(|axis| {
             let mut lane = Vec::new();
@@ -266,14 +267,14 @@ impl<'a> Evaluator<'a> {
     }
 }
 
-/// Where the rig should be on a whole frame.
-pub fn pose_at(song: &Song, frame: i64) -> Pose {
-    Evaluator::new(song).pose_at(frame as f64)
+/// Where a camera should be on a whole frame.
+pub fn pose_at(song: &Song, camera: &str, frame: i64) -> Pose {
+    Evaluator::new(song, camera).pose_at(frame as f64)
 }
 
-/// Where the rig should be between frames, for smooth output above the frame rate.
-pub fn pose_at_f(song: &Song, frame: f64) -> Pose {
-    Evaluator::new(song).pose_at(frame)
+/// Where a camera should be between frames, for smooth output above the frame rate.
+pub fn pose_at_f(song: &Song, camera: &str, frame: f64) -> Pose {
+    Evaluator::new(song, camera).pose_at(frame)
 }
 
 /// Split a key list at a clip-local frame so both halves reproduce the original
@@ -354,19 +355,16 @@ mod tests {
     use crate::pose::Preset;
     use crate::song::{LinkedTag, PresetRef};
 
+    const CAM: &str = crate::camera::FIRST_CAMERA;
+
     fn preset(name: &str, pan: f64) -> Preset {
-        Preset {
-            id: name.to_lowercase(),
-            name: name.into(),
-            pose: Pose { pan, tilt: 1.0, zoom: 0.2, focus: 0.5, elevation: 100.0 },
-            camera_number: None,
-            has_thumbnail: false,
-        }
+        Preset::new(&name.to_lowercase(), name, Pose { pan, tilt: 1.0, zoom: 0.2, focus: 0.5, elevation: 100.0 })
     }
 
     fn mv(id: &str, start: i64, dur: i64, to: &Preset) -> MotionClip {
         MotionClip {
             id: id.into(),
+            camera: CAM.into(),
             start_frame: start,
             duration_frames: dur,
             axes: Axis::ALL.to_vec(),
@@ -385,12 +383,12 @@ mod tests {
     fn gaps_hold_and_home_applies_before_the_first_clip() {
         let mut song = Song::new("s", "S", "01:00:00:00", 1000);
         song.motion.push(mv("a", 100, 50, &preset("A", 30.0)));
-        assert_eq!(pose_at(&song, 0).pan, 0.0);
-        assert_eq!(pose_at(&song, 100).pan, 0.0);
-        assert!((pose_at(&song, 125).pan - 15.0).abs() < 1e-9);
-        assert_eq!(pose_at(&song, 150).pan, 30.0);
-        assert_eq!(pose_at(&song, 900).pan, 30.0);
-        assert_eq!(pose_at(&song, 900).focus, 0.5);
+        assert_eq!(pose_at(&song, CAM, 0).pan, 0.0);
+        assert_eq!(pose_at(&song, CAM, 100).pan, 0.0);
+        assert!((pose_at(&song, CAM, 125).pan - 15.0).abs() < 1e-9);
+        assert_eq!(pose_at(&song, CAM, 150).pan, 30.0);
+        assert_eq!(pose_at(&song, CAM, 900).pan, 30.0);
+        assert_eq!(pose_at(&song, CAM, 900).focus, 0.5);
     }
 
     #[test]
@@ -398,17 +396,39 @@ mod tests {
         let mut song = Song::new("s", "S", "01:00:00:00", 1000);
         song.motion.push(mv("a", 100, 50, &preset("A", 30.0)));
         song.motion.push(mv("b", 300, 50, &preset("B", -10.0)));
-        assert_eq!(pose_at(&song, 300).pan, 30.0);
+        assert_eq!(pose_at(&song, CAM, 300).pan, 30.0);
         if let ClipBody::PresetMove { to, .. } = &mut song.motion[0].body {
             to.pose.pan = 50.0;
         }
-        assert_eq!(pose_at(&song, 300).pan, 50.0);
-        assert_eq!(pose_at(&song, 350).pan, -10.0);
+        assert_eq!(pose_at(&song, CAM, 300).pan, 50.0);
+        assert_eq!(pose_at(&song, CAM, 350).pan, -10.0);
         // Pinning From stops it following.
         if let ClipBody::PresetMove { from, .. } = &mut song.motion[1].body {
             *from = FromPose::Pinned(PresetRef::of(&preset("C", 5.0)));
         }
-        assert_eq!(pose_at(&song, 300).pan, 5.0);
+        assert_eq!(pose_at(&song, CAM, 300).pan, 5.0);
+    }
+
+    #[test]
+    fn each_camera_follows_only_its_own_clips() {
+        let mut song = Song::new("s", "S", "01:00:00:00", 1000);
+        song.motion.push(mv("a", 100, 50, &preset("A", 30.0)));
+        let mut other = mv("b", 120, 50, &preset("B", -40.0));
+        other.camera = "cam2".into();
+        song.motion.push(other);
+        song.motion.push(mv("c", 300, 50, &preset("C", 10.0)));
+        assert_eq!(pose_at(&song, CAM, 200).pan, 30.0);
+        assert_eq!(pose_at(&song, "cam2", 200).pan, -40.0);
+        assert_eq!(pose_at(&song, "cam2", 119).pan, 0.0, "the second camera starts from home, not from the first camera's move");
+        // The first camera's next move is linked to its own last pose.
+        assert_eq!(pose_at(&song, CAM, 300).pan, 30.0);
+        assert_eq!(pose_at(&song, "cam2", 900).pan, -40.0);
+        let ev = Evaluator::new(&song, "cam2");
+        assert_eq!(ev.clip_index_at(Axis::Pan, 130), Some(1));
+        assert_eq!(ev.clip_index_at(Axis::Pan, 110), None);
+        assert_eq!(ev.value_before(&song.motion[1], Axis::Pan), 0.0);
+        // A camera with no clips holds the song's home pose.
+        assert_eq!(pose_at(&song, "cam7", 500), song.home_pose);
     }
 
     #[test]

@@ -105,9 +105,9 @@ pub fn presets(ui: &mut Ui, s: &mut Session) {
     ui.add_space(6.0);
     ui.horizontal(|ui| {
         ui.add_space(6.0);
-        let hardware = s.status.telemetry.hardware;
+        let hardware = s.cam_status().hardware;
         let t = s.status.transport;
-        let why_not = if s.status.telemetry.preset_sync.is_some() {
+        let why_not = if s.cam_status().preset_sync.is_some() {
             Some("The camera is being read now")
         } else if !hardware {
             None
@@ -132,7 +132,7 @@ pub fn presets(ui: &mut Ui, s: &mut Session) {
             if hardware {
                 s.confirm_sync = true;
             } else {
-                s.link.send(Cmd::SyncPresets);
+                s.link.send(Cmd::SyncPresets(s.cam_id().to_string()));
             }
         }
         let can = s.can_edit();
@@ -143,11 +143,12 @@ pub fn presets(ui: &mut Ui, s: &mut Session) {
         };
         if store.clicked() {
             let (pose, _) = s.monitor_pose();
-            let name = format!("Preset {}", s.presets.len() + 1);
-            s.link.send(Cmd::StorePreset(ptz_core::api::StorePreset { name, pose: Some(pose) }));
+            let name = format!("Preset {}", s.camera_presets().len() + 1);
+            let camera = Some(s.cam_id().to_string());
+            s.link.send(Cmd::StorePreset(ptz_core::api::StorePreset { name, pose: Some(pose), camera }));
         }
     });
-    if let Some(progress) = s.status.telemetry.preset_sync.clone() {
+    if let Some(progress) = s.cam_status().preset_sync.clone() {
         ui.horizontal(|ui| {
             ui.add_space(8.0);
             ui.spinner();
@@ -155,17 +156,21 @@ pub fn presets(ui: &mut Ui, s: &mut Session) {
         });
     }
     ui.add_space(2.0);
-    if s.presets.is_empty() {
+    let presets = s.camera_presets();
+    if presets.is_empty() {
         ui.add_space(12.0);
         ui.vertical_centered(|ui| {
-            note(ui, "No presets yet.");
+            if s.project.cameras.len() > 1 {
+                note(ui, &format!("No presets yet for {}.", s.cam().name));
+            } else {
+                note(ui, "No presets yet.");
+            }
             note(ui, "Sync from rig reads them from the camera.");
         });
         return;
     }
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         ui.add_space(2.0);
-        let presets = s.presets.clone();
         s.probe_presets.clear();
         for preset in &presets {
             ui.horizontal(|ui| {

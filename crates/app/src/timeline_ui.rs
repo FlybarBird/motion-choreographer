@@ -624,7 +624,7 @@ fn paint_clip(painter: &Painter, l: &Layout, c: &ClipBox, song: &Song, s: &Sessi
         p.rect_filled(bar, 3.0, with_alpha(color, if selected { 70 } else { 38 }));
         let Some(clip) = song.motion_clip(&c.id) else { return };
         // The axis curve inside the clip, scaled to the lane.
-        let ev = ptz_core::eval::Evaluator::new(song);
+        let ev = ptz_core::eval::Evaluator::new(song, &clip.camera);
         let steps = (bar.width() / 3.0).clamp(2.0, 400.0) as usize;
         let values: Vec<f64> = (0..=steps)
             .map(|i| ev.axis_at(axis, clip.start_frame as f64 + clip.duration_frames as f64 * i as f64 / steps as f64))
@@ -694,14 +694,15 @@ fn paint_clip(painter: &Painter, l: &Layout, c: &ClipBox, song: &Song, s: &Sessi
             if let Some(clip) = song.motion_clip(&c.id) {
                 // The move's shape: its fastest axis, start to end.
                 if c.rect.width() > 24.0 {
-                    let ev = ptz_core::eval::Evaluator::new(song);
+                    let ev = ptz_core::eval::Evaluator::new(song, &clip.camera);
+                    let limits = s.project.axes_of(&clip.camera);
                     let axis = clip
                         .axes
                         .iter()
                         .copied()
                         .max_by(|a, b| {
                             let range = |ax: Axis| {
-                                let lim = s.project.axes.get(ax);
+                                let lim = limits.get(ax);
                                 let d = ev.axis_at(ax, clip.end_frame() as f64) - ev.axis_at(ax, clip.start_frame as f64);
                                 (d / (lim.max - lim.min)).abs()
                             };
@@ -776,7 +777,7 @@ fn issue_axis(issue: &ptz_core::compile::Issue) -> Option<Axis> {
     use ptz_core::compile::Issue::*;
     match issue {
         TooFast { axis, .. } | TooMuchAcceleration { axis, .. } | OutOfRange { axis, .. } | Jump { axis, .. } => Some(*axis),
-        KeepOut { .. } => None,
+        KeepOut { .. } | MissingCamera { .. } => None,
     }
 }
 
@@ -788,6 +789,7 @@ fn issue_short(issue: &ptz_core::compile::Issue) -> String {
         OutOfRange { axis, .. } => format!("{} out of range", axis.label()),
         Jump { axis, .. } => format!("{} jumps", axis.label()),
         KeepOut { .. } => "Keep-out".into(),
+        MissingCamera { .. } => "No camera".into(),
     }
 }
 

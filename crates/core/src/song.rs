@@ -1,6 +1,7 @@
 //! The song file: one frame timeline holding its SMPTE start, markers, media
 //! clips and motion clips. Clip-local key frames, so moving a clip moves its keys.
 
+use crate::camera::{first_camera, is_first_camera};
 use crate::pose::{Axis, Pose, Preset};
 use crate::time::{FrameRate, SongClock, Timecode};
 use serde::{Deserialize, Serialize};
@@ -209,6 +210,10 @@ pub enum ClipBody {
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub struct MotionClip {
     pub id: String,
+    /// The camera this clip moves. Left out of the file for the first camera, so a song
+    /// written before a project could hold several reads, and is written, as it always was.
+    #[serde(default = "first_camera", skip_serializing_if = "is_first_camera")]
+    pub camera: String,
     pub start_frame: i64,
     pub duration_frames: i64,
     pub axes: Vec<Axis>,
@@ -270,6 +275,7 @@ pub enum Invalid {
     OutsideSong(String),
     NoAxes(String),
     Overlap { a: String, b: String, axis: Axis },
+    BadCamera(String),
     BadKeys { clip: String, axis: Axis },
     BadStart(String),
     BadMedia(String),
@@ -286,6 +292,7 @@ impl fmt::Display for Invalid {
             Invalid::Overlap { axis, .. } => {
                 write!(f, "Overlaps another move on {}", axis.label().to_lowercase())
             }
+            Invalid::BadCamera(_) => write!(f, "A move names no camera"),
             Invalid::BadKeys { axis, .. } => {
                 write!(f, "Keys on {} are out of order or outside the clip", axis.label().to_lowercase())
             }
@@ -353,9 +360,20 @@ impl Song {
         }
     }
 
-    /// The motion clip on `axis` that covers `frame`, if any.
-    pub fn clip_on_axis_at(&self, axis: Axis, frame: i64) -> Option<&MotionClip> {
-        self.motion.iter().find(|c| c.has_axis(axis) && c.start_frame <= frame && frame < c.end_frame())
+    /// The motion clip on a camera's `axis` that covers `frame`, if any.
+    pub fn clip_on_axis_at(&self, camera: &str, axis: Axis, frame: i64) -> Option<&MotionClip> {
+        self.motion.iter().find(|c| c.camera == camera && c.has_axis(axis) && c.start_frame <= frame && frame < c.end_frame())
+    }
+
+    /// Every camera a clip of this song moves, in the order first met.
+    pub fn cameras(&self) -> Vec<&str> {
+        let mut out: Vec<&str> = Vec::new();
+        for c in &self.motion {
+            if !out.contains(&c.camera.as_str()) {
+                out.push(&c.camera);
+            }
+        }
+        out
     }
 
     /// End of the last clip or marker; the song can never be shorter than this.
@@ -411,6 +429,9 @@ impl Song {
             if c.axes.is_empty() {
                 return Err(Invalid::NoAxes(c.id.clone()));
             }
+            if c.camera.is_empty() {
+                return Err(Invalid::BadCamera(c.id.clone()));
+            }
             let mut seen = HashSet::new();
             if !c.axes.iter().all(|a| seen.insert(*a)) {
                 return Err(Invalid::NoAxes(c.id.clone()));
@@ -430,7 +451,7 @@ impl Song {
         }
         for (i, a) in self.motion.iter().enumerate() {
             for b in &self.motion[i + 1..] {
-                if a.start_frame < b.end_frame() && b.start_frame < a.end_frame() {
+                if a.camera == b.camera && a.start_frame < b.end_frame() && b.start_frame < a.end_frame() {
                     if let Some(axis) = a.axes.iter().find(|x| b.has_axis(**x)) {
                         return Err(Invalid::Overlap { a: a.id.clone(), b: b.id.clone(), axis: *axis });
                     }
@@ -490,6 +511,34 @@ mod tests {
         assert!(matches!(song.validate(FrameRate::F25), Err(Invalid::Overlap { axis: Axis::Pan, .. })));
         song.motion[0].axes = vec![Axis::Zoom];
         assert!(song.validate(FrameRate::F25).is_ok());
+    }
+
+    #[test]
+    fn a_clip_without_a_camera_is_the_first_cameras_and_is_written_as_it_was_read() {
+        let song: Song = serde_json::from_str(SAMPLE).unwrap();
+        assert!(song.motion.iter().all(|c| c.camera == "cam1"));
+        let v = serde_json::to_value(&song).unwrap();
+        assert!(v["motion"][0].get("camera").is_none(), "an old song's bytes do not change, so neither does its hash");
+        let mut two = song.clone();
+        two.motion[1].camera = "cam2".into();
+        let v = serde_json::to_value(&two).unwrap();
+        assert_eq!(v["motion"][1]["camera"], "cam2");
+        assert_eq!(serde_json::from_value::<Song>(v).unwrap(), two);
+        assert_eq!(two.cameras(), ["cam1", "cam2"]);
+    }
+
+    #[test]
+    fn two_cameras_may_move_at_once_but_one_camera_cannot_be_in_two_places() {
+        let mut song: Song = serde_json::from_str(SAMPLE).unwrap();
+        song.motion[1].start_frame = 150;
+        assert!(matches!(song.validate(FrameRate::F25), Err(Invalid::Overlap { axis: Axis::Pan, .. })));
+        song.motion[1].camera = "cam2".into();
+        assert!(song.validate(FrameRate::F25).is_ok());
+        assert_eq!(song.clip_on_axis_at("cam1", Axis::Pan, 160).map(|c| c.id.as_str()), Some("c2"));
+        assert_eq!(song.clip_on_axis_at("cam2", Axis::Pan, 160).map(|c| c.id.as_str()), Some("c3"));
+        assert!(song.clip_on_axis_at("cam2", Axis::Tilt, 160).is_none());
+        song.motion[1].camera.clear();
+        assert!(matches!(song.validate(FrameRate::F25), Err(Invalid::BadCamera(_))));
     }
 
     #[test]

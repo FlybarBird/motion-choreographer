@@ -314,7 +314,7 @@ pub fn show(ui: &mut Ui, s: &Session) {
     };
     painter.rect_stroke(pic, 0.0, Stroke::new(if live || t.estop { 2.0 } else { 1.0 }, border), StrokeKind::Outside);
 
-    let simulated = s.status.adapters.iter().any(|a| a.name == "Simulator") || s.status.adapters.is_empty();
+    let simulated = !s.cam_status().hardware;
     let (text, fill_c, ink) = if t.estop {
         ("E-STOP".to_string(), RED, OFF_WHITE)
     } else if live {

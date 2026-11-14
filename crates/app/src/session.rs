@@ -4,6 +4,7 @@
 use crate::link::{Cmd, Event, Link, Why};
 use crate::timeline::Timeline;
 use ptz_core::api::*;
+use ptz_core::camera::CameraConfig;
 use ptz_core::compile::{compile, Compiled, Issue};
 use ptz_core::edit::Refusal;
 use ptz_core::eval;
@@ -41,6 +42,8 @@ pub struct Session {
     pub status: Status,
     status_at: Instant,
     pub project: Project,
+    /// The camera the monitor, presets, rig controller and Record are showing.
+    pub active_camera: String,
     pub presets: Vec<Preset>,
     pub songs: Vec<SongSummary>,
     pub media: Vec<MediaInfo>,
@@ -99,16 +102,13 @@ fn idle_status() -> Status {
         frame_f: 0.0,
         timecode: "00:00:00:00".into(),
         rate: ptz_core::FrameRate::F25,
-        pose: Pose::home(),
-        pose_source: PoseSource::Timeline,
-        rig_pose: Pose::home(),
+        cameras: Vec::new(),
         hardware_live: false,
         lease: None,
         you_hold_lease: false,
         guidance: Default::default(),
         audio: Default::default(),
         lock: Default::default(),
-        adapters: Vec::new(),
         record: Default::default(),
         telemetry: Default::default(),
     }
@@ -122,6 +122,7 @@ impl Session {
             lost: None,
             status: hello.status,
             status_at: Instant::now(),
+            active_camera: hello.project.first().id.clone(),
             project: hello.project,
             presets: hello.presets,
             songs: hello.songs,
@@ -169,6 +170,7 @@ impl Session {
         let mut status = idle_status();
         status.you_hold_lease = true;
         status.rate = project.rate;
+        status.cameras = project.cameras.iter().map(|c| CameraStatus { id: c.id.clone(), ..Default::default() }).collect();
         status.guidance = ptz_core::transport::guidance(&status.transport, &ptz_core::transport::Context::ready());
         let hello = crate::link::Hello {
             status,
@@ -192,6 +194,58 @@ impl Session {
         self.timeline = Timeline::default();
         self.timeline.view = view;
         self.fit_requested = true;
+    }
+
+    // ---- cameras ----
+
+    /// The selected camera's id. Falls back to the first when the selected one has left the project.
+    pub fn cam_id(&self) -> &str {
+        match self.project.camera(&self.active_camera) {
+            Some(camera) => &camera.id,
+            None => &self.project.first().id,
+        }
+    }
+
+    pub fn cam_index(&self) -> usize {
+        self.project.camera_index(&self.active_camera).unwrap_or(0)
+    }
+
+    pub fn cam(&self) -> &CameraConfig {
+        &self.project.cameras[self.cam_index()]
+    }
+
+    /// What the server last said about the selected camera.
+    pub fn cam_status(&self) -> &CameraStatus {
+        self.status.camera(self.cam_id()).unwrap_or_else(|| self.status.first())
+    }
+
+    pub fn select_camera(&mut self, id: &str) {
+        if self.project.camera(id).is_some() && self.active_camera != id {
+            self.active_camera = id.to_string();
+            // Record follows the selection until a pass is running.
+            self.timeline.key_selection.clear();
+        }
+    }
+
+    /// Presets of the selected camera, in the order they were stored.
+    pub fn camera_presets(&self) -> Vec<Preset> {
+        let id = self.cam_id();
+        self.presets.iter().filter(|p| p.camera == id).cloned().collect()
+    }
+
+    /// Change project settings: shown at once, and sent. The server's answer replaces it.
+    pub fn put_project(&mut self, project: Project) {
+        if project == self.project {
+            return;
+        }
+        self.project = project.clone();
+        if self.project.camera(&self.active_camera).is_none() {
+            self.active_camera = self.project.first().id.clone();
+        }
+        if let Some(song) = &self.song {
+            self.compiled = compile(song, &self.project);
+        }
+        self.link.send(Cmd::PutProject(Box::new(project)));
     }
 
     pub fn toast(&mut self, text: impl Into<String>, warn: bool) {
@@ -279,16 +333,20 @@ impl Session {
                 self.presets = presets;
             }
             Event::SyncAccepted(presets) => {
-                if self.status.telemetry.hardware {
+                if self.cam_status().hardware {
                     self.toast("Reading presets from the camera. It moves to each one in turn".to_string(), false);
                 } else {
-                    self.toast(format!("Synced {} presets from the rig", presets.len()), false);
+                    let count = presets.iter().filter(|p| p.camera == self.cam_id()).count();
+                    self.toast(format!("Synced {count} presets from the rig"), false);
                     self.preset_pictures.clear();
                     self.presets = presets;
                 }
             }
             Event::Project(project) => {
                 self.project = *project;
+                if self.project.camera(&self.active_camera).is_none() {
+                    self.active_camera = self.project.first().id.clone();
+                }
                 if let Some(song) = &self.song {
                     self.compiled = compile(song, &self.project);
                 }
@@ -492,7 +550,11 @@ impl Session {
             return;
         }
         let req = match action {
-            Action::RecordOn => TransportRequest { axes: Some(self.record_axes.clone()), ..Default::default() },
+            Action::RecordOn => TransportRequest {
+                axes: Some(self.record_axes.clone()),
+                camera: Some(self.cam_id().to_string()),
+                ..Default::default()
+            },
             _ => TransportRequest::default(),
         };
         self.link.send(Cmd::Act(action, req));
@@ -526,16 +588,23 @@ impl Session {
         self.status.transport.run != Run::Stopped
     }
 
-    /// The pose the program monitor draws. While stopped it is evaluated here,
-    /// so scrubbing and edits show without a round trip.
-    pub fn monitor_pose(&self) -> (Pose, PoseSource) {
-        match (&self.song, self.status.pose_source) {
+    /// The pose a camera is drawn at. While it follows the timeline it is evaluated
+    /// here, so scrubbing and edits show without a round trip.
+    pub fn camera_pose(&self, camera: &str) -> (Pose, PoseSource) {
+        let status = self.status.camera(camera);
+        let source = status.map(|c| c.pose_source).unwrap_or_default();
+        match (&self.song, source) {
             (Some(song), PoseSource::Timeline) => {
                 let shown = self.timeline.preview.as_ref().unwrap_or(song);
-                (eval::pose_at_f(shown, self.playhead()), PoseSource::Timeline)
+                (eval::pose_at_f(shown, camera, self.playhead()), PoseSource::Timeline)
             }
-            _ => (self.status.pose, self.status.pose_source),
+            _ => (status.map(|c| c.pose).unwrap_or_else(Pose::home), source),
         }
+    }
+
+    /// The pose the program monitor draws: the selected camera's.
+    pub fn monitor_pose(&self) -> (Pose, PoseSource) {
+        self.camera_pose(self.cam_id())
     }
 
     pub fn timecode_at(&self, frame: i64) -> String {

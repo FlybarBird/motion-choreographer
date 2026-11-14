@@ -5,7 +5,9 @@ use crate::panels::section;
 use crate::session::Session;
 use crate::theme::*;
 use egui::{RichText, Ui};
-use ptz_core::pose::{Axis, CalPoint, ChannelRoute, Cmp, KeepOutRule, Project, RigKind};
+use ptz_core::camera::{CameraConfig, OnFault, MAX_CAMERAS};
+use ptz_core::lens::{self, Lens};
+use ptz_core::pose::{Axis, CalPoint, ChannelRoute, Cmp, KeepOutRule, RigKind};
 use ptz_core::transport::{Output, Run};
 
 fn route_label(route: ChannelRoute) -> &'static str {
@@ -90,8 +92,8 @@ fn unit_suffix(axis: Axis) -> String {
     }
 }
 
-/// Keep-out rules: poses the rig must never take, whatever the timeline says.
-fn keep_out(ui: &mut Ui, project: &mut Project, editable: bool) {
+/// Keep-out rules: poses this camera's rig must never take, whatever the timeline says.
+fn keep_out(ui: &mut Ui, camera: &mut CameraConfig, editable: bool) {
     section(ui, "Keep-out rules");
     ui.label(
         RichText::new(
@@ -102,7 +104,7 @@ fn keep_out(ui: &mut Ui, project: &mut Project, editable: bool) {
     );
     let mut remove = None;
     ui.add_enabled_ui(editable, |ui| {
-        for (i, rule) in project.keep_out.iter_mut().enumerate() {
+        for (i, rule) in camera.keep_out.iter_mut().enumerate() {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 if let Some(name) = crate::panels::text_field(ui, &format!("rule_name_{i}"), &rule.name, 150.0) {
@@ -138,24 +140,25 @@ fn keep_out(ui: &mut Ui, project: &mut Project, editable: bool) {
             .clicked()
         {
             let mut rule = KeepOutRule::example();
-            rule.name = format!("Rule {}", project.keep_out.len() + 1);
-            project.keep_out.push(rule);
+            rule.name = format!("Rule {}", camera.keep_out.len() + 1);
+            camera.keep_out.push(rule);
         }
     });
     if let Some(i) = remove {
-        project.keep_out.remove(i);
+        camera.keep_out.remove(i);
     }
 }
 
-/// Which rig the server drives, how to reach it, and how closely it must follow.
-fn rig(ui: &mut Ui, s: &mut Session, project: &mut Project, editable: bool) {
+/// Which rig the server drives for this camera, how to reach it, and how closely it must follow.
+fn rig(ui: &mut Ui, s: &mut Session, camera: &mut CameraConfig, editable: bool) {
     section(ui, "Rig");
     let t = s.status.transport;
     let parked = t.run == Run::Stopped && t.output == Output::Rehearse && !t.estop;
     if !parked {
         ui.label(RichText::new("Stop and disarm to change which rig the server drives.").color(AMBER).small());
     }
-    let rig = &mut project.rig;
+    let raw = s.cam_status().adapters.iter().find(|a| a.name == "AutoPod+").and_then(|a| a.raw_position);
+    let rig = &mut camera.rig;
     ui.add_enabled_ui(editable && parked, |ui| {
         egui::Grid::new("rig_grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
             ui.label("Drives");
@@ -265,7 +268,6 @@ fn rig(ui: &mut Ui, s: &mut Session, project: &mut Project, editable: bool) {
             if let Some(i) = remove {
                 rig.autopod_calibration.remove(i);
             }
-            let raw = s.status.adapters.iter().find(|a| a.name == "AutoPod+").and_then(|a| a.raw_position);
             let id = ui.make_persistent_id("height_now");
             let mut mm = ui.data_mut(|d| d.get_temp::<f64>(id)).unwrap_or(0.0);
             ui.horizontal(|ui| {
@@ -371,9 +373,15 @@ pub fn project(ui: &mut Ui, s: &mut Session) {
         s.link.send(Cmd::RefreshInputs);
     }
 
+    cameras(ui, s, &mut project, editable);
+    let at = project.camera_index(&s.active_camera).unwrap_or(0);
+    let camera = &mut project.cameras[at];
+    lens(ui, s, camera, editable);
+    position(ui, camera, editable);
+
     section(ui, "Rig limits");
     ui.label(
-        RichText::new("Auto time and the too-fast warning come from these. Set them to what the rig does safely.")
+        RichText::new("Auto time and the too-fast warning come from these. Set them to what this camera's rig does safely.")
             .color(MUTED)
             .small(),
     );
@@ -384,7 +392,7 @@ pub fn project(ui: &mut Ui, s: &mut Session) {
             }
             ui.end_row();
             for axis in Axis::ALL {
-                let lim = project.axes.get_mut(axis);
+                let lim = camera.axes.get_mut(axis);
                 let step = step_for(axis);
                 ui.label(RichText::new(axis.label()).color(axis_color(axis)));
                 ui.add(egui::DragValue::new(&mut lim.min).speed(step).range(-100000.0..=lim.max - step));
@@ -396,15 +404,276 @@ pub fn project(ui: &mut Ui, s: &mut Session) {
         });
     });
 
-    keep_out(ui, &mut project, editable);
-    rig(ui, s, &mut project, editable);
+    keep_out(ui, camera, editable);
+    rig(ui, s, camera, editable);
 
     if project != s.project {
-        // Shown at once; the server's answer replaces it.
-        s.project = project.clone();
-        if let Some(song) = &s.song {
-            s.compiled = ptz_core::compile::compile(song, &s.project);
-        }
-        s.link.send(Cmd::PutProject(Box::new(project)));
+        s.put_project(project);
     }
+}
+
+/// The camera list: which cameras the show has, their order and names, and which one is selected.
+fn cameras(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::Project, editable: bool) {
+    section(ui, "Cameras");
+    let t = s.status.transport;
+    let parked = t.run == Run::Stopped && t.output == Output::Rehearse && !t.estop;
+    let selected = s.cam_id().to_string();
+    let mut select = None;
+    for (i, camera) in project.cameras.iter_mut().enumerate() {
+        let status = s.status.camera(&camera.id);
+        ui.horizontal(|ui| {
+            let on = camera.id == selected;
+            let chip = egui::Button::new(RichText::new(format!("{}", i + 1)).strong().color(NAVY))
+                .fill(camera_color(i))
+                .stroke(egui::Stroke::new(if on { 2.0 } else { 0.0 }, OFF_WHITE))
+                .min_size(egui::vec2(26.0, 20.0));
+            if ui.add(chip).on_hover_text("Select this camera").clicked() {
+                select = Some(camera.id.clone());
+            }
+            ui.add_enabled_ui(editable, |ui| {
+                if let Some(name) = crate::panels::text_field(ui, &format!("camera_name_{}", camera.id), &camera.name, 130.0) {
+                    if !name.trim().is_empty() {
+                        camera.name = name.trim().to_string();
+                    }
+                }
+            });
+            let (text, ink) = match status {
+                Some(c) if c.fault.is_some() => ("fault", RED),
+                Some(c) if c.hardware && c.adapters.iter().all(|a| a.connected) => ("rig connected", GREEN),
+                Some(c) if c.hardware => ("rig not answering", AMBER),
+                _ => ("simulator", MUTED),
+            };
+            ui.label(RichText::new(text).color(ink).small());
+        });
+    }
+    if let Some(id) = select {
+        s.select_camera(&id);
+    }
+    let at = project.camera_index(s.cam_id()).unwrap_or(0);
+    let mine = s.presets.iter().filter(|p| p.camera == project.cameras[at].id).count();
+    let why = if !editable {
+        Some("Take the edit lease to change the cameras")
+    } else if !parked {
+        Some("Stop and disarm to add or remove a camera")
+    } else {
+        None
+    };
+    ui.horizontal_wrapped(|ui| {
+        let full = project.cameras.len() >= MAX_CAMERAS;
+        let add = ui
+            .add_enabled(why.is_none() && !full, egui::Button::new("Add a camera"))
+            .on_hover_text(
+                "A new camera with the selected one's lens, limits and rules, on the simulator, two metres to its right",
+            )
+            .on_disabled_hover_text(why.unwrap_or("A show holds twelve cameras"));
+        if add.clicked() {
+            let from = project.cameras[at].clone();
+            let id = project.free_camera_id();
+            let name = format!("Camera {}", project.cameras.len() + 1);
+            let mut camera = CameraConfig { id: id.clone(), name, ..from };
+            camera.rig = ptz_core::pose::RigConfig {
+                tolerance: camera.rig.tolerance,
+                tracking_window_ms: camera.rig.tracking_window_ms,
+                positioning_speed: camera.rig.positioning_speed,
+                ..Default::default()
+            };
+            // To the right of the camera it was copied from, as that camera looks at the stage.
+            let heading = camera.mount.heading_deg.to_radians();
+            camera.mount.x += 2.0 * heading.cos();
+            camera.mount.y += 2.0 * heading.sin();
+            project.cameras.push(camera);
+            s.active_camera = id;
+        }
+        let only = project.cameras.len() == 1;
+        let confirm_id = ui.make_persistent_id("remove_camera");
+        let asked = ui.data(|d| d.get_temp::<String>(confirm_id));
+        let label = match &asked {
+            Some(id) if *id == project.cameras[at].id => {
+                format!("Remove it and its {mine} preset{}", if mine == 1 { "" } else { "s" })
+            }
+            _ => "Remove camera".to_string(),
+        };
+        let remove = ui
+            .add_enabled(why.is_none() && !only, egui::Button::new(label))
+            .on_hover_text(
+                "Take the selected camera out of the show. Its presets go with it; its moves stay on the timeline as issues",
+            )
+            .on_disabled_hover_text(why.unwrap_or("A show needs one camera"));
+        if remove.clicked() {
+            let id = project.cameras[at].id.clone();
+            if mine > 0 && asked.as_deref() != Some(id.as_str()) {
+                ui.data_mut(|d| d.insert_temp(confirm_id, id));
+            } else {
+                ui.data_mut(|d| d.remove::<String>(confirm_id));
+                project.cameras.remove(at);
+                s.active_camera = project.cameras[at.min(project.cameras.len() - 1)].id.clone();
+            }
+        } else if asked.is_some() && asked.as_deref() != Some(project.cameras[at.min(project.cameras.len() - 1)].id.as_str()) {
+            ui.data_mut(|d| d.remove::<String>(confirm_id));
+        }
+        let up = ui.add_enabled(why.is_none() && at > 0, egui::Button::new("Move up")).on_hover_text("Earlier in the numbering");
+        if up.clicked() {
+            project.cameras.swap(at, at - 1);
+        }
+        let down = ui
+            .add_enabled(why.is_none() && at + 1 < project.cameras.len(), egui::Button::new("Move down"))
+            .on_hover_text("Later in the numbering");
+        if down.clicked() {
+            project.cameras.swap(at, at + 1);
+        }
+    });
+    ui.label(
+        RichText::new(format!("{} of {MAX_CAMERAS} cameras. Keys 1 to 9, 0, - and = select them.", project.cameras.len()))
+            .color(MUTED)
+            .small(),
+    );
+    ui.add_enabled_ui(editable, |ui| {
+        ui.horizontal(|ui| {
+            ui.label("When a camera faults");
+            egui::ComboBox::from_id_salt("on_fault").selected_text(project.on_fault.label()).width(200.0).show_ui(ui, |ui| {
+                for choice in OnFault::ALL {
+                    ui.selectable_value(&mut project.on_fault, choice, choice.label());
+                }
+            });
+        });
+    });
+}
+
+/// The lens on the selected camera, and what it sees now.
+fn lens(ui: &mut Ui, s: &Session, camera: &mut CameraConfig, editable: bool) {
+    section(ui, &format!("Lens: {}", camera.name));
+    let (pose, _) = s.camera_pose(&camera.id);
+    ui.add_enabled_ui(editable, |ui| {
+        egui::Grid::new("lens_grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+            ui.label("Lens");
+            let presets = Lens::presets();
+            let known = presets.iter().any(|p| p.name == camera.lens.name);
+            let shown = if known { camera.lens.name.clone() } else { lens::CUSTOM.to_string() };
+            egui::ComboBox::from_id_salt("lens_preset").selected_text(shown).width(210.0).show_ui(ui, |ui| {
+                for preset in &presets {
+                    if ui.selectable_label(camera.lens.name == preset.name, &preset.name).clicked() {
+                        // The sensor is the camera's, not the lens's: it stays as set.
+                        camera.lens = Lens { sensor_width_mm: camera.lens.sensor_width_mm, ..preset.clone() };
+                    }
+                }
+                if ui.selectable_label(!known, lens::CUSTOM).clicked() && known {
+                    camera.lens.name = lens::CUSTOM.to_string();
+                }
+            });
+            ui.end_row();
+            ui.label("Focal length");
+            ui.horizontal(|ui| {
+                let (mut wide, mut tele) = (camera.lens.wide_mm, camera.lens.tele_mm);
+                let a = ui.add(egui::DragValue::new(&mut wide).speed(0.5).range(4.0..=tele).suffix(" mm"));
+                ui.label("to");
+                let b = ui.add(egui::DragValue::new(&mut tele).speed(0.5).range(wide..=2000.0).suffix(" mm"));
+                if a.changed() || b.changed() {
+                    camera.lens = Lens { name: lens::CUSTOM.to_string(), wide_mm: wide, tele_mm: tele, ..camera.lens.clone() };
+                }
+            })
+            .response
+            .on_hover_text("The widest and the longest end. A prime has the same number twice");
+            ui.end_row();
+            ui.label("Aperture");
+            let mut f = camera.lens.f_number;
+            if ui.add(egui::DragValue::new(&mut f).speed(0.1).range(0.7..=64.0).prefix("f/")).changed() {
+                camera.lens.f_number = f;
+            }
+            ui.end_row();
+            ui.label("Sensor");
+            let sensor = |w: f64| {
+                if (w - lens::FULL_FRAME_WIDTH_MM).abs() < 0.05 {
+                    "Full frame".to_string()
+                } else if (w - lens::SUPER_35_WIDTH_MM).abs() < 0.05 {
+                    "Super 35".to_string()
+                } else {
+                    format!("{w:.1} mm wide")
+                }
+            };
+            ui.horizontal(|ui| {
+                egui::ComboBox::from_id_salt("lens_sensor")
+                    .selected_text(sensor(camera.lens.sensor_width_mm))
+                    .width(110.0)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut camera.lens.sensor_width_mm, lens::FULL_FRAME_WIDTH_MM, "Full frame");
+                        ui.selectable_value(&mut camera.lens.sensor_width_mm, lens::SUPER_35_WIDTH_MM, "Super 35");
+                    });
+                ui.add(egui::DragValue::new(&mut camera.lens.sensor_width_mm).speed(0.1).range(4.0..=70.0).suffix(" mm"))
+                    .on_hover_text("Width of the part of the sensor that is recorded, 16:9");
+            });
+            ui.end_row();
+        });
+    });
+    if let Err(why) = camera.lens.validate() {
+        ui.label(RichText::new(why).color(AMBER).small());
+        return;
+    }
+    let l = &camera.lens;
+    let line = |ui: &mut Ui, what: &str, value: String| {
+        ui.label(RichText::new(what).color(MUTED).small());
+        ui.label(RichText::new(value).monospace().small());
+        ui.end_row();
+    };
+    egui::Grid::new("lens_now").num_columns(2).spacing([12.0, 3.0]).show(ui, |ui| {
+        line(ui, "Now", format!("{:.0} mm at zoom {:.0}%", l.focal_mm(pose.zoom), pose.zoom * 100.0));
+        line(
+            ui,
+            "Angle of view",
+            format!(
+                "{:.1}° wide, {:.1}° high, {:.1}° diagonal",
+                l.hfov_deg(pose.zoom),
+                l.vfov_deg(pose.zoom),
+                l.dfov_deg(pose.zoom)
+            ),
+        );
+        line(
+            ui,
+            "Range",
+            format!("{:.1}° at {:.0} mm to {:.1}° at {:.0} mm", l.hfov_deg(0.0), l.wide_mm, l.hfov_deg(1.0), l.tele_mm),
+        );
+        let id = ui.make_persistent_id("lens_distance");
+        let mut distance = ui.data_mut(|d| d.get_temp::<f64>(id)).unwrap_or(10.0);
+        ui.label(RichText::new("At a distance of").color(MUTED).small());
+        ui.add(egui::DragValue::new(&mut distance).speed(0.1).range(0.3..=500.0).suffix(" m"));
+        ui.end_row();
+        ui.data_mut(|d| d.insert_temp(id, distance));
+        let (w, h) = l.frame_at(pose.zoom, distance);
+        line(ui, "The frame is", format!("{w:.2} m wide, {h:.2} m high"));
+        let (near, far) = l.sharp_range_m(pose.zoom, distance);
+        let far = far.map(|f| format!("{f:.1} m")).unwrap_or_else(|| "infinity".into());
+        line(ui, "Sharp from", format!("{near:.1} m to {far} at f/{:.1}", l.f_number));
+        line(ui, "Hyperfocal", format!("{:.1} m", l.hyperfocal_m(pose.zoom)));
+    });
+    ui.label(
+        RichText::new("Zoom is taken to run evenly in stops from the wide end to the long end. Bring-up can check it against the real lens.")
+            .color(MUTED)
+            .small(),
+    );
+}
+
+/// Where the selected camera stands on the stage.
+fn position(ui: &mut Ui, camera: &mut CameraConfig, editable: bool) {
+    section(ui, "Position on the stage");
+    ui.add_enabled_ui(editable, |ui| {
+        let m = &mut camera.mount;
+        egui::Grid::new("mount_grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+            ui.label("Floor position");
+            ui.horizontal(|ui| {
+                ui.add(egui::DragValue::new(&mut m.x).speed(0.05).range(-1000.0..=1000.0).prefix("x ").suffix(" m"));
+                ui.add(egui::DragValue::new(&mut m.y).speed(0.05).range(-1000.0..=1000.0).prefix("y ").suffix(" m"));
+                ui.add(egui::DragValue::new(&mut m.z).speed(0.05).range(-100.0..=100.0).prefix("z ").suffix(" m"))
+                    .on_hover_text("Height of the floor or platform the pedestal stands on");
+            });
+            ui.end_row();
+            ui.label("Heading");
+            ui.add(egui::DragValue::new(&mut m.heading_deg).speed(0.5).range(-360.0..=360.0).suffix("°"))
+                .on_hover_text("Where pan 0 points, counter-clockwise seen from above. 0 looks along +Y, towards the stage");
+            ui.end_row();
+            ui.label("Lens height");
+            ui.add(egui::DragValue::new(&mut m.base_height_mm).speed(5.0).range(0.0..=5000.0).suffix(" mm"))
+                .on_hover_text("Height of the lens above the floor with the column fully down");
+            ui.end_row();
+        });
+    });
+    ui.label(RichText::new("The Stage view places cameras by dragging.").color(MUTED).small());
 }

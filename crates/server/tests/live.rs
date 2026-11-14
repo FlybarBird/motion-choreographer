@@ -14,6 +14,8 @@ use ptz_server::hw::visca;
 use ptz_server::runlog;
 use std::time::{Duration, Instant};
 
+const CAM: &str = ptz_core::FIRST_CAMERA;
+
 struct Rig {
     fr7: FakeFr7,
     pod: FakeAutoPod,
@@ -27,16 +29,18 @@ impl Rig {
     /// Point the project at the fakes and wait until both answer.
     fn connect(&self, api: &Api) -> Project {
         let mut project = api.project().unwrap();
-        project.rig.kind = RigKind::Hardware;
-        project.rig.fr7_host = self.fr7.visca.to_string();
-        project.rig.fr7_http_port = self.fr7.http.port();
-        project.rig.fr7_user = self.fr7.user.clone();
-        project.rig.fr7_password = self.fr7.password.clone();
-        project.rig.autopod_host = self.pod.addr.to_string();
-        project.rig.autopod_calibration = FakeAutoPod::height_map();
+        project.cameras[0].rig.kind = RigKind::Hardware;
+        project.cameras[0].rig.fr7_host = self.fr7.visca.to_string();
+        project.cameras[0].rig.fr7_http_port = self.fr7.http.port();
+        project.cameras[0].rig.fr7_user = self.fr7.user.clone();
+        project.cameras[0].rig.fr7_password = self.fr7.password.clone();
+        project.cameras[0].rig.autopod_host = self.pod.addr.to_string();
+        project.cameras[0].rig.autopod_calibration = FakeAutoPod::height_map();
         let project = api.put_project(&project).unwrap();
         let st = wait_for(api, |s| {
-            s.adapters.len() == 2 && s.adapters.iter().all(|a| a.connected) && s.adapters[1].calibrated == Some(true)
+            s.first().adapters.len() == 2
+                && s.first().adapters.iter().all(|a| a.connected)
+                && s.first().adapters[1].calibrated == Some(true)
         });
         assert!(st.telemetry.hardware);
         project
@@ -58,7 +62,7 @@ impl Rig {
 }
 
 fn store(api: &Api, name: &str, pose: Pose) -> Preset {
-    api.post("/presets", &StorePreset { name: name.into(), pose: Some(pose) }).unwrap()
+    api.post("/presets", &StorePreset { name: name.into(), pose: Some(pose), camera: None }).unwrap()
 }
 
 /// A saved, committed song with one move to `preset` starting at frame 25.
@@ -94,7 +98,7 @@ fn a_committed_song_arms_positions_plays_live_within_tolerance_and_estop_halts_i
     rig.fr7.place(8.0, -3.0, 0.1, 0.5);
     rig.pod.place(30.0);
     let project = rig.connect(&api);
-    let tol = project.rig.tolerance;
+    let tol = project.cameras[0].rig.tolerance;
 
     let mark = store(&api, "Downstage", Pose { pan: 45.0, tilt: 10.0, zoom: 0.4, focus: 0.4, elevation: 60.0 });
     let (song_id, clip) = song_with_move(&api, &project, "Live Test", &mark);
@@ -109,7 +113,7 @@ fn a_committed_song_arms_positions_plays_live_within_tolerance_and_estop_halts_i
     assert!(rig.fr7.commands().is_empty());
     let st = api.status().unwrap();
     assert!(!st.hardware_live);
-    assert!(close(&st.rig_pose, &rig.pose(), &tol, 0.1), "the server reads where the rig is: {:?}", st.rig_pose);
+    assert!(close(&st.first().rig_pose, &rig.pose(), &tol, 0.1), "the server reads where the rig is: {:?}", st.first().rig_pose);
 
     // Arm moves the rig to the pose at the playhead, slowly, and only then is it armed.
     let st = do_act(&api, Action::Arm);
@@ -125,7 +129,7 @@ fn a_committed_song_arms_positions_plays_live_within_tolerance_and_estop_halts_i
     assert!(began.elapsed() > Duration::from_millis(600), "30 mm at half of 43 mm/s takes over a second");
     assert!(close(&rig.pose(), &Pose::home(), &tol, 0.3), "positioned to the first frame: {:?}", rig.pose());
     assert_eq!(st.guidance.primary_label, "Play Live");
-    assert_eq!(st.pose_source, PoseSource::Rig);
+    assert_eq!(st.first().pose_source, PoseSource::Rig);
 
     let arm = log_kinds(&api).into_iter().rfind(|r| r.kind == "arm").expect("Arm is logged");
     assert_eq!(arm.data["song"], song_id.as_str());
@@ -140,14 +144,14 @@ fn a_committed_song_arms_positions_plays_live_within_tolerance_and_estop_halts_i
         let st = api.status().unwrap();
         assert_eq!(st.transport.output, Output::Armed, "fault: {:?}", st.telemetry.fault);
         assert!(st.hardware_live);
-        worst = Pose::from_fn(|a| worst.get(a).max(st.telemetry.error.get(a).abs()));
+        worst = Pose::from_fn(|a| worst.get(a).max(st.first().error.get(a).abs()));
         if st.frame >= 25 + (end - 25) / 2 {
             break st;
         }
         std::thread::sleep(Duration::from_millis(10));
     };
     assert!(close(&worst, &Pose::default(), &tol, 1.0), "tracking error {worst:?} against tolerance {tol:?}");
-    assert!(st.rig_pose.pan > 10.0 && rig.is_moving(), "mid-move at frame {}: {:?}", st.frame, st.rig_pose);
+    assert!(st.first().rig_pose.pan > 10.0 && rig.is_moving(), "mid-move at frame {}: {:?}", st.frame, st.first().rig_pose);
 
     // E-Stop from a station that does not hold the lease.
     rig.fr7.clear_seen();
@@ -237,20 +241,20 @@ fn arm_is_refused_for_each_missing_precondition_with_its_own_reason() {
 
     // Each adapter in use has to answer, and the pedestal has to be calibrated.
     rig.pod.set_calibration("rER53");
-    wait_for(&api, |s| s.adapters[1].calibrated == Some(false));
+    wait_for(&api, |s| s.first().adapters[1].calibrated == Some(false));
     assert_eq!(arm(&api), "The AutoPod+ is not calibrated. Run its calibration at the leg box");
     rig.pod.set_calibration("rER00");
-    wait_for(&api, |s| s.adapters[1].calibrated == Some(true));
+    wait_for(&api, |s| s.first().adapters[1].calibrated == Some(true));
     rig.pod.set_power(false);
-    wait_for(&api, |s| s.adapters[1].detail.ends_with("is in standby"));
+    wait_for(&api, |s| s.first().adapters[1].detail.ends_with("is in standby"));
     assert_eq!(arm(&api), "The AutoPod+ is in standby. Switch it on at the leg box");
     rig.pod.set_power(true);
-    wait_for(&api, |s| s.adapters[1].detail.contains("answers in"));
+    wait_for(&api, |s| s.first().adapters[1].detail.contains("answers in"));
     rig.fr7.set_silent(true);
-    wait_for(&api, |s| !s.adapters[0].connected);
+    wait_for(&api, |s| !s.first().adapters[0].connected);
     assert_eq!(arm(&api), format!("The FR7 is not answering at {}", rig.fr7.visca));
     rig.fr7.set_silent(false);
-    wait_for(&api, |s| s.adapters[0].connected);
+    wait_for(&api, |s| s.first().adapters[0].connected);
 
     // Record and E-Stop.
     do_act(&api, Action::RecordOn);
@@ -332,7 +336,7 @@ fn rehearse_never_sends_a_motion_command_to_hardware() {
             quiet(&format!("after {what}"));
         }
     }
-    assert!(refused(api.jog(&Jog { pan: 1.0, ..Jog::default() }), 409).contains("drives the simulator only"));
+    assert!(refused(api.jog(CAM, &Jog { pan: 1.0, ..Jog::default() }), 409).contains("drives the simulator only"));
     quiet("after a refused jog");
     assert!(rig.fr7.seen().len() > 50, "the camera was polled throughout: {} messages", rig.fr7.seen().len());
 
@@ -367,7 +371,7 @@ fn a_keep_out_rule_blocks_arm_when_the_song_breaks_it_and_holds_the_rig_when_the
 
     // The move tilts down as it rises. Below 250 mm it is already past -10 degrees: the song breaks the rule.
     let low = store(&api, "Low angle", Pose { tilt: -20.0, elevation: 300.0, ..Pose::home() });
-    project.keep_out = vec![rule(250.0)];
+    project.cameras[0].keep_out = vec![rule(250.0)];
     let project = api.put_project(&project).unwrap();
     let (song_id, clip) = song_with_move(&api, &project, "Keep Out", &low);
     let st = api.status().unwrap();
@@ -384,7 +388,7 @@ fn a_keep_out_rule_blocks_arm_when_the_song_breaks_it_and_holds_the_rig_when_the
 
     // With the rule at 80 mm the song is clean: by the time it tilts past -10 it is above 150 mm.
     let mut relaxed = project.clone();
-    relaxed.keep_out = vec![rule(80.0)];
+    relaxed.cameras[0].keep_out = vec![rule(80.0)];
     api.put_project(&relaxed).unwrap();
     let st = api.status().unwrap();
     assert_eq!(st.song.as_ref().unwrap().blocking, 0);
@@ -417,10 +421,10 @@ fn a_keep_out_rule_blocks_arm_when_the_song_breaks_it_and_holds_the_rig_when_the
     // A rig standing outside its soft limits is not driven at all.
     rig.fr7.place(0.0, -29.0, 0.0, 0.5);
     let mut tight = relaxed.clone();
-    tight.axes.tilt.min = -20.0;
+    tight.cameras[0].axes.tilt.min = -20.0;
     api.put_project(&tight).unwrap();
     seek(&api, 0);
-    wait_for(&api, |s| s.rig_pose.tilt < -28.0);
+    wait_for(&api, |s| s.first().rig_pose.tilt < -28.0);
     rig.fr7.clear_seen();
     do_act(&api, Action::Arm);
     let st = wait_for(&api, |s| s.telemetry.fault.is_some());
@@ -440,7 +444,7 @@ fn a_rig_that_lags_or_stops_answering_is_held_and_disarmed_inside_the_tracking_w
     api.take_lease("Luke-MacBook", false).unwrap();
     let rig = Rig::start();
     let project = rig.connect(&api);
-    assert_eq!(project.rig.tracking_window_ms, 500);
+    assert_eq!(project.cameras[0].rig.tracking_window_ms, 500);
 
     let far = store(&api, "Far left", Pose { pan: 120.0, ..Pose::home() });
     let (_, _) = song_with_move(&api, &project, "Tracking", &far);
@@ -448,7 +452,7 @@ fn a_rig_that_lags_or_stops_answering_is_held_and_disarmed_inside_the_tracking_w
     wait_for(&api, |s| s.transport.output == Output::Armed);
     do_act(&api, Action::Play);
     // In the middle of the pan the head starts delivering a third of the speed it is asked for.
-    wait_for(&api, |s| s.rig_pose.pan > 20.0);
+    wait_for(&api, |s| s.first().rig_pose.pan > 20.0);
     rig.fr7.set_speed_factor(0.33);
     let began = Instant::now();
     let st = wait_for(&api, |s| s.telemetry.fault.is_some());
@@ -482,7 +486,7 @@ fn a_rig_that_lags_or_stops_answering_is_held_and_disarmed_inside_the_tracking_w
         format!("The FR7 is not answering at {}", rig.fr7.visca)
     );
     rig.fr7.set_silent(false);
-    wait_for(&api, |s| s.adapters[0].connected);
+    wait_for(&api, |s| s.first().adapters[0].connected);
     do_act(&api, Action::Arm);
     wait_for(&api, |s| s.transport.output == Output::Armed);
 
@@ -507,16 +511,16 @@ fn syncing_presets_recalls_each_one_on_the_camera_and_is_refused_while_live() {
     let mark = store(&api, "Mark", Pose { pan: 5.0, ..Pose::home() });
     song_with_move(&api, &project, "Presets", &mark);
     do_act(&api, Action::Play);
-    assert_eq!(refused(api.sync_presets(), 409), "Stop before reading presets from the camera, which moves it");
+    assert_eq!(refused(api.sync_presets(CAM), 409), "Stop before reading presets from the camera, which moves it");
     do_act(&api, Action::Cue);
     do_act(&api, Action::Arm);
-    assert_eq!(refused(api.sync_presets(), 409), "Disarm before reading presets from the camera, which moves it");
+    assert_eq!(refused(api.sync_presets(CAM), 409), "Disarm before reading presets from the camera, which moves it");
     do_act(&api, Action::Disarm);
     wait_for(&api, |_| !rig.is_moving());
 
     rig.fr7.clear_seen();
     rig.pod.clear_seen();
-    api.sync_presets().unwrap();
+    api.sync_presets(CAM).unwrap();
     let st = wait_for(&api, |s| s.telemetry.preset_sync.as_deref().is_some_and(|p| p.starts_with("Recalling preset")));
     assert_eq!(
         refused(api.act(Action::Arm, &TransportRequest::default()), 409),
@@ -551,7 +555,7 @@ fn syncing_presets_recalls_each_one_on_the_camera_and_is_refused_while_live() {
     assert_eq!(rig.pod.height_mm(), 140.0);
 
     // E-Stop during a sync stops the camera and abandons it.
-    api.sync_presets().unwrap();
+    api.sync_presets(CAM).unwrap();
     wait_for(&api, |_| rig.fr7.is_moving());
     do_act(&api, Action::Estop);
     let st = wait_for(&api, |s| !s.telemetry.halting && s.telemetry.preset_sync.is_none());
@@ -567,9 +571,9 @@ fn with_absolute_moves_a_preset_move_is_one_command_and_the_other_axes_still_tra
     api.take_lease("Luke-MacBook", false).unwrap();
     let rig = Rig::start();
     let mut project = rig.connect(&api);
-    project.rig.fr7_absolute_moves = true;
+    project.cameras[0].rig.fr7_absolute_moves = true;
     let project = api.put_project(&project).unwrap();
-    wait_for(&api, |s| s.adapters.len() == 2 && s.adapters.iter().all(|a| a.connected));
+    wait_for(&api, |s| s.first().adapters.len() == 2 && s.first().adapters.iter().all(|a| a.connected));
 
     let mark = store(&api, "Downstage", Pose { pan: 30.0, tilt: 8.0, zoom: 0.3, focus: 0.5, elevation: 40.0 });
     let (song_id, clip) = song_with_move(&api, &project, "Absolute", &mark);
@@ -588,7 +592,7 @@ fn with_absolute_moves_a_preset_move_is_one_command_and_the_other_axes_still_tra
     let absolute: Vec<Vec<u8>> = rig.fr7.commands().into_iter().filter(|c| c.starts_with(&[0x81, 0x01, 0x06, 0x02])).collect();
     assert_eq!(absolute.len(), 1, "{absolute:02X?}");
     assert!(matches!(visca::parse_command(&absolute[0]), Some(visca::Command::Absolute { .. })));
-    let tol = project.rig.tolerance;
+    let tol = project.cameras[0].rig.tolerance;
     assert!(close(&rig.pose(), &mark.pose, &tol, 0.5), "ended at {:?}", rig.pose());
     do_act(&api, Action::Disarm);
 }

@@ -1,0 +1,292 @@
+//! The cameras of a project and the room they stand in. Each camera has its own
+//! rig, limits, lens and place on the floor; the stage is the model they look at.
+
+use crate::lens::Lens;
+use crate::pose::{AxisTable, KeepOutRule, Pose, RigConfig};
+use serde::{Deserialize, Serialize};
+
+pub const MAX_CAMERAS: usize = 12;
+/// The camera every song and preset belonged to before a project could hold several.
+pub const FIRST_CAMERA: &str = "cam1";
+
+pub fn first_camera() -> String {
+    FIRST_CAMERA.to_string()
+}
+
+pub fn is_first_camera(id: &str) -> bool {
+    id == FIRST_CAMERA
+}
+
+/// Where a camera's pedestal stands and which way it faces. The world is in
+/// metres, Z up, with the floor at zero.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
+#[serde(default)]
+pub struct Mount {
+    pub x: f64,
+    pub y: f64,
+    /// Height of the floor under the column: zero, or the top of a riser or balcony.
+    pub z: f64,
+    /// Direction of pan 0: 0 looks toward +Y, positive turns counter-clockwise seen from above.
+    pub heading_deg: f64,
+    /// Height of the lens above the floor point with the column at its lowest.
+    pub base_height_mm: f64,
+}
+
+impl Default for Mount {
+    fn default() -> Self {
+        Mount { x: 0.0, y: 0.0, z: 0.0, heading_deg: 0.0, base_height_mm: 1200.0 }
+    }
+}
+
+impl Mount {
+    /// Where the lens is for a column raised by `elevation_mm`.
+    pub fn lens_position(&self, elevation_mm: f64) -> [f64; 3] {
+        [self.x, self.y, self.z + (self.base_height_mm + elevation_mm) / 1000.0]
+    }
+
+    /// Yaw and pitch of the view in degrees for a pose: positive pan turns left, positive tilt looks up.
+    pub fn view(&self, pose: &Pose) -> (f64, f64) {
+        (self.heading_deg + pose.pan, pose.tilt)
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        let all = [self.x, self.y, self.z, self.heading_deg, self.base_height_mm];
+        if all.iter().any(|v| !v.is_finite()) || [self.x, self.y, self.z].iter().any(|v| v.abs() > 10_000.0) {
+            return Err("its position is not a usable number".into());
+        }
+        if !(0.0..=5000.0).contains(&self.base_height_mm) {
+            return Err("the base height must be between 0 and 5000 mm".into());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+#[serde(default)]
+pub struct CameraConfig {
+    /// Stable and never shown. Clips and presets refer to it.
+    pub id: String,
+    pub name: String,
+    pub axes: AxisTable,
+    pub keep_out: Vec<KeepOutRule>,
+    pub rig: RigConfig,
+    pub lens: Lens,
+    pub mount: Mount,
+}
+
+impl Default for CameraConfig {
+    fn default() -> Self {
+        CameraConfig::new(FIRST_CAMERA, "Camera 1")
+    }
+}
+
+impl CameraConfig {
+    pub fn new(id: &str, name: &str) -> CameraConfig {
+        CameraConfig {
+            id: id.into(),
+            name: name.into(),
+            axes: AxisTable::default(),
+            keep_out: Vec::new(),
+            rig: RigConfig::default(),
+            lens: Lens::default(),
+            mount: Mount::default(),
+        }
+    }
+}
+
+/// What the other cameras do when one faults while the show is live.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OnFault {
+    /// The camera that faulted is stopped and held; the others carry on.
+    #[default]
+    HoldCamera,
+    /// Output is cut for every camera.
+    HoldAll,
+}
+
+impl OnFault {
+    pub const ALL: [OnFault; 2] = [OnFault::HoldCamera, OnFault::HoldAll];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            OnFault::HoldCamera => "Hold that camera, the others carry on",
+            OnFault::HoldAll => "Hold every camera",
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Unit {
+    Mm,
+    Cm,
+    #[default]
+    M,
+    In,
+    Ft,
+}
+
+impl Unit {
+    pub const ALL: [Unit; 5] = [Unit::M, Unit::Cm, Unit::Mm, Unit::In, Unit::Ft];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Unit::Mm => "Millimetres",
+            Unit::Cm => "Centimetres",
+            Unit::M => "Metres",
+            Unit::In => "Inches",
+            Unit::Ft => "Feet",
+        }
+    }
+
+    /// Metres in one of this unit.
+    pub fn metres(self) -> f64 {
+        match self {
+            Unit::Mm => 0.001,
+            Unit::Cm => 0.01,
+            Unit::M => 1.0,
+            Unit::In => 0.0254,
+            Unit::Ft => 0.3048,
+        }
+    }
+
+    /// The unit that makes a model whose largest side is `largest` a believable venue
+    /// (3 m to 300 m): metres, then millimetres, then centimetres. Model files do not
+    /// say, and inches or feet cannot be told from those by size, so they are chosen by hand.
+    pub fn guess(largest: f64) -> Unit {
+        [Unit::M, Unit::Mm, Unit::Cm].into_iter().find(|u| (3.0..=300.0).contains(&(largest * u.metres()))).unwrap_or(Unit::M)
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum UpAxis {
+    #[default]
+    Z,
+    Y,
+}
+
+impl UpAxis {
+    pub const ALL: [UpAxis; 2] = [UpAxis::Z, UpAxis::Y];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            UpAxis::Z => "Z is up",
+            UpAxis::Y => "Y is up",
+        }
+    }
+}
+
+/// The imported model, as the server holds it, and how it sits in the world.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+#[serde(default)]
+pub struct StageModel {
+    /// File name it was imported from.
+    pub name: String,
+    /// Goes up with every upload, so a client knows to fetch the mesh again.
+    pub revision: u64,
+    pub triangles: u64,
+    /// Lowest and highest corner as read from the file, in the file's own units and axes.
+    pub min: [f64; 3],
+    pub max: [f64; 3],
+    pub unit: Unit,
+    pub up: UpAxis,
+    /// Metres, applied after unit, up axis and rotation.
+    pub offset: [f64; 3],
+    /// About the vertical axis, counter-clockwise seen from above.
+    pub rotation_deg: f64,
+}
+
+impl StageModel {
+    /// The parts only the server may set: they describe the file it holds.
+    pub fn same_file(&self, other: &StageModel) -> bool {
+        (&self.name, self.revision, self.triangles, self.min, self.max)
+            == (&other.name, other.revision, other.triangles, other.min, other.max)
+    }
+
+    /// Width, depth and height in metres once unit and up axis are applied (before rotation).
+    pub fn size_m(&self) -> [f64; 3] {
+        let s = self.unit.metres();
+        let d = [0, 1, 2].map(|i| (self.max[i] - self.min[i]) * s);
+        match self.up {
+            UpAxis::Z => d,
+            UpAxis::Y => [d[0], d[2], d[1]],
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        let finite = self.offset.iter().chain(&self.min).chain(&self.max).chain([&self.rotation_deg]).all(|v| v.is_finite());
+        if !finite || self.offset.iter().any(|v| v.abs() > 100_000.0) {
+            return Err("The stage model's position is not a usable number".into());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+#[serde(default)]
+pub struct Stage {
+    /// Draw the simple built-in stage: floor, platform, lectern, awards table, back wall.
+    pub show_builtin: bool,
+    pub model: Option<StageModel>,
+}
+
+impl Default for Stage {
+    fn default() -> Self {
+        Stage { show_builtin: true, model: None }
+    }
+}
+
+impl Stage {
+    /// Both stages hold the same imported file, or none. How it is placed may differ.
+    pub fn same_model(&self, other: &Stage) -> bool {
+        match (&self.model, &other.model) {
+            (None, None) => true,
+            (Some(a), Some(b)) => a.same_file(b),
+            _ => false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_lens_rises_with_the_column_and_turns_with_the_heading() {
+        let mount = Mount { x: 2.0, y: -3.0, z: 0.3, heading_deg: 90.0, base_height_mm: 1200.0 };
+        let p = mount.lens_position(400.0);
+        assert_eq!((p[0], p[1]), (2.0, -3.0));
+        assert!((p[2] - 1.9).abs() < 1e-12);
+        let pose = Pose { pan: -20.0, tilt: 5.0, ..Pose::home() };
+        assert_eq!(mount.view(&pose), (70.0, 5.0));
+        assert!(mount.validate().is_ok());
+        assert!(Mount { base_height_mm: 6000.0, ..mount }.validate().is_err());
+        assert!(Mount { x: f64::NAN, ..mount }.validate().is_err());
+    }
+
+    #[test]
+    fn units_are_guessed_from_the_size_of_a_venue() {
+        assert_eq!(Unit::guess(42.0), Unit::M);
+        assert_eq!(Unit::guess(42_000.0), Unit::Mm);
+        assert_eq!(Unit::guess(4_200.0), Unit::Mm, "4.2 m in millimetres before 42 m in centimetres");
+        assert_eq!(Unit::guess(1_650.0), Unit::Cm, "too small a room in millimetres, 16.5 m in centimetres");
+        assert_eq!(Unit::guess(0.5), Unit::M, "nothing fits: metres, and the stated size shows it is wrong");
+        assert_eq!(Unit::guess(400_000.0), Unit::M);
+        assert!((Unit::Ft.metres() * 100.0 - 30.48).abs() < 1e-12 && (Unit::In.metres() * 12.0 - 0.3048).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_y_up_model_reports_its_height_as_height() {
+        let model = StageModel {
+            min: [0.0, 0.0, 0.0],
+            max: [4200.0, 910.0, 2850.0],
+            unit: Unit::Cm,
+            up: UpAxis::Y,
+            ..Default::default()
+        };
+        let size = model.size_m();
+        assert!((size[0] - 42.0).abs() < 1e-9 && (size[1] - 28.5).abs() < 1e-9 && (size[2] - 9.1).abs() < 1e-9, "{size:?}");
+    }
+}

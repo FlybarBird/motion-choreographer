@@ -128,10 +128,10 @@ impl Probe {
         if step == Step::ArmHeld {
             let until = Instant::now() + Duration::from_millis(400);
             while Instant::now() < until {
-                self.api.jog(&Jog { elevation: 1.0, ..Jog::default() })?;
+                self.api.jog(ptz_core::FIRST_CAMERA, &Jog { elevation: 1.0, ..Jog::default() })?;
                 std::thread::sleep(Duration::from_millis(50));
             }
-            self.api.jog(&Jog::default())?;
+            self.api.jog(ptz_core::FIRST_CAMERA, &Jog::default())?;
         }
         self.api.act(step.action(), &Self::request_for(step.action()))?;
         self.settle()
@@ -348,8 +348,8 @@ fn main() {
     let watcher = Api::new(&server, &format!("{id}-watcher"), key.as_deref());
 
     let start = api.status().unwrap_or_else(|e| die(&format!("{e}\nIs ptz-server running at {server}?")));
-    if start.adapters.first().map(|a| a.name.as_str()) != Some("Simulator") {
-        die("the probe arms and plays, so it only runs against the simulator rig. Set the rig to Simulator first.");
+    if start.telemetry.hardware {
+        die("the probe arms and plays, so it only runs with every camera on the simulator. Set each rig to Simulator first.");
     }
     if start.transport != TransportState::IDLE {
         die("the show is not idle. Stop, disarm and unlock before probing.");
@@ -377,7 +377,9 @@ fn main() {
         api.load_song(&song_id)?;
         // Slow positioning, so the Positioning state holds still long enough to test.
         let mut slow = project.clone();
-        slow.rig.positioning_speed = 0.0005;
+        for camera in &mut slow.cameras {
+            camera.rig.positioning_speed = 0.0005;
+        }
         api.put_project(&slow)?;
         Ok(())
     })();

@@ -12,6 +12,8 @@ use ptz_core::song::Song;
 use ptz_core::transport::{Action, Run};
 use std::time::{Duration, Instant};
 
+const CAM: &str = ptz_core::FIRST_CAMERA;
+
 fn refusal(result: Result<impl std::fmt::Debug, ApiErr>, code: u16) -> String {
     match result {
         Err(ApiErr::Refused { code: got, msg }) if got == code => msg,
@@ -58,7 +60,7 @@ fn a_jogged_pan_is_recorded_and_plays_back_on_the_frames_it_was_recorded_at() {
     act(&api, Action::Play);
 
     // The scripted move: pan right at 10 degrees per second from frame 100 to frame 200.
-    let jog = Jog { pan: 10.0 / project.axes.get(Axis::Pan).max_speed, tilt: 0.5, ..Jog::default() };
+    let jog = Jog { pan: 10.0 / project.cameras[0].axes.get(Axis::Pan).max_speed, tilt: 0.5, ..Jog::default() };
     let mut seen: Vec<(f64, f64)> = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
@@ -66,18 +68,18 @@ fn a_jogged_pan_is_recorded_and_plays_back_on_the_frames_it_was_recorded_at() {
         assert!(Instant::now() < deadline, "the pass never reached frame 240: {st:?}");
         assert_eq!(st.transport.run, Run::Playing);
         assert!(st.record.active);
-        assert_eq!(st.pose_source, PoseSource::Record);
-        assert_eq!(st.rig_pose.tilt, 0.0, "tilt is not record-enabled, so the controller does not move it");
+        assert_eq!(st.first().pose_source, PoseSource::Record);
+        assert_eq!(st.first().rig_pose.tilt, 0.0, "tilt is not record-enabled, so the controller does not move it");
         if seen.last().is_none_or(|l| st.frame_f > l.0) {
-            seen.push((st.frame_f, st.rig_pose.pan));
+            seen.push((st.frame_f, st.first().rig_pose.pan));
         }
         if st.frame_f >= 240.0 {
             break;
         }
         if (100.0..200.0).contains(&st.frame_f) {
-            api.jog(&jog).unwrap();
+            api.jog(CAM, &jog).unwrap();
         } else {
-            api.jog(&Jog::default()).unwrap();
+            api.jog(CAM, &Jog::default()).unwrap();
         }
         std::thread::sleep(Duration::from_millis(8));
     }
@@ -105,14 +107,14 @@ fn a_jogged_pan_is_recorded_and_plays_back_on_the_frames_it_was_recorded_at() {
     // Every reading taken during the pass is on the curve.
     assert!(seen.len() > 200, "{} readings", seen.len());
     for (frame, pan) in &seen {
-        let played = pose_at_f(&song, *frame).pan;
+        let played = pose_at_f(&song, CAM, *frame).pan;
         assert!((played - pan).abs() < 0.3, "frame {frame}: the rig was at {pan}, the timeline plays {played}");
     }
     // And it is the scripted move: still, then 10 degrees per second, then still.
-    assert_eq!(pose_at(&song, 90).pan, 0.0);
-    let per_second = pose_at(&song, 150 + fps as i64).pan - pose_at(&song, 150).pan;
+    assert_eq!(pose_at(&song, CAM, 90).pan, 0.0);
+    let per_second = pose_at(&song, CAM, 150 + fps as i64).pan - pose_at(&song, CAM, 150).pan;
     assert!((per_second - 10.0).abs() < 0.3, "{per_second} degrees per second");
-    let travelled = pose_at(&song, 230).pan;
+    let travelled = pose_at(&song, CAM, 230).pan;
     assert!((travelled - 40.0).abs() < 2.5, "100 frames at 10 degrees per second is 40 degrees, not {travelled}");
 
     // Play it back: the rig is where it was on each frame of the pass.
@@ -121,16 +123,16 @@ fn a_jogged_pan_is_recorded_and_plays_back_on_the_frames_it_was_recorded_at() {
     let mut compared = 0;
     loop {
         let st = api.status().unwrap();
-        assert_eq!(st.pose_source, PoseSource::Timeline);
+        assert_eq!(st.first().pose_source, PoseSource::Timeline);
         if st.frame_f >= 235.0 {
             break;
         }
         if let Some(recorded) = lookup(&seen, st.frame_f) {
             assert!(
-                (st.rig_pose.pan - recorded).abs() < 0.3,
+                (st.first().rig_pose.pan - recorded).abs() < 0.3,
                 "frame {}: recorded at {recorded}, played back at {}",
                 st.frame_f,
-                st.rig_pose.pan
+                st.first().rig_pose.pan
             );
             compared += 1;
         }
@@ -146,8 +148,8 @@ fn a_jogged_pan_is_recorded_and_plays_back_on_the_frames_it_was_recorded_at() {
     let count = |s: &Song| s.motion_clip(&clip_id).unwrap().keys(Axis::Pan).len();
     assert!(count(&loose) <= keys && keys <= count(&tight), "{} / {keys} / {}", count(&loose), count(&tight));
     for f in 0..240 {
-        assert!((pose_at(&tight, f).pan - pose_at(&song, f).pan).abs() < 0.06, "refit moved frame {f}");
-        assert!((pose_at(&loose, f).pan - pose_at(&song, f).pan).abs() < 1.1, "loose refit moved frame {f}");
+        assert!((pose_at(&tight, CAM, f).pan - pose_at(&song, CAM, f).pan).abs() < 0.06, "refit moved frame {f}");
+        assert!((pose_at(&loose, CAM, f).pan - pose_at(&song, CAM, f).pan).abs() < 1.1, "loose refit moved frame {f}");
     }
     let log = api.get::<Vec<LogRecord>>("/log?since=0").unwrap();
     for kind in ["record_start", "record_pass", "record_refit"] {
@@ -178,7 +180,7 @@ fn a_pass_over_the_middle_of_a_move_replaces_only_its_axis_and_range() {
     while end < 340.0 {
         let st = api.status().unwrap();
         end = st.frame_f;
-        api.jog(&Jog { tilt: 0.25, zoom: 1.0, ..Jog::default() }).unwrap();
+        api.jog(CAM, &Jog { tilt: 0.25, zoom: 1.0, ..Jog::default() }).unwrap();
         std::thread::sleep(Duration::from_millis(8));
     }
     // Turning Record off ends the pass; the song keeps playing.
@@ -195,7 +197,7 @@ fn a_pass_over_the_middle_of_a_move_replaces_only_its_axis_and_range() {
     after.validate(api.project().unwrap().rate).unwrap();
 
     for f in 0..=before.length_frames {
-        let (o, n) = (pose_at(&before, f), pose_at(&after, f));
+        let (o, n) = (pose_at(&before, CAM, f), pose_at(&after, CAM, f));
         for axis in [Axis::Pan, Axis::Zoom, Axis::Focus, Axis::Elevation] {
             assert!((o.get(axis) - n.get(axis)).abs() < 1e-6, "{axis:?} changed at frame {f}");
         }
@@ -204,7 +206,7 @@ fn a_pass_over_the_middle_of_a_move_replaces_only_its_axis_and_range() {
         }
     }
     // Inside the pass tilt is what the hand did: it rose from where the rig was.
-    let rise = pose_at(&after, stop - 1).tilt - pose_at(&after, start).tilt;
+    let rise = pose_at(&after, CAM, stop - 1).tilt - pose_at(&after, CAM, start).tilt;
     assert!(rise > 2.0, "tilt rose {rise} degrees");
 }
 
@@ -213,28 +215,28 @@ fn the_rig_stops_within_250_ms_of_the_last_jog_message() {
     let t = TestServer::start("jog-watchdog");
     let api = t.client("a");
     api.take_lease("Luke-MacBook", false).unwrap();
-    let start = api.status().unwrap().rig_pose.pan;
+    let start = api.status().unwrap().first().rig_pose.pan;
     let sent = Instant::now();
-    api.jog(&Jog { pan: 1.0, ..Jog::default() }).unwrap();
+    api.jog(CAM, &Jog { pan: 1.0, ..Jog::default() }).unwrap();
     std::thread::sleep(Duration::from_millis(120));
     let moving = api.status().unwrap();
-    assert!(moving.rig_pose.pan > start + 0.2, "the rig moves while jog is fresh");
-    assert_eq!(moving.pose_source, PoseSource::Rig);
+    assert!(moving.first().rig_pose.pan > start + 0.2, "the rig moves while jog is fresh");
+    assert_eq!(moving.first().pose_source, PoseSource::Rig);
 
     // No more jog messages: a dropped connection looks exactly like this.
     std::thread::sleep(Duration::from_millis(300).saturating_sub(sent.elapsed()));
-    let stopped = api.status().unwrap().rig_pose.pan;
+    let stopped = api.status().unwrap().first().rig_pose.pan;
     std::thread::sleep(Duration::from_millis(300));
-    let later = api.status().unwrap().rig_pose.pan;
+    let later = api.status().unwrap().first().rig_pose.pan;
     assert_eq!(stopped, later, "the rig is still {} ms after the last jog", sent.elapsed().as_millis());
     // 60 degrees per second for at most 250 ms and one tick.
-    let top = api.project().unwrap().axes.get(Axis::Pan).max_speed;
+    let top = api.project().unwrap().cameras[0].axes.get(Axis::Pan).max_speed;
     assert!(later - start <= top * 0.30, "travelled {} degrees", later - start);
 
     // Jog is refused while armed and while the E-Stop is latched.
     api.post_empty::<Status>("/estop").unwrap();
-    assert!(refusal(api.jog(&Jog { pan: 1.0, ..Jog::default() }), 409).contains("Reset E-Stop"));
+    assert!(refusal(api.jog(CAM, &Jog { pan: 1.0, ..Jog::default() }), 409).contains("Reset E-Stop"));
     api.post_empty::<Status>("/estop/reset").unwrap();
     act(&api, Action::Arm);
-    assert!(refusal(api.jog(&Jog { pan: 1.0, ..Jog::default() }), 409).contains("Disarm"));
+    assert!(refusal(api.jog(CAM, &Jog { pan: 1.0, ..Jog::default() }), 409).contains("Disarm"));
 }
