@@ -300,7 +300,8 @@ fn sentence(text: &str) -> String {
 }
 
 fn round_to(value: f64, step: f64) -> f64 {
-    (value / step).round() * step
+    let per_unit = 1.0 / step;
+    (value * per_unit).round() / per_unit
 }
 
 fn median(values: &mut [f64]) -> f64 {
