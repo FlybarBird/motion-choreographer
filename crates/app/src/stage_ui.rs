@@ -4,7 +4,7 @@
 use crate::session::Session;
 use crate::stage::{self, Key};
 use crate::theme::*;
-use egui::{vec2, Align2, FontId, PointerButton, Pos2, Rect, RichText, Sense, Stroke, Ui};
+use egui::{vec2, Align2, FontId, PointerButton, Pos2, Rect, Sense, Stroke, Ui};
 use ptz_core::camera::Mount;
 use ptz_core::pose::Pose;
 use ptz_scene::mesh::Mesh;
@@ -140,6 +140,8 @@ pub struct View {
     /// Mounts as they were before each change made here, newest last.
     pub history: Vec<(String, Mount)>,
     pub probe: Option<Probe>,
+    /// Where each camera's name was drawn last, by camera; a name is as good a handle as the marker under it.
+    pub labels: Vec<Rect>,
 }
 
 impl Default for View {
@@ -159,6 +161,7 @@ impl Default for View {
             measure: Vec::new(),
             history: Vec::new(),
             probe: None,
+            labels: Vec::new(),
         }
     }
 }
@@ -189,11 +192,34 @@ impl View {
         2.0 * self.distance * (LENS_DEG * 0.5).to_radians().tan() / rect.width().max(1.0)
     }
 
-    /// Show everything between two corners.
-    pub fn fit(&mut self, min: [f32; 3], max: [f32; 3]) {
+    /// Show everything between two corners in a picture `aspect` times as wide as it is high, with a margin round it.
+    pub fn fit(&mut self, min: [f32; 3], max: [f32; 3], aspect: f32) {
+        const MARGIN: f32 = 0.06;
         self.target = [0, 1, 2].map(|k| (min[k] + max[k]) / 2.0);
-        let radius = [0, 1, 2].map(|k| (max[k] - min[k]) / 2.0).iter().map(|v| v * v).sum::<f32>().sqrt().max(2.0);
-        self.distance = (radius * 2.2).clamp(1.0, 4000.0);
+        let (width, height) = (1000.0, 1000.0 / aspect.clamp(0.2, 5.0));
+        let corners: Vec<[f32; 3]> = (0..8).map(|n| [0, 1, 2].map(|k| if n >> k & 1 == 0 { min[k] } else { max[k] })).collect();
+        let cut = std::mem::replace(&mut self.cut, false);
+        let shows_all = |view: &View| {
+            let camera = view.camera();
+            corners.iter().all(|corner| {
+                camera.project(*corner, width as usize, height as usize).is_some_and(|p| {
+                    (MARGIN * width..=(1.0 - MARGIN) * width).contains(&p[0])
+                        && (MARGIN * height..=(1.0 - MARGIN) * height).contains(&p[1])
+                })
+            })
+        };
+        // Further away always shows more, so the nearest distance that shows everything is found by halving.
+        let (mut near, mut far) = (0.3f32, 4000.0f32);
+        for _ in 0..32 {
+            self.distance = (near * far).sqrt();
+            if shows_all(self) {
+                far = self.distance;
+            } else {
+                near = self.distance;
+            }
+        }
+        self.distance = far;
+        self.cut = cut;
     }
 
     pub fn is_dragging_a_camera(&self) -> bool {
@@ -274,7 +300,7 @@ fn frustum_lines(view: &Camera, reach: f32, color: [u8; 3], selected: bool) -> V
     lines
 }
 
-/// The camera whose marker is nearest the pointer, within reach.
+/// The camera whose marker is nearest the pointer, within reach; failing that, the one whose name is under it.
 fn camera_under(s: &Session, probe: &Probe, poses: &[Pose], at: Pos2, reach: f32) -> Option<usize> {
     let mut best: Option<(usize, f32)> = None;
     for (i, (camera, pose)) in s.project.cameras.iter().zip(poses).enumerate() {
@@ -288,7 +314,7 @@ fn camera_under(s: &Session, probe: &Probe, poses: &[Pose], at: Pos2, reach: f32
             best = Some((i, distance));
         }
     }
-    best.map(|(i, _)| i)
+    best.map(|(i, _)| i).or_else(|| s.stage_view.labels.iter().rposition(|label| label.contains(at)))
 }
 
 fn round_to(v: f64, step: f64) -> f64 {
@@ -391,8 +417,6 @@ fn toolbar(ui: &mut Ui, s: &mut Session) {
         if undo_button.clicked() && may_place(s) {
             undo(s);
         }
-        let ms = s.world.timings.get("stage").copied().unwrap_or(0.0);
-        ui.label(RichText::new(format!("{} triangles, drawn in {ms:.1} ms", s.world.triangles())).color(MUTED).small());
     });
     ui.add_space(2.0);
 }
@@ -582,7 +606,7 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
     let (min, max) = extent(s, &poses);
     // Fitting waits for the stage to be what the project asks for, so a model still on its way is not missed.
     if s.stage_view.fit_requested && !s.world.is_busy(&s.project.stage) {
-        s.stage_view.fit(min, max);
+        s.stage_view.fit(min, max, rect.width() / rect.height());
         s.stage_view.fit_requested = false;
     }
     interact(ui, s, &resp, &poses);
@@ -626,16 +650,18 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
 
     // Names over the picture, so a camera is found even behind a wall.
     let clipped = painter.with_clip_rect(rect);
+    let mut labels = vec![Rect::NOTHING; s.project.cameras.len()];
     for (i, (camera, pose)) in s.project.cameras.iter().zip(&poses).enumerate() {
         let lens = camera.mount.lens_position(pose.elevation).map(|v| v as f32);
-        if let Some(at) = probe.screen([lens[0], lens[1], lens[2] + 0.25]) {
+        if let Some(at) = probe.screen([lens[0], lens[1], lens[2] + 0.25]).filter(|at| rect.contains(*at)) {
             let on = i == selected;
             let text = format!("{} {}", i + 1, camera.name);
             let ink = if on { NAVY } else { camera_color(i) };
             let fill = if on { camera_color(i) } else { with_alpha(PANEL_DARK, 215) };
-            crate::monitor::badge(&clipped, at + vec2(0.0, -4.0), Align2::CENTER_BOTTOM, &text, fill, ink);
+            labels[i] = crate::monitor::badge(&clipped, at + vec2(0.0, -4.0), Align2::CENTER_BOTTOM, &text, fill, ink);
         }
     }
+    s.stage_view.labels = labels;
     for p in &s.stage_view.measure {
         if let Some(at) = probe.screen(*p) {
             clipped.circle(at, 4.0, OFF_WHITE, Stroke::new(1.0, NAVY));
@@ -668,7 +694,9 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
         (_, tool) => format!("{}. Right-drag or Shift-drag slides the view; scroll zooms", tool.hint()),
     };
     text(rect.left_bottom() + vec2(8.0, -8.0), Align2::LEFT_BOTTOM, hint, OFF_WHITE);
-    text(rect.right_bottom() + vec2(-8.0, -8.0), Align2::RIGHT_BOTTOM, format!("Grid {grid_step:.0} m"), MUTED);
+    let ms = s.world.timings.get("stage").copied().unwrap_or(0.0);
+    let scale = format!("{} triangles, drawn in {ms:.1} ms   Grid {grid_step:.0} m", s.world.triangles());
+    text(rect.right_bottom() + vec2(-8.0, -8.0), Align2::RIGHT_BOTTOM, scale, MUTED);
     if let Some(wait) = crate::monitor::stage_wait(s) {
         text(rect.center_top() + vec2(0.0, 8.0), Align2::CENTER_TOP, wait.to_string(), AMBER);
     }
@@ -721,13 +749,31 @@ mod tests {
 
     #[test]
     fn fitting_centres_the_view_and_headings_wrap_and_distances_read_in_words() {
-        let mut v = View::default();
-        v.fit([-20.0, -5.0, 0.0], [20.0, 25.0, 9.0]);
-        assert_eq!(v.target, [0.0, 10.0, 4.5]);
-        let camera = v.camera();
-        for corner in [[-20.0, -5.0, 0.0], [20.0, 25.0, 9.0], [20.0, -5.0, 0.0], [-20.0, 25.0, 9.0]] {
-            let p = camera.project(corner, 1000, 600).expect("in front of the viewer");
-            assert!((0.0..1000.0).contains(&p[0]), "{corner:?} lands at {p:?}");
+        // Whatever the angle and the shape of the picture, every corner is inside it and the view is not further off than needed.
+        let (min, max) = ([-20.0, -5.0, 0.0], [20.0, 25.0, 9.0]);
+        let corners: Vec<[f32; 3]> = (0..8).map(|n| [0, 1, 2].map(|k| if n >> k & 1 == 0 { min[k] } else { max[k] })).collect();
+        for angle in Angle::ALL {
+            for (width, height) in [(1000usize, 600usize), (1076, 430), (400, 900)] {
+                let mut v = View { angle, cut: true, ..View::default() };
+                v.fit(min, max, width as f32 / height as f32);
+                assert_eq!(v.target, [0.0, 10.0, 4.5]);
+                assert!(v.cut, "fitting leaves the cut as it was");
+                v.cut = false;
+                let inside = |v: &View, edge: f32| {
+                    let camera = v.camera();
+                    corners.iter().all(|corner| {
+                        camera.project(*corner, width, height).is_some_and(|p| {
+                            (edge..=width as f32 - edge).contains(&p[0]) && (edge..=height as f32 - edge).contains(&p[1])
+                        })
+                    })
+                };
+                assert!(inside(&v, 0.0), "{angle:?} at {width} by {height} leaves a corner outside");
+                v.distance *= 0.8;
+                assert!(
+                    !inside(&v, 0.04 * height as f32),
+                    "{angle:?} at {width} by {height} stands further off than it needs to"
+                );
+            }
         }
         assert_eq!(wrap_heading(190.0), -170.0);
         assert_eq!(wrap_heading(-190.0), 170.0);
