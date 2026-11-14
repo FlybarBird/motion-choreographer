@@ -1,7 +1,6 @@
 //! The dock tabs other than the timeline and the monitors.
 
 use crate::link::Cmd;
-use crate::monitor;
 use crate::session::Session;
 use crate::theme::*;
 use crate::timeline_ui::PresetDrag;
@@ -64,20 +63,26 @@ fn preset_picture(ui: &Ui, s: &mut Session, preset: &Preset) -> Option<egui::Tex
     }
 }
 
+/// The app's own drawing of a preset: its camera's view of the stage at the preset's pose,
+/// with the other cameras at rest so the picture does not change while they move.
+fn drawn_picture(ui: &Ui, s: &mut Session, preset: &Preset) -> Option<egui::TextureId> {
+    let index = s.project.camera_index(&preset.camera)?;
+    let mut poses = vec![ptz_core::pose::Pose::home(); s.project.cameras.len()];
+    poses[index] = preset.pose;
+    let size = crate::stage::pixel_size(egui::Rect::from_min_size(egui::Pos2::ZERO, THUMB), ui.ctx().pixels_per_point(), 256.0);
+    crate::stage::camera_picture(ui.ctx(), s, &format!("preset:{}", preset.id), index, &poses, size, false)
+}
+
+const THUMB: egui::Vec2 = vec2(48.0 * 16.0 / 9.0, 48.0);
+
 fn preset_card(ui: &mut Ui, preset: &Preset, picture: Option<egui::TextureId>) -> egui::Response {
     let width = ui.available_width().clamp(120.0, 400.0);
     let (rect, resp) = ui.allocate_exact_size(vec2(width, 58.0), Sense::hover());
     let p = ui.painter_at(rect);
     let fill = if resp.hovered() { Color32::from_rgb(0x34, 0x36, 0x46) } else { LANE };
     p.rect(rect, 6.0, fill, Stroke::new(1.0, LINE), StrokeKind::Inside);
-    let thumb = egui::Rect::from_min_size(rect.min + vec2(5.0, 5.0), vec2(48.0 * 16.0 / 9.0, 48.0));
-    match picture {
-        Some(texture) => {
-            let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-            p.image(texture, thumb, uv, Color32::WHITE);
-        }
-        None => monitor::paint_stage(&p, thumb, &preset.pose),
-    }
+    let thumb = egui::Rect::from_min_size(rect.min + vec2(5.0, 5.0), THUMB);
+    crate::stage::paint_picture(&p, thumb, picture);
     p.rect_stroke(thumb, 2.0, Stroke::new(1.0, LINE), StrokeKind::Outside);
     let x = thumb.right() + 10.0;
     p.text(egui::pos2(x, rect.top() + 9.0), egui::Align2::LEFT_TOP, &preset.name, egui::FontId::proportional(13.5), OFF_WHITE);
@@ -176,7 +181,7 @@ pub fn presets(ui: &mut Ui, s: &mut Session) {
             ui.horizontal(|ui| {
                 ui.add_space(6.0);
                 let id = egui::Id::new(("preset_drag", &preset.id));
-                let picture = preset_picture(ui, s, preset);
+                let picture = preset_picture(ui, s, preset).or_else(|| drawn_picture(ui, s, preset));
                 let inner = ui.dnd_drag_source(id, PresetDrag(preset.clone()), |ui| preset_card(ui, preset, picture));
                 if !ui.ctx().is_being_dragged(id) {
                     s.probe_presets.push((preset.id.clone(), inner.response.rect));

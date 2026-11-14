@@ -64,6 +64,11 @@ pub enum Cmd {
     },
     DeleteMedia(String),
     FetchPresetThumb(String),
+    /// Read an OBJ or 3DS file and make it the stage model.
+    ImportStage(PathBuf),
+    /// Fetch the stage model the project names, by its revision.
+    FetchStageModel(u64),
+    RemoveStageModel,
     RefreshInputs,
     RefreshSongs,
     RefreshPresets,
@@ -121,6 +126,16 @@ pub enum Event {
     SyncAccepted(Vec<Preset>),
     Committed(RevisionInfo),
     Uploaded(MediaInfo),
+    /// The stage model of a revision, read from the server or just uploaded to it.
+    StageModel {
+        revision: u64,
+        mesh: Arc<ptz_scene::mesh::Mesh>,
+    },
+    StageFetchFailed {
+        revision: u64,
+        msg: String,
+    },
+    StageImport(crate::stage::Import),
     Log(LogRecord),
     /// The server said no. `what` is the thing that was attempted.
     Refused {
@@ -313,6 +328,21 @@ impl Worker {
         self.emit(Event::Refused { what: what.to_string(), msg: e.message().to_string() });
     }
 
+    /// Run `work` on a thread of its own, with a client and a way to report.
+    fn aside(&self, name: &str, work: impl FnOnce(&Api, &dyn Fn(Event)) + Send + 'static) {
+        let (api, events, repaint) = (self.api.clone(), self.events.clone(), self.repaint.clone());
+        let spawned = std::thread::Builder::new().name(name.into()).spawn(move || {
+            let emit = |event: Event| {
+                let _ = events.send(event);
+                repaint();
+            };
+            work(&api, &emit);
+        });
+        if let Err(e) = spawned {
+            self.emit(Event::Refused { what: "Start the transfer".into(), msg: e.to_string() });
+        }
+    }
+
     fn working(&mut self, what: &str, result: Result<WorkingSong, ApiErr>, why: Why) {
         match result {
             Ok(w) => {
@@ -430,17 +460,16 @@ impl Worker {
                     }
                 }
             }
-            Cmd::Upload(path) => {
-                let name = path.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "media".into());
-                self.emit(Event::Info(format!("Uploading {name}")));
-                match std::fs::File::open(&path) {
-                    Ok(file) => match self.api.upload_media(&name, file) {
-                        Ok(info) => self.emit(Event::Uploaded(info)),
-                        Err(e) => self.refused(&format!("Import {name}"), e),
-                    },
-                    Err(e) => self.emit(Event::Refused { what: format!("Import {name}"), msg: e.to_string() }),
-                }
+            // Long transfers run on threads of their own, so E-Stop and everything else behind them is not kept waiting.
+            Cmd::Upload(path) => self.aside("link-upload", move |api, emit| upload_media(api, &path, emit)),
+            Cmd::ImportStage(path) => self.aside("link-stage-import", move |api, emit| import_stage(api, &path, emit)),
+            Cmd::FetchStageModel(revision) => {
+                self.aside("link-stage-fetch", move |api, emit| fetch_stage_model(api, revision, emit))
             }
+            Cmd::RemoveStageModel => match self.api.delete_stage_model() {
+                Ok(p) => self.emit(Event::Project(Box::new(p))),
+                Err(e) => self.refused("Remove the stage model", e),
+            },
             Cmd::SetMediaTc { id, start_tc } => {
                 match self.api.post::<_, MediaInfo>(&format!("/media/{id}/start_tc"), &StoreTc { start_tc }) {
                     Ok(_) => self.handle(Cmd::RefreshMedia),
@@ -502,6 +531,50 @@ impl Worker {
                 }
             }
         }
+    }
+}
+
+fn upload_media(api: &Api, path: &std::path::Path, emit: &dyn Fn(Event)) {
+    let name = path.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "media".into());
+    emit(Event::Info(format!("Uploading {name}")));
+    match std::fs::File::open(path) {
+        Ok(file) => match api.upload_media(&name, file) {
+            Ok(info) => emit(Event::Uploaded(info)),
+            Err(e) => emit(Event::Refused { what: format!("Import {name}"), msg: e.message().to_string() }),
+        },
+        Err(e) => emit(Event::Refused { what: format!("Import {name}"), msg: e.to_string() }),
+    }
+}
+
+/// Read a model file here, where its material file is, and hand the server the mesh.
+fn import_stage(api: &Api, path: &std::path::Path, emit: &dyn Fn(Event)) {
+    use crate::stage::Import;
+    let name = path.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "model".into());
+    emit(Event::StageImport(Import::Reading(name.clone())));
+    let read = match crate::stage::read_model(path) {
+        Ok(read) => read,
+        Err(why) => return emit(Event::StageImport(Import::Failed { name, why })),
+    };
+    emit(Event::StageImport(Import::Uploading(name.clone())));
+    match api.upload_stage_model(&read.name, read.unit, read.up, &read.mesh.to_bytes()) {
+        Ok(project) => {
+            if let Some(model) = &project.stage.model {
+                emit(Event::StageModel { revision: model.revision, mesh: Arc::new(read.mesh) });
+            }
+            emit(Event::Project(Box::new(project)));
+            emit(Event::StageImport(Import::Done(name)));
+        }
+        Err(e) => emit(Event::StageImport(Import::Failed { name, why: e.message().to_string() })),
+    }
+}
+
+fn fetch_stage_model(api: &Api, revision: u64, emit: &dyn Fn(Event)) {
+    let mesh = api.stage_model().map_err(|e| e.message().to_string()).and_then(|bytes| {
+        ptz_scene::mesh::Mesh::from_bytes(&bytes).map_err(|why| format!("the file the server sent is damaged: {why}"))
+    });
+    match mesh {
+        Ok(mesh) => emit(Event::StageModel { revision, mesh: Arc::new(mesh) }),
+        Err(msg) => emit(Event::StageFetchFailed { revision, msg }),
     }
 }
 
@@ -662,6 +735,183 @@ pub fn start_local_server() -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::stage::Import;
+    use ptz_scene::mesh::Mesh;
+
+    /// A real server on a free port, and a folder of files to import, both removed afterwards.
+    struct Site {
+        running: Option<ptz_server::http::Running>,
+        dir: PathBuf,
+        url: String,
+    }
+
+    impl Site {
+        fn open(name: &str) -> Site {
+            let dir = std::env::temp_dir().join(format!("ptz-app-test-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(dir.join("venue")).unwrap();
+            let mut config = ptz_server::engine::Config::new(dir.join("show"));
+            config.audio = ptz_server::engine::AudioChoice::Off;
+            let running = ptz_server::http::start(&config, "127.0.0.1:0", None).expect("the server starts");
+            Site { url: running.url(), running: Some(running), dir }
+        }
+
+        fn station(&self, name: &str) -> (Link, Hello) {
+            let link = connect(&self.url, None, name, Arc::new(|| {}));
+            let hello = wait(&link, |event| match event {
+                Event::Connected(hello) => Some(*hello),
+                Event::ConnectFailed(why) => panic!("{name} could not connect: {why}"),
+                _ => None,
+            });
+            (link, hello)
+        }
+
+        fn file(&self, name: &str, contents: &[u8]) -> PathBuf {
+            let path = self.dir.join("venue").join(name);
+            std::fs::write(&path, contents).unwrap();
+            path
+        }
+    }
+
+    impl Drop for Site {
+        fn drop(&mut self) {
+            self.running.take();
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// The first event `pick` accepts. Status and log traffic in between is passed over.
+    fn wait<T>(link: &Link, mut pick: impl FnMut(Event) -> Option<T>) -> T {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let event = link.rx.recv_timeout(left).expect("the link went quiet before the awaited event");
+            if let Some(found) = pick(event) {
+                return found;
+            }
+        }
+    }
+
+    /// A hall of 40 by 9 by 25 written in millimetres with Y up, and a platform in another colour.
+    fn hall() -> Mesh {
+        let mut mesh = Mesh::default();
+        mesh.push_cuboid([0.0, 0.0, -25_000.0], [40_000.0, 9_000.0, 0.0], [120, 120, 130]);
+        mesh.push_cuboid([15_000.0, 0.0, -24_000.0], [25_000.0, 1_000.0, -18_000.0], [90, 60, 40]);
+        mesh
+    }
+
+    #[test]
+    fn a_model_file_is_read_here_sent_to_the_server_and_served_to_another_station() {
+        let site = Site::open("stage-import");
+        let (obj, mtl) = ptz_scene::obj::write(&hall(), "hall.mtl");
+        let path = site.file("hall.obj", obj.as_bytes());
+        site.file("hall.mtl", mtl.as_bytes());
+        let (luke, hello) = site.station("Luke");
+        assert!(hello.status.you_hold_lease && hello.project.stage.model.is_none());
+
+        // Reading, sending, then the mesh and the project that names it, in that order.
+        luke.send(Cmd::ImportStage(path.clone()));
+        let mut steps = Vec::new();
+        let mut held = None;
+        let mut named = None;
+        wait(&luke, |event| {
+            match event {
+                Event::StageImport(Import::Done(name)) => {
+                    steps.push(format!("done {name}"));
+                    return Some(());
+                }
+                Event::StageImport(Import::Failed { name, why }) => panic!("{name} was not imported: {why}"),
+                Event::StageImport(Import::Reading(name)) => steps.push(format!("reading {name}")),
+                Event::StageImport(Import::Uploading(name)) => steps.push(format!("sending {name}")),
+                Event::StageModel { revision, mesh } => {
+                    steps.push(format!("mesh {revision}"));
+                    held = Some(mesh);
+                }
+                Event::Project(project) if project.stage.model.is_some() && named.is_none() => {
+                    steps.push("project".into());
+                    named = Some(*project);
+                }
+                _ => {}
+            }
+            None
+        });
+        assert_eq!(steps, ["reading hall.obj", "sending hall.obj", "mesh 1", "project", "done hall.obj"]);
+        let (held, project) = (held.unwrap(), named.unwrap());
+        assert_eq!(*held, hall(), "the triangles and the colours of the material file");
+        let model = project.stage.model.clone().unwrap();
+        assert_eq!((model.name.as_str(), model.revision, model.triangles), ("hall.obj", 1, 24));
+        assert_eq!((model.unit, model.up), (ptz_core::camera::Unit::Mm, ptz_core::camera::UpAxis::Y));
+        assert_eq!(model.size_m(), [40.0, 25.0, 9.0], "read as millimetres with Y up, it is a hall");
+        assert!(!project.stage.show_builtin);
+
+        // Another station learns of it when it connects, and fetches the same mesh.
+        let (watcher, hello) = site.station("Watcher");
+        assert!(!hello.status.you_hold_lease);
+        assert_eq!(hello.project.stage, project.stage);
+        watcher.send(Cmd::FetchStageModel(1));
+        let fetched = wait(&watcher, |event| match event {
+            Event::StageModel { revision: 1, mesh } => Some(mesh),
+            Event::StageFetchFailed { msg, .. } => panic!("{msg}"),
+            _ => None,
+        });
+        assert_eq!(*fetched, *held);
+
+        // A station without the lease cannot replace it, and is told why.
+        watcher.send(Cmd::ImportStage(path));
+        let why = wait(&watcher, |event| match event {
+            Event::StageImport(Import::Failed { why, .. }) => Some(why),
+            Event::StageImport(Import::Done(_)) => panic!("a watcher replaced the stage model"),
+            _ => None,
+        });
+        assert_eq!(why, "Take the edit lease to control the show");
+
+        // A file that cannot be read names the line, and the model on the server stays.
+        let broken = site.file("broken.obj", b"v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 9\n");
+        luke.send(Cmd::ImportStage(broken));
+        let why = wait(&luke, |event| match event {
+            Event::StageImport(Import::Failed { name, why }) => Some(format!("{name}: {why}")),
+            _ => None,
+        });
+        assert!(why.starts_with("broken.obj: line 4:"), "{why}");
+        let api = Api::new(&site.url, "check", None);
+        assert_eq!(api.project().unwrap().stage, project.stage);
+
+        // Removing it brings the built-in stage back, and there is then nothing to fetch.
+        luke.send(Cmd::RemoveStageModel);
+        let after = wait(&luke, |event| match event {
+            Event::Project(project) if project.stage.model.is_none() => Some(*project),
+            Event::Refused { what, msg } => panic!("{what}: {msg}"),
+            _ => None,
+        });
+        assert!(after.stage.show_builtin);
+        watcher.send(Cmd::FetchStageModel(1));
+        let msg = wait(&watcher, |event| match event {
+            Event::StageFetchFailed { revision: 1, msg } => Some(msg),
+            Event::StageModel { .. } => panic!("a removed model was served"),
+            _ => None,
+        });
+        assert_eq!(msg, "No stage model has been imported");
+    }
+
+    #[test]
+    fn a_long_upload_does_not_hold_up_the_commands_behind_it() {
+        let site = Site::open("upload-aside");
+        let (luke, _) = site.station("Luke");
+        // Sixty megabytes of something that is not media: the server reads all of it before refusing it.
+        let big = site.file("not-media.wav", &vec![7u8; 60 * 1024 * 1024]);
+        luke.send(Cmd::Upload(big));
+        luke.send(Cmd::Act(Action::Estop, TransportRequest::default()));
+        let mut order = Vec::new();
+        wait(&luke, |event| {
+            match event {
+                Event::Status(status) if status.transport.estop && !order.contains(&"estop") => order.push("estop"),
+                Event::Uploaded(_) | Event::Refused { .. } => order.push("upload answered"),
+                _ => {}
+            }
+            (order.len() == 2).then_some(())
+        });
+        assert_eq!(order, ["estop", "upload answered"], "E-Stop was answered while the file was still on its way");
+    }
 
     #[test]
     fn coalesce_keeps_only_the_latest_scrub_jog_and_song() {

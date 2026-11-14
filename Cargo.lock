@@ -2762,6 +2762,8 @@ dependencies = [
  "egui_kittest",
  "image",
  "ptz-core",
+ "ptz-scene",
+ "ptz-server",
  "rfd",
  "serde",
  "serde_json",
