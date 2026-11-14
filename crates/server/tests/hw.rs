@@ -682,3 +682,91 @@ fn stop_reaches_a_moving_head_whose_answers_have_just_been_lost() {
     wait_until("the head stops", || !fr7.is_moving());
     assert!(began.elapsed() < Duration::from_millis(1200), "it took {:?}", began.elapsed());
 }
+
+/// Passes every request on at once and holds each answer back for a while: a device, or a
+/// network, that does as it is told promptly and is slow to say so.
+struct SlowAnswers {
+    addr: SocketAddr,
+    hold: Arc<Mutex<Duration>>,
+    quit: Arc<AtomicBool>,
+}
+
+impl SlowAnswers {
+    fn start(real: SocketAddr) -> SlowAnswers {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let hold = Arc::new(Mutex::new(Duration::ZERO));
+        let quit = Arc::new(AtomicBool::new(false));
+        let (h, q) = (hold.clone(), quit.clone());
+        std::thread::spawn(move || {
+            while !q.load(Ordering::Relaxed) {
+                let Ok((mut client, _)) = listener.accept() else {
+                    std::thread::sleep(Duration::from_millis(1));
+                    continue;
+                };
+                let hold = *h.lock().unwrap();
+                std::thread::spawn(move || {
+                    let _ = client.set_nonblocking(false);
+                    let _ = client.set_read_timeout(Some(Duration::from_millis(500)));
+                    let mut request = Vec::new();
+                    let mut chunk = [0u8; 512];
+                    while !request.ends_with(b"\r\n\r\n") {
+                        match client.read(&mut chunk) {
+                            Ok(n) if n > 0 => request.extend_from_slice(&chunk[..n]),
+                            _ => break,
+                        }
+                    }
+                    let Ok(mut upstream) = TcpStream::connect(real) else { return };
+                    let _ = upstream.write_all(&request);
+                    let mut reply = Vec::new();
+                    let _ = upstream.read_to_end(&mut reply);
+                    drop(upstream);
+                    std::thread::sleep(hold);
+                    let _ = client.write_all(&reply);
+                });
+            }
+        });
+        SlowAnswers { addr, hold, quit }
+    }
+
+    fn hold(&self, each: Duration) {
+        *self.hold.lock().unwrap() = each;
+    }
+}
+
+impl Drop for SlowAnswers {
+    fn drop(&mut self) {
+        self.quit.store(true, Ordering::Relaxed);
+    }
+}
+
+#[test]
+fn stop_reaches_the_column_while_the_leg_box_is_slow_to_answer() {
+    let pod = FakeAutoPod::start();
+    let slow = SlowAnswers::start(pod.addr);
+    let mut cfg = rig_config(None, Some(&pod));
+    cfg.autopod_host = slow.addr.to_string();
+    let mut rig = HardwareRig::start(&cfg, &AxisTable::default());
+    wait_until("the leg box answers", || rig.problem().is_none());
+
+    // Every answer now takes 300 ms, inside the 400 ms the adapter allows. The adapter spends
+    // nearly all its time waiting for one, and a stop must not wait with it.
+    slow.hold(Duration::from_millis(300));
+    let up = Drive::to(Pose { elevation: 600.0, ..Pose::home() }, 1.0);
+    for trial in 0..4 {
+        let began = Instant::now();
+        while !pod.is_moving() || began.elapsed() < Duration::from_millis(700 + 60 * trial) {
+            assert!(began.elapsed() < Duration::from_secs(8), "the column never started");
+            rig.drive(&up);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        pod.clear_seen();
+        let pressed = Instant::now();
+        rig.stop();
+        wait_until("the stop reaches the leg box", || pod.orders().iter().any(|c| c == autopod::STOP));
+        let took = pressed.elapsed();
+        assert!(took < Duration::from_millis(150), "try {trial}: the stop waited {took:?} behind a slow answer");
+        assert!(!pod.is_moving());
+    }
+}

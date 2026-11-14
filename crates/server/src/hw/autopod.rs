@@ -342,6 +342,8 @@ impl AutoPod {
         }));
         let (shared, worker_cfg) = (state.clone(), cfg.clone());
         std::thread::Builder::new().name("autopod".into()).spawn(move || run(worker_cfg, shared)).expect("autopod thread");
+        let (shared, host) = (state.clone(), cfg.host.clone());
+        std::thread::Builder::new().name("autopod-stop".into()).spawn(move || stop_at_once(host, shared)).expect("stop thread");
         AutoPod { cfg, state }
     }
 
@@ -429,6 +431,29 @@ impl AutoPod {
 impl Drop for AutoPod {
     fn drop(&mut self) {
         self.lock().quit = true;
+    }
+}
+
+/// The control loop asks the leg box one thing at a time and waits for each answer, up to
+/// 400 ms. A stop does not wait in that queue: the moment one is asked for, it is sent here,
+/// on a connection of its own. The control loop still sends its own stops until the column is still.
+fn stop_at_once(host: String, state: Arc<Mutex<State>>) {
+    let mut link = Link::new(&host);
+    let mut was_stopping = false;
+    loop {
+        let stopping = {
+            let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+            if s.quit {
+                return;
+            }
+            s.obey_line();
+            s.mode == Mode::Stop
+        };
+        if stopping && !was_stopping {
+            let _ = link.stop();
+        }
+        was_stopping = stopping;
+        std::thread::sleep(Duration::from_millis(5));
     }
 }
 
