@@ -601,7 +601,8 @@ impl Shell {
         }
         if pressed(Key::Space) {
             let g = &s.status.guidance;
-            if let Some(action) = g.primary.filter(|a| *a != Action::Estop) {
+            // Space runs the transport. Releasing the E-Stop latch takes a click on its own button.
+            if let Some(action) = g.primary.filter(|a| !matches!(a, Action::Estop | Action::ResetEstop)) {
                 if g.allows(action) {
                     s.act(action);
                 }
