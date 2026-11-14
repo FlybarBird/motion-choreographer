@@ -149,6 +149,7 @@ pub enum Prompt {
 }
 
 impl Prompt {
+    #[cfg(test)]
     pub const ALL: [Prompt; 9] = [
         Prompt::NewSong,
         Prompt::LoadSong,
@@ -744,7 +745,9 @@ impl Shell {
     fn shortcuts(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
         let s = &mut self.session;
-        if !matches!(self.dialog, Dialog::None) {
+        // A dialog has the keyboard to itself: nothing pressed while one is open reaches the show
+        // behind it. (There is no key for E-Stop; its button is above every dialog.)
+        if modal_open(&ctx) {
             return;
         }
         let shift = ctx.input(|i| i.modifiers.shift);

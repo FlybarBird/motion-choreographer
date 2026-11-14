@@ -676,7 +676,7 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
         if travel != 0.0 {
             s.timeline.view.scroll -= (travel / s.timeline.view.px_per_frame) as f64;
         }
-        if ui.input(|i| i.key_pressed(egui::Key::F)) && !ui.ctx().text_edit_focused() {
+        if ui.input(|i| i.key_pressed(egui::Key::F)) && !ui.ctx().text_edit_focused() && !crate::app::modal_open(ui.ctx()) {
             frame_it = true;
         }
     }
