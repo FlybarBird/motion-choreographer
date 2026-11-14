@@ -229,7 +229,7 @@ impl Show {
             lease_ttl: cfg.lease_ttl,
             rig: Box::new(Simulator::new()),
             jog_deadline: None,
-            record_axes: Vec::new(),
+            record_axes: vec![Axis::Pan, Axis::Tilt],
             capture: None,
             lock_source: None,
             manual: false,
