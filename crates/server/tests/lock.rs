@@ -416,3 +416,85 @@ fn midi_timecode_locks_and_a_full_frame_message_relocates() {
     assert!((500.0..520.0).contains(&st.frame_f), "resumed at {}", st.frame_f);
     sequencer.join().unwrap();
 }
+
+/// The chase reports a jump while the code is still settling, before the playhead has gone
+/// anywhere; the rig is already standing on the old pose when the playhead lands on the new one.
+#[test]
+fn code_that_jumps_while_playing_live_takes_the_rig_to_the_new_pose_at_the_arm_speed() {
+    use ptz_core::edit;
+    use ptz_core::pose::{Pose, Preset, RigKind};
+    use ptz_core::transport::Output;
+    use ptz_server::hw::fake::{FakeAutoPod, FakeFr7};
+
+    let t = TestServer::start("lock-live-jump");
+    let api = t.client("a");
+    api.take_lease("Luke-MacBook", false).unwrap();
+    let (fr7, pod) = (FakeFr7::start(), FakeAutoPod::start());
+    let mut project = api.project().unwrap();
+    project.cameras[0].rig.kind = RigKind::Hardware;
+    project.cameras[0].rig.fr7_host = fr7.visca.to_string();
+    project.cameras[0].rig.fr7_http_port = fr7.http.port();
+    project.cameras[0].rig.fr7_user = fr7.user.clone();
+    project.cameras[0].rig.fr7_password = fr7.password.clone();
+    project.cameras[0].rig.autopod_host = pod.addr.to_string();
+    project.cameras[0].rig.autopod_calibration = FakeAutoPod::height_map();
+    let project = api.put_project(&project).unwrap();
+    wait_for(&api, |s| s.first().adapters.len() == 2 && s.first().adapters.iter().all(|a| a.connected));
+    let arm_speed = project.cameras[0].rig.positioning_speed * project.cameras[0].axes.pan.max_speed;
+
+    let created = api.new_song("Jump", Some("01:00:00:00")).unwrap();
+    let id = created.song.id.clone();
+    api.load_song(&id).unwrap();
+    let far: Preset = api
+        .post("/presets", &StorePreset { name: "Far".into(), pose: Some(Pose { pan: 150.0, ..Pose::home() }), camera: None })
+        .unwrap();
+    let (song, clip) = edit::insert_preset_move(&created.song, &project, &far, 25).unwrap();
+    let end = {
+        let c = song.motion_clip(&clip).unwrap();
+        c.start_frame + c.duration_frames
+    };
+    api.put_working(&PutWorking { expected_counter: 0, song }).unwrap();
+    api.save(&id).unwrap();
+    api.commit(&id).unwrap();
+
+    let addr = art_net_port(&api);
+    lock_to(&api, "artnet").unwrap();
+    do_act(&api, Action::Arm);
+    wait_for(&api, |s| s.transport.output == Output::Armed);
+    do_act(&api, Action::Play);
+    let desk = ArtNetDesk::start(addr, CodeRate::F25);
+    desk.set(Desk::Roll { code: code("01:00:00:00"), since: Instant::now() });
+    wait_for(&api, |s| s.transport.run == Run::Playing);
+    std::thread::sleep(Duration::from_millis(400));
+    assert_eq!(api.status().unwrap().transport.output, Output::Armed);
+
+    // The desk locates to after the end of the move, where the head belongs at 150 degrees, and rolls on.
+    let after = code("01:00:00:00") + end + 50;
+    desk.set(Desk::Roll { code: after, since: Instant::now() });
+    let began = Instant::now();
+    let mut samples: Vec<(Instant, f64)> = Vec::new();
+    let mut outputs = Vec::new();
+    while began.elapsed() < Duration::from_millis(2500) {
+        samples.push((Instant::now(), fr7.pose().0));
+        let st = api.status().unwrap();
+        if outputs.last() != Some(&(st.transport.output, st.transport.run)) {
+            outputs.push((st.transport.output, st.transport.run));
+        }
+        assert_eq!(st.telemetry.fault, None);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let fastest = samples
+        .iter()
+        .enumerate()
+        .filter_map(|(i, (t0, p0))| {
+            let (t1, p1) = samples[i..].iter().find(|(t, _)| t.duration_since(*t0) >= Duration::from_millis(300))?;
+            Some((p1 - p0).abs() / t1.duration_since(*t0).as_secs_f64())
+        })
+        .fold(0.0, f64::max);
+    assert!(outputs.iter().any(|(o, _)| *o == Output::Positioning), "the jump was never treated as a relocation: {outputs:?}");
+    assert!(fastest < arm_speed * 1.15, "the head went to the new code at {fastest:.1} deg/s");
+    assert!(fastest > arm_speed * 0.5, "and it did go: {fastest:.1} deg/s");
+    drop(desk);
+    do_act(&api, Action::Disarm);
+    wait_for(&api, |s| !s.telemetry.halting);
+}
