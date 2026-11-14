@@ -7,6 +7,7 @@ use serde_json::Value;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{channel, Sender};
 
 const GENESIS: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
@@ -22,6 +23,48 @@ pub struct RunLog {
     seq: u64,
     prev: String,
     recent: Vec<LogRecord>,
+    /// Files with records the disk may not hold yet, on their way to the thread that sees to it.
+    unflushed: Sender<File>,
+}
+
+/// What puts a file's records on the disk itself.
+pub type Flush = Box<dyn Fn(&File) + Send>;
+
+/// The show loop writes to the log while it is steering the rigs, and must never wait for a disk.
+/// A record is handed to the operating system as it is written, which is enough to outlive the
+/// server; this thread then has it put on the disk, which is what outlives the power.
+fn start_flusher(flush: Flush) -> Sender<File> {
+    let (unflushed, files) = channel::<File>();
+    let run = move || {
+        while let Ok(mut file) = files.recv() {
+            // One flush covers every record written before it. Only the newest handle of each
+            // file is needed, and a file changes only at midnight.
+            while let Ok(newer) = files.try_recv() {
+                let same = match (file.metadata(), newer.metadata()) {
+                    (Ok(a), Ok(b)) => same_file(&a, &b),
+                    _ => false,
+                };
+                if !same {
+                    flush(&file);
+                }
+                file = newer;
+            }
+            flush(&file);
+        }
+    };
+    let _ = std::thread::Builder::new().name("run-log".into()).spawn(run);
+    unflushed
+}
+
+#[cfg(unix)]
+fn same_file(a: &fs::Metadata, b: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    a.dev() == b.dev() && a.ino() == b.ino()
+}
+
+#[cfg(not(unix))]
+fn same_file(_: &fs::Metadata, _: &fs::Metadata) -> bool {
+    false
 }
 
 fn log_files(dir: &Path) -> Vec<PathBuf> {
@@ -49,6 +92,16 @@ fn read_records(path: &Path) -> Vec<Result<LogRecord, String>> {
 impl RunLog {
     /// Open the log, continuing the chain from the last record on disk.
     pub fn open(dir: &Path) -> RunLog {
+        RunLog::open_flushing_with(
+            dir,
+            Box::new(|file| {
+                let _ = file.sync_data();
+            }),
+        )
+    }
+
+    /// As `open`, with the step that puts records on the disk given by the caller.
+    pub fn open_flushing_with(dir: &Path, flush: Flush) -> RunLog {
         let _ = fs::create_dir_all(dir);
         // A crash can leave half a line at the end of the newest file. Drop it.
         if let Some(last) = log_files(dir).pop() {
@@ -72,10 +125,11 @@ impl RunLog {
                 }
             }
         }
-        RunLog { dir: dir.to_path_buf(), file: None, day: String::new(), seq, prev, recent }
+        RunLog { dir: dir.to_path_buf(), file: None, day: String::new(), seq, prev, recent, unflushed: start_flusher(flush) }
     }
 
-    /// Append a record and flush it to disk before returning.
+    /// Append a record. It is with the operating system before this returns, and on the disk
+    /// as soon as the disk allows, without the caller waiting for it.
     pub fn append(&mut self, kind: &str, data: Value) -> LogRecord {
         let time = now_rfc3339();
         let day = today();
@@ -89,7 +143,15 @@ impl RunLog {
         if let Some(f) = &mut self.file {
             if let Ok(line) = serde_json::to_string(&record) {
                 let _ = writeln!(f, "{line}");
-                let _ = f.sync_data();
+                match f.try_clone() {
+                    Ok(handle) => {
+                        let _ = self.unflushed.send(handle);
+                    }
+                    // Without a second handle to pass on, the record is still put on the disk.
+                    Err(_) => {
+                        let _ = f.sync_data();
+                    }
+                }
             }
         }
         self.prev = record.hash.clone();
@@ -146,6 +208,41 @@ mod tests {
         let d = std::env::temp_dir().join(format!("ptz-log-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         d
+    }
+
+    #[test]
+    fn writing_a_record_does_not_wait_for_a_slow_disk() {
+        let dir = temp("slow-disk");
+        let flushes = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let counted = flushes.clone();
+        // A disk that takes a fifth of a second over every flush.
+        let mut log = RunLog::open_flushing_with(
+            &dir,
+            Box::new(move |file| {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                let _ = file.sync_data();
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }),
+        );
+        // What twelve cameras write in one pass of the show loop.
+        let began = std::time::Instant::now();
+        for camera in 0..12 {
+            log.append("pose", json!({ "camera": camera }));
+        }
+        let took = began.elapsed();
+        assert!(took < std::time::Duration::from_millis(150), "twelve records held the show loop for {took:?}");
+        // Every record is already where a reader, and a restarted server, finds it.
+        assert_eq!(verify(&dir), Ok(12));
+        // And the disk is asked to hold them, without one flush for each.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while flushes.load(std::sync::atomic::Ordering::SeqCst) == 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let flushed = flushes.load(std::sync::atomic::Ordering::SeqCst);
+        assert!((1..=2).contains(&flushed), "{flushed} flushes for one burst of records");
+        drop(log);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
