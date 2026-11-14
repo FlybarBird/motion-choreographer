@@ -1,10 +1,13 @@
 # PTZ Programmer
 
-Timeline programming and playout for a Sony FR7 on an AutoPod+ pedestal.
+Timeline programming and playout for up to twelve Sony FR7 cameras, each on an
+AutoPod+ pedestal.
 
 You build a song by dragging camera presets onto a timeline. Each move takes its
 time from the distance between the two poses and the rig's speed limits, and you
-can stretch, squeeze, ease or key it by hand. The show runs on a server; the
+can stretch, squeeze, ease or key it by hand. Every camera has its own lane, its
+own lens and its own place in a 3D model of the venue, so the monitors show what
+each one will frame before anything moves. The show runs on a server; the
 desktop app connects to it from the same Mac or from another machine.
 
 Two programs:
@@ -66,13 +69,101 @@ server address and the key on the app's connect screen.
 3. Drag a move to slide it. Drag its right edge to make it longer; it switches
    from auto time to custom time. Squeeze it too short and it turns amber with
    the reason; **Use auto time** in the Inspector clears it.
-4. Press **Space** to rehearse. The Program monitor shows the framing; nothing is
-   sent to the rig.
+4. Press **Space** to rehearse. The Program monitor shows the selected camera's
+   framing through its lens; nothing is sent to the rig.
 5. **Save**, then **Commit**. Only a committed revision can be armed.
 
 Edges snap to the playhead, markers and other clips; hold Shift to turn snapping
 off. Cmd-Z and Shift-Cmd-Z undo and redo. `M` adds a marker, `\` fits the song
 to the window, Home cues to the start, the arrow keys step one frame.
+
+## Cameras
+
+A show holds one to twelve cameras. The camera bar under the transport lists
+them; click one, or press `1` to `9`, `0`, `-` and `=`, to select it. The
+Program monitor, the Presets tab, the Rig controller and Record all follow the
+selected camera. Each camera has its own **Camera move** lane on the timeline,
+with its own axis lanes, and a preset dropped on a lane belongs to that camera.
+
+Cameras are added, named, reordered and removed in the Inspector with nothing
+selected, under **Cameras**. **Add a camera** copies the selected camera's
+lens, limits and rules onto a new one on the simulator, two metres to its
+right. Removing a camera removes its presets, and its clips block Arm until
+they are deleted. Rig limits, keep-out rules, the rig settings, the lens and
+the position below it are those of the selected camera.
+
+**When a camera faults** chooses what the others do: *Hold that camera, the
+others carry on* (the default), or hold them all. E-Stop always stops every
+camera.
+
+The **Multiview** tab shows every camera's picture at once, in a grid that
+grows from one tile to four by three, with each camera's name, state and focal
+length. Click a tile to select that camera.
+
+### Lenses
+
+Each camera has a lens: its name, the sensor width (full frame, Super 35 or a
+typed width), the focal length at the wide and long ends, and the widest
+aperture. The list offers the FR7 kit zoom (FE PZ 28-135mm F4 G OSS) and four
+other E-mount zooms; any other lens is typed in.
+
+From those the Inspector shows, for the zoom the camera is at now: the focal
+length, the angle of view (wide, high and diagonal), how far away the centre of
+the frame lands in the stage model, how wide and high the frame is there, and
+the range that is sharp at that distance. Tick **At a distance of** to work
+those out for a typed distance instead. Every picture in the app (Program,
+Multiview, the preset cards, the view cones in the Stage view) is drawn with
+these numbers, so changing a lens changes the framing everywhere.
+
+Zoom is taken to run evenly in stops from the wide end to the long end.
+Bring-up can check that against the real lens.
+
+### The stage model
+
+The Program monitor is a rendering of the venue from where the camera stands.
+Until a model is imported it shows a small built-in stage. To use your own:
+
+- Drop an `.obj` or `.3ds` file on the window, or use **Import a model** in the
+  Inspector under **Stage** (or type its path in the field beside it).
+- An OBJ's `.mtl` file is read from the same folder for its colours. Textures
+  are not used; each surface takes its material's colour.
+- The app reads the file and sends the server a compact mesh, so every station
+  sees the same model. Up to 1.5 million triangles and 200 MB.
+
+The Inspector then shows the model's size in metres. If it is wrong, change
+**One unit is** (millimetres, centimetres, metres, inches, feet; the first guess
+comes from the model's size) or **Up** (OBJ files are taken as Y up, 3DS as Z
+up). **Turned** and **Moved** place it; **Sit on the floor** puts its lowest
+point at height zero and **Centre** puts its middle over the origin. **Remove
+the model** brings the built-in stage back for every station.
+
+Distances are in metres, Z is up, and a camera with heading 0 and pan 0 looks
+along +Y.
+
+### Placing cameras: the Stage view
+
+The **Stage** tab shows the model from outside with every camera, its name and
+the cone it sees, which follows its pan, tilt, zoom and lens as the song plays.
+
+| Tool | What it does |
+| --- | --- |
+| **Select** | Click a camera, or its name, to select it. Drag empty space to look around. |
+| **Move** | Drag a camera across the floor. With **Snap to model** it follows the surface under the pointer, so it can stand on a riser or a balcony. |
+| **Rotate** | Drag around a camera to turn where its pan 0 points. Shift steps by 5 degrees. |
+| **Place** | Click where the selected camera should stand. |
+| **Aim** | Click what the selected camera's pan 0 should face. |
+| **Measure** | Click two points; the distance, and how much of it is along the floor and up, is read out. |
+
+**Perspective**, **Top**, **Front** and **Side** choose the angle and fit the
+stage to it; **Fit** does so again. In the flat views **Cut** hides a ceiling or
+a near wall. Right-drag or Shift-drag slides the view and the scroll wheel
+zooms. Escape cancels a drag, and **Undo move** puts the last camera moved back.
+
+The same numbers are in the Inspector under **Position on the stage**: floor
+position, heading, and the height of the lens above the floor with the column
+down. **Face the stage** turns the camera to the middle of the model and **Drop
+to the surface below** stands it on whatever is under it. Placing cameras needs
+the edit lease and is refused while armed.
 
 ## Audio
 
@@ -225,9 +316,10 @@ One station at a time holds the edit lease. Others watch, and can take over.
 
 Rehearse never sends a motion command to the rig. To move it:
 
-1. **Arm (moves rig to playhead)**. The rig travels to the pose at the playhead
-   at a fraction of its top speed (**Arm moves at** in the rig settings, half
-   speed to start with). The bar reads ARMING, then ARMED when every axis has arrived.
+1. **Arm (moves rig to playhead)**. Every camera's rig travels to its pose at
+   the playhead at a fraction of its top speed (**Arm moves at** in the rig
+   settings, half speed to start with). The bar reads ARMING, then ARMED when
+   every axis of every camera has arrived.
 2. **Play Live**, or **Play to code** when locked. Twenty times a second the
    server steers each axis toward the timeline and compares where the rig says
    it is with where the timeline was at the moment of that reading.
@@ -237,11 +329,11 @@ Rehearse never sends a motion command to the rig. To move it:
 Arm is refused, with the reason on the button, unless the transport is stopped,
 Record is off, the loaded song is a committed revision with no unsaved edits,
 every timeline issue is fixed (or, for speed and acceleration, accepted with
-**Accept as programmed**), both devices are answering and the AutoPod+ is
-calibrated. While armed the song, the presets and the project settings cannot
+**Accept as programmed**), and every camera's devices are answering with its
+AutoPod+ calibrated. While armed the song, the presets and the project settings cannot
 be changed.
 
-The rig is held and output is cut, with the reason in red on the bar and in the
+A camera's rig is held and its output is cut, with the reason in red on the bar and in the
 Rig controller tab until the next Arm or Play, when:
 
 - an axis stays further from the timeline than its tolerance for longer than
@@ -251,7 +343,7 @@ Rig controller tab until the next Arm or Play, when:
 - a device stops answering;
 - the rig does not reach the playhead pose while arming.
 
-**E-Stop** stops both devices, repeats the stop until they report standing
+**E-Stop** stops every camera and pedestal, repeats the stop until they report standing
 still, cuts output and latches until **Reset E-Stop**. It works from any
 station, in any state, with or without the edit lease, and over the API as
 `POST /api/v1/estop`.
@@ -273,9 +365,10 @@ that only the path to the playhead would break still holds the rig.
 
 ## The real rig
 
-Under **Rig** in the project settings, **Drives** switches the server between
-the simulator and **FR7 and AutoPod+**. It can only be changed while stopped and
-disarmed.
+Under **Rig** in the project settings, **Drives** switches the selected camera
+between the simulator and **FR7 and AutoPod+**. Each camera has its own
+addresses and settings, and a show can mix real rigs and simulated ones. It can
+only be changed while stopped and disarmed.
 
 | Setting | What it is |
 | --- | --- |
@@ -302,6 +395,8 @@ ptz-bringup fakes      # FR7 on 127.0.0.1:52381 (web 8088, login admin / fr7-pas
 
 and point the rig settings at them. They speak the same bytes as the adapters
 expect, move at believable speeds and can be watched in that terminal.
+`ptz-bringup fakes --count 12` runs twelve pairs, each on the next ports up
+(VISCA 52381 to 52392, web 8088, 8090, ..., AutoPod+ 8089, 8091, ...).
 
 ### Bring-up on site
 
@@ -398,6 +493,7 @@ run the real server and adapters against the stand-in devices over loopback.
 | Path | What it is |
 | --- | --- |
 | `crates/core` | Song model, timecode, motion evaluation and feasibility, edit operations, transport rules, timecode codecs. No I/O. Linked by both programs so they cannot disagree. |
+| `crates/scene` | Reads OBJ and 3DS files, holds the mesh, renders it with a depth buffer on the CPU, and finds what a ray hits. No dependencies. |
 | `crates/server` | `ptz-server`, plus `ptz-probe` and `ptz-bringup`. |
 | `crates/app` | `ptz-app`. |
 | `scripts/macos-install.sh` | The Mac installer. |
@@ -405,6 +501,6 @@ run the real server and adapters against the stand-in devices over loopback.
 Data folder (`~/PTZProgrammer` by default): `project.json`, `presets.json`,
 `songs/<id>/working.json`, `draft.json`, `rev/NNNN.json` and `passes/`, `media/<id>/`
 (the original file, the decoded audio, the waveform overview, the frame
-pictures of a video), `log/`.
+pictures of a video), `stage/model.ptzmesh` (the imported stage model), `log/`.
 Every file is written to a temporary name and renamed, so a crash never leaves a
 half-written song.
