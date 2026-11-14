@@ -143,6 +143,11 @@ pub enum Event {
         msg: String,
     },
     Info(String),
+    /// An E-Stop was pressed here and the server has not taken it. `trying` while it is still being sent.
+    StopNotSent {
+        why: String,
+        trying: bool,
+    },
 }
 
 #[derive(Debug)]
@@ -170,12 +175,16 @@ pub struct Link {
     pub rx: Receiver<Event>,
     pub base: String,
     frames: Sender<FrameKey>,
+    /// E-Stop goes out here, on a thread that does nothing else.
+    stops: Sender<Cmd>,
     stop: Arc<AtomicBool>,
 }
 
 impl Link {
     pub fn send(&self, cmd: Cmd) {
-        let _ = self.tx.send(cmd);
+        // E-Stop does not wait its turn behind whatever else was asked of the server.
+        let lane = if matches!(cmd, Cmd::Act(Action::Estop, _)) { &self.stops } else { &self.tx };
+        let _ = lane.send(cmd);
     }
 
     /// Ask for a picture. It arrives later as `Event::Frame`, unless newer requests crowd it out.
@@ -189,7 +198,8 @@ impl Link {
         let (tx, cmd_rx) = channel();
         let (ev_tx, rx) = channel();
         let (frames, _) = channel();
-        (Link { tx, rx, base: "test".into(), frames, stop: Arc::new(AtomicBool::new(false)) }, cmd_rx, ev_tx)
+        let stops = tx.clone();
+        (Link { tx, rx, base: "test".into(), frames, stops, stop: Arc::new(AtomicBool::new(false)) }, cmd_rx, ev_tx)
     }
 }
 
@@ -212,8 +222,16 @@ pub fn connect(base: &str, key: Option<&str>, station: &str, repaint: Repaint) -
     let (ev_tx, rx) = channel::<Event>();
     let stop = Arc::new(AtomicBool::new(false));
     let (frames, frame_rx) = channel::<FrameKey>();
-    let link = Link { tx: tx.clone(), rx, base: api.base().to_string(), frames, stop: stop.clone() };
+    let (stops, stop_rx) = channel::<Cmd>();
+    let link = Link { tx: tx.clone(), rx, base: api.base().to_string(), frames, stops, stop: stop.clone() };
     let station = station.to_string();
+    {
+        let (api, events, repaint) = (api.clone(), ev_tx.clone(), repaint.clone());
+        std::thread::Builder::new()
+            .name("link-stop".into())
+            .spawn(move || stop_loop(api, stop_rx, events, repaint, StopPatience::default()))
+            .expect("stop thread");
+    }
     {
         let (api, events, repaint) = (api.clone(), ev_tx.clone(), repaint.clone());
         std::thread::Builder::new()
@@ -226,6 +244,69 @@ pub fn connect(base: &str, key: Option<&str>, station: &str, repaint: Repaint) -
         .spawn(move || worker(api, station, cmd_rx, tx, ev_tx, stop, repaint))
         .expect("link thread");
     link
+}
+
+/// How E-Stop is sent when the server does not take it at once.
+#[derive(Clone, Copy)]
+struct StopPatience {
+    /// With no answer for this long the operator is told. The request is left to run: it may yet arrive.
+    answer: Duration,
+    /// A stop that has not been taken is sent again, this long after the last try,
+    again: Duration,
+    /// until this long after it was pressed. A stop is not left to arrive out of the blue minutes later.
+    give_up: Duration,
+}
+
+impl Default for StopPatience {
+    fn default() -> Self {
+        StopPatience { answer: Duration::from_secs(2), again: Duration::from_millis(500), give_up: Duration::from_secs(10) }
+    }
+}
+
+/// Send each E-Stop the moment it is pressed, on a connection of its own, and say so if it is not taken.
+/// It is sent whatever the rest of the link believes about the server: the press is never dropped.
+fn stop_loop(api: Api, presses: Receiver<Cmd>, events: Sender<Event>, repaint: Repaint, patience: StopPatience) {
+    let emit = |event: Event| {
+        let _ = events.send(event);
+        repaint();
+    };
+    while let Ok(press) = presses.recv() {
+        let Cmd::Act(action, req) = press else { continue };
+        let mut pressed = Instant::now();
+        loop {
+            let (answer, answered) = channel();
+            let (api, req) = (api.clone(), req.clone());
+            let sent = std::thread::Builder::new().name("link-stop-send".into()).spawn(move || {
+                let _ = answer.send(api.act(action, &req));
+            });
+            let outcome = match sent {
+                Err(e) => Err(e.to_string()),
+                Ok(_) => match answered.recv_timeout(patience.answer) {
+                    Ok(Ok(status)) => Ok(status),
+                    Ok(Err(e)) => Err(e.message().to_string()),
+                    Err(_) => Err(format!("The server has not answered in {:.0} s", patience.answer.as_secs_f32())),
+                },
+            };
+            // Pressed again meanwhile: the time for trying starts over.
+            if presses.try_iter().count() > 0 {
+                pressed = Instant::now();
+            }
+            match outcome {
+                Ok(status) => {
+                    emit(Event::Status(Box::new(status)));
+                    break;
+                }
+                Err(why) => {
+                    let trying = pressed.elapsed() + patience.again < patience.give_up;
+                    emit(Event::StopNotSent { why, trying });
+                    if !trying {
+                        break;
+                    }
+                    std::thread::sleep(patience.again);
+                }
+            }
+        }
+    }
 }
 
 fn hello(api: &Api, station: &str) -> Result<Hello, ApiErr> {
@@ -954,6 +1035,103 @@ mod tests {
             (order.len() == 2).then_some(())
         });
         assert_eq!(order, ["estop", "upload answered"], "E-Stop was answered while the file was still on its way");
+    }
+
+    /// Passes everything through to `upstream`, but holds any request for `slow` back by `delay`.
+    fn slow_proxy(upstream: &str, slow: &'static str, delay: Duration) -> String {
+        use std::io::{Read, Write};
+        use std::net::{Shutdown, TcpListener, TcpStream};
+        let upstream = upstream.trim_start_matches("http://").trim_end_matches('/').to_string();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for client in listener.incoming().flatten() {
+                let Ok(server) = TcpStream::connect(&upstream) else { continue };
+                let (mut from_client, mut to_client) = (client.try_clone().unwrap(), client);
+                let (mut from_server, mut to_server) = (server.try_clone().unwrap(), server);
+                std::thread::spawn(move || {
+                    let mut buf = [0u8; 16384];
+                    while let Ok(n) = from_client.read(&mut buf) {
+                        if n == 0 {
+                            break;
+                        }
+                        let head = &buf[..n.min(200)];
+                        if head.starts_with(b"GET ") && head.windows(slow.len()).any(|w| w == slow.as_bytes()) {
+                            std::thread::sleep(delay);
+                        }
+                        if to_server.write_all(&buf[..n]).is_err() {
+                            break;
+                        }
+                    }
+                    let _ = to_server.shutdown(Shutdown::Both);
+                });
+                std::thread::spawn(move || {
+                    let _ = std::io::copy(&mut from_server, &mut to_client);
+                    let _ = to_client.shutdown(Shutdown::Both);
+                });
+            }
+        });
+        url
+    }
+
+    #[test]
+    fn e_stop_does_not_wait_for_the_answer_to_an_earlier_request() {
+        let site = Site::open("stop-first");
+        // The list of timecode inputs takes two seconds to come back: a slow device scan, a busy network.
+        let url = slow_proxy(&site.url, "/inputs", Duration::from_secs(2));
+        let link = connect(&url, None, "Luke", Arc::new(|| {}));
+        wait(&link, |event| match event {
+            Event::Connected(_) => Some(()),
+            Event::ConnectFailed(why) => panic!("{why}"),
+            _ => None,
+        });
+        link.send(Cmd::RefreshInputs);
+        std::thread::sleep(Duration::from_millis(100));
+        let pressed = Instant::now();
+        link.send(Cmd::Act(Action::Estop, TransportRequest::default()));
+        wait(&link, |event| match event {
+            Event::Status(status) if status.transport.estop => Some(()),
+            _ => None,
+        });
+        let took = pressed.elapsed();
+        assert!(took < Duration::from_millis(500), "E-Stop reached the server {took:?} after it was pressed");
+    }
+
+    #[test]
+    fn an_e_stop_the_server_does_not_take_is_reported_at_once_and_sent_again_for_a_while() {
+        // A port with nothing listening on it: the server is down.
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let api = Api::new(&format!("127.0.0.1:{port}"), "test", None);
+        let (presses, press_rx) = channel();
+        let (events, event_rx) = channel();
+        let patience = StopPatience {
+            answer: Duration::from_secs(2),
+            again: Duration::from_millis(100),
+            give_up: Duration::from_millis(650),
+        };
+        std::thread::spawn(move || stop_loop(api, press_rx, events, Arc::new(|| {}), patience));
+        let pressed = Instant::now();
+        presses.send(Cmd::Act(Action::Estop, TransportRequest::default())).unwrap();
+        let mut said = Vec::new();
+        loop {
+            match event_rx.recv_timeout(Duration::from_secs(5)).expect("every try is reported") {
+                Event::StopNotSent { why, trying } => {
+                    assert!(!why.is_empty());
+                    if said.is_empty() {
+                        assert!(pressed.elapsed() < Duration::from_millis(500), "the first report took {:?}", pressed.elapsed());
+                    }
+                    said.push(trying);
+                    if !trying {
+                        break;
+                    }
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        assert!(said.len() >= 3, "it was sent again: {said:?}");
+        assert!(said[..said.len() - 1].iter().all(|trying| *trying), "{said:?}");
+        assert!(pressed.elapsed() < Duration::from_secs(2), "it gave up after {:?}", pressed.elapsed());
+        assert!(event_rx.recv_timeout(Duration::from_millis(400)).is_err(), "nothing is sent after giving up");
     }
 
     #[test]
