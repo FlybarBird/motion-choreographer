@@ -118,7 +118,11 @@ pub fn parse_reply(raw: &[u8]) -> Option<(u16, String)> {
 /// The raw tilt value from `aPC` plus eight hex digits (pan, then tilt).
 pub fn parse_position(answer: &str) -> Option<u16> {
     let digits = answer.trim().strip_prefix("aPC")?;
-    (digits.len() == 8).then(|| u16::from_str_radix(&digits[4..], 16).ok()).flatten()
+    // Anything but eight hex digits is not a position, whatever a damaged reply holds in their place.
+    if digits.len() != 8 || !digits.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    u16::from_str_radix(&digits[4..], 16).ok()
 }
 
 /// Millimetres for a raw position, by straight lines between the measured
@@ -420,7 +424,20 @@ fn run(cfg: PodConfig, state: Arc<Mutex<State>>) {
             return;
         }
         cycle += 1;
-        let step = (|| -> Result<(), String> {
+        // A stop goes out before anything is asked of the column, so it never waits on a reading
+        // and is not lost with one. A column that has not been heard from may still be on the
+        // last speed it was given, by this server or by one that died while live.
+        let stop_first = {
+            let s = lock();
+            s.mode == Mode::Stop || (!s.connected && s.mode == Mode::Idle)
+        };
+        let stop = if stop_first { link.stop() } else { Ok(()) };
+        let stop_sent = stop_first && stop.is_ok();
+        let unreachable = stop.err().filter(|_| !link.last_refused);
+        let step = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), String> {
+            if let Some(why) = unreachable {
+                return Err(why);
+            }
             let raw = link.position()? as f64;
             let read_at = Instant::now() - link.last_round_trip / 2;
             let round_trip_ms = link.last_round_trip.as_secs_f64() * 1000.0;
@@ -485,7 +502,9 @@ fn run(cfg: PodConfig, state: Arc<Mutex<State>>) {
                     }
                 }
                 Mode::Stop => {
-                    link.stop()?;
+                    if !stop_sent {
+                        link.stop()?;
+                    }
                     lock().refused = None;
                     stops_sent += 1;
                     still = if moved { 0 } else { still + 1 };
@@ -498,18 +517,35 @@ fn run(cfg: PodConfig, state: Arc<Mutex<State>>) {
                 }
             }
             Ok(())
-        })();
+        }));
+        let step = step.unwrap_or_else(|_| {
+            // An answer this code did not expect is a column that cannot be read, not the end of the adapter.
+            link.last_refused = false;
+            Err(format!("the AutoPod+ at {} gave an answer the adapter could not handle", cfg.host))
+        });
         if let Err(why) = step {
+            let refused = link.last_refused;
             let mut s = lock();
-            if link.last_refused && s.connected {
-                // The unit is there and said no: a setting or firmware matter, not a lost cable.
-                s.refused = Some(why);
-                last_byte = None;
-            } else {
+            // A column that cannot be read cannot be steered. It is not left on its last speed.
+            let driving = matches!(s.mode, Mode::Drive(_));
+            if driving {
+                s.mode = Mode::Stop;
+            }
+            let lost = !(refused && s.connected);
+            if lost {
                 s.connected = false;
                 s.moving = false;
                 s.detail = why;
-                drop(s);
+            } else {
+                // The unit is there and said no: a setting or firmware matter, not a lost cable.
+                s.refused = Some(why);
+            }
+            drop(s);
+            last_byte = None;
+            if driving {
+                let _ = link.stop();
+            }
+            if lost {
                 std::thread::sleep(Duration::from_millis(250));
             }
         }
@@ -591,6 +627,10 @@ mod tests {
         assert_eq!(parse_position("aPC80008000"), Some(0x8000));
         assert_eq!(parse_position("aPC7FFF"), None);
         assert_eq!(parse_position("rER00"), None);
+        // What a reply with one damaged byte reads as: the same length, and not a position.
+        assert_eq!(parse_position(&String::from_utf8_lossy(b"aPC80\xE9000")), None);
+        assert_eq!(parse_position("aPC8000+A3C"), None);
+        assert_eq!(parse_position("aPC????????"), None);
         assert_eq!(Calibration::parse("rER00"), Calibration::Calibrated);
         assert_eq!(Calibration::parse("rER53"), Calibration::Uncalibrated);
         assert_eq!(Calibration::parse("rER42"), Calibration::Calibrating);

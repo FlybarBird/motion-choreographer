@@ -10,6 +10,10 @@ use ptz_server::hw::fr7::{self, Fr7Config};
 use ptz_server::hw::visca::{self, Turn};
 use ptz_server::hw::HardwareRig;
 use ptz_server::rig::{Drive, Ride, RigAdapter};
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 fn fr7_config(fake: &FakeFr7) -> Fr7Config {
@@ -426,4 +430,133 @@ fn standby_and_a_refused_speed_command_are_problems_that_keep_the_connection() {
     }
     assert_eq!(rig.problem(), None);
     rig.stop();
+}
+
+/// Sits between the adapter and the stand-in leg box. While `garble` holds bytes, the
+/// answer to the position question is replaced by them; every command still reaches the box.
+struct PodProxy {
+    addr: SocketAddr,
+    garble: Arc<Mutex<Option<Vec<u8>>>>,
+    quit: Arc<AtomicBool>,
+}
+
+impl PodProxy {
+    fn start(real: SocketAddr) -> PodProxy {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let garble: Arc<Mutex<Option<Vec<u8>>>> = Arc::new(Mutex::new(None));
+        let quit = Arc::new(AtomicBool::new(false));
+        let (g, q) = (garble.clone(), quit.clone());
+        std::thread::spawn(move || {
+            while !q.load(Ordering::Relaxed) {
+                let Ok((mut client, _)) = listener.accept() else {
+                    std::thread::sleep(Duration::from_millis(1));
+                    continue;
+                };
+                let _ = client.set_nonblocking(false);
+                let _ = client.set_read_timeout(Some(Duration::from_millis(500)));
+                let mut request = Vec::new();
+                let mut chunk = [0u8; 512];
+                while !request.ends_with(b"\r\n\r\n") {
+                    match client.read(&mut chunk) {
+                        Ok(n) if n > 0 => request.extend_from_slice(&chunk[..n]),
+                        _ => break,
+                    }
+                }
+                let Ok(mut upstream) = TcpStream::connect(real) else { continue };
+                let _ = upstream.write_all(&request);
+                let mut reply = Vec::new();
+                let _ = upstream.read_to_end(&mut reply);
+                let is_position = request.starts_with(b"GET /cgi-bin/aw_ptz?cmd=%23APC&res=1 ");
+                if let Some(body) = g.lock().unwrap().clone().filter(|_| is_position) {
+                    reply = b"HTTP/1.0 200 OK\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\n".to_vec();
+                    reply.extend_from_slice(&body);
+                    reply.extend_from_slice(b"\r\n");
+                }
+                let _ = client.write_all(&reply);
+            }
+        });
+        PodProxy { addr, garble, quit }
+    }
+
+    fn garble(&self, body: Option<&[u8]>) {
+        *self.garble.lock().unwrap() = body.map(<[u8]>::to_vec);
+    }
+}
+
+impl Drop for PodProxy {
+    fn drop(&mut self) {
+        self.quit.store(true, Ordering::Relaxed);
+    }
+}
+
+/// A rig with only a pedestal, reached through `proxy`, with the column on its way up at full speed.
+fn a_rising_column(pod: &FakeAutoPod, proxy: &PodProxy) -> HardwareRig {
+    let mut cfg = rig_config(None, Some(pod));
+    cfg.autopod_host = proxy.addr.to_string();
+    let mut rig = HardwareRig::start(&cfg, &AxisTable::default());
+    wait_until("the leg box answers", || rig.problem().is_none());
+    let drive = Drive::to(Pose { elevation: 600.0, ..Pose::home() }, 1.0);
+    let began = Instant::now();
+    while began.elapsed() < Duration::from_millis(400) {
+        rig.drive(&drive);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(pod.is_moving(), "the column is on its way up");
+    rig
+}
+
+#[test]
+fn a_damaged_position_answer_stops_the_column_and_leaves_the_adapter_running() {
+    let pod = FakeAutoPod::start();
+    let proxy = PodProxy::start(pod.addr);
+    let mut rig = a_rising_column(&pod, &proxy);
+
+    // One byte of the position answer arrives damaged, while the column is being driven.
+    proxy.garble(Some(b"aPC80\xE9000"));
+    let drive = Drive::to(Pose { elevation: 600.0, ..Pose::home() }, 1.0);
+    let began = Instant::now();
+    while rig.problem().is_none() && began.elapsed() < Duration::from_secs(2) {
+        rig.drive(&drive);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // The adapter says so, and stops a column it can no longer read, without being told to.
+    assert!(rig.problem().is_some_and(|p| p.contains("not answering")), "{:?}", rig.problem());
+    wait_until("the column is stopped", || !pod.is_moving());
+
+    // The answers are good again: the adapter is still there to read them, and to stop when told.
+    proxy.garble(None);
+    wait_until("the leg box is read again", || rig.problem().is_none());
+    let began = Instant::now();
+    while began.elapsed() < Duration::from_millis(400) {
+        rig.drive(&drive);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(pod.is_moving(), "the column is driven again");
+    rig.stop();
+    wait_until("the column stops when told", || !pod.is_moving());
+    wait_until("the rig reads as standing still", || !rig.is_moving());
+}
+
+#[test]
+fn a_column_whose_position_cannot_be_read_is_still_told_to_stop() {
+    let pod = FakeAutoPod::start();
+    let proxy = PodProxy::start(pod.addr);
+    let mut rig = a_rising_column(&pod, &proxy);
+
+    // The position answer turns to rubbish and stays that way. Speed commands still get through.
+    // The stop does not wait for a reading that is not coming.
+    proxy.garble(Some(b"aPC????"));
+    wait_until("the column is stopped", || !pod.is_moving());
+    let height = pod.height_mm();
+    assert!(rig.problem().is_some_and(|p| p.contains("not answering")), "{:?}", rig.problem());
+
+    // E-Stop, with the position still unreadable: the stop is sent, and sent again.
+    pod.clear_seen();
+    rig.stop();
+    wait_until("stop is repeated", || pod.orders().len() >= 3);
+    assert!(pod.orders().iter().all(|c| c == autopod::STOP), "{:?}", pod.orders());
+    assert_eq!(pod.height_mm(), height);
+    assert!(rig.is_moving(), "a column that cannot be read is not reported as standing still");
 }
