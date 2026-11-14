@@ -214,8 +214,11 @@ impl SongClock {
 
     /// Song position for a code expressed as frames since midnight.
     /// Code earlier than the song start is `Before`; it never becomes a negative frame.
+    /// Like `offset_of`, it takes the short way round midnight.
     pub fn locate(&self, code_frames: i64) -> SongPos {
-        let rel = code_frames - self.start_frames;
+        let day = self.rate.frames_per_day();
+        let rel = (code_frames.rem_euclid(day) - self.start_frames).rem_euclid(day);
+        let rel = if rel > day / 2 { rel - day } else { rel };
         if rel < 0 {
             SongPos::Before
         } else if rel > self.length_frames {
@@ -379,5 +382,24 @@ mod tests {
         assert!(Timecode::parse("aa:00:00:00").is_none());
         assert!(Timecode::parse_at("01:00:00:25", FrameRate::F25).is_none());
         assert!(Timecode::parse_at("24:00:00:00", FrameRate::F25).is_none());
+    }
+
+    #[test]
+    fn a_code_just_after_midnight_is_found_inside_a_song_that_started_before_it() {
+        let rate = FrameRate::F25;
+        let clock = SongClock::new(rate, Timecode::parse_at("23:59:50:00", rate).unwrap(), 4500);
+        let at = |s: &str| clock.locate_tc(Timecode::parse_at(s, rate).unwrap());
+        assert_eq!(at("23:59:50:00"), SongPos::In(0));
+        assert_eq!(at("23:59:59:24"), SongPos::In(249));
+        assert_eq!(at("00:00:00:00"), SongPos::In(250));
+        assert_eq!(at("00:00:10:00"), SongPos::In(500));
+        assert_eq!(at("23:59:49:24"), SongPos::Before);
+        assert_eq!(at("00:10:00:00"), SongPos::After);
+        // It agrees with the offset the server plays from.
+        let code = Timecode::parse_at("00:00:10:00", rate).unwrap().to_frames(rate);
+        assert_eq!(clock.offset_of(code as f64), 500.0);
+        // A song that starts just after midnight: code from just before it is before the song.
+        let early = SongClock::new(rate, Timecode::parse_at("00:00:05:00", rate).unwrap(), 4500);
+        assert_eq!(early.locate_tc(Timecode::parse_at("23:59:59:00", rate).unwrap()), SongPos::Before);
     }
 }
