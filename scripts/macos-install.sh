@@ -1,23 +1,29 @@
 #!/usr/bin/env bash
-# Build PTZ Programmer for an Apple Silicon Mac and install it for this user.
+# Build PTZ Programmer for this Mac (Apple Silicon or Intel) and install it for this user.
 #
-#   scripts/macos-install.sh
+#   scripts/macos-install.sh               build and install, or install over an older version
+#   scripts/macos-install.sh --uninstall   remove the app and the tool links; the show data stays
 #
 # Installs:
 #   ~/Applications/PTZ Programmer.app          the desktop app
 #   ~/.local/bin/ptz-server, ptz-probe, ptz-bringup   links into the bundle
 #
 # Environment (all optional):
-#   PTZ_TARGET       Rust target triple       (default aarch64-apple-darwin)
+#   PTZ_TARGET       Rust target triple       (default: this Mac's, aarch64- or x86_64-apple-darwin)
 #   PTZ_APP_DEST     where the .app goes      (default ~/Applications)
 #   PTZ_BIN_DEST     where the tool links go  (default ~/.local/bin)
 #   PTZ_SKIP_BUILD   1 = use binaries already in target/<triple>/release
-#   PTZ_SKIP_CHECKS  1 = do not check for Xcode tools or the macOS platform
+#   PTZ_SKIP_CHECKS  1 = do not check for Xcode tools, the macOS platform, the Rust version
+#                        or a server still running from the installed app
 #   PTZ_SKIP_SIGN    1 = do not run codesign
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TARGET="${PTZ_TARGET:-aarch64-apple-darwin}"
+case "$(uname -m)" in
+  x86_64) HOST_TARGET="x86_64-apple-darwin" ;;
+  *) HOST_TARGET="aarch64-apple-darwin" ;;
+esac
+TARGET="${PTZ_TARGET:-$HOST_TARGET}"
 APP_DEST="${PTZ_APP_DEST:-$HOME/Applications}"
 BIN_DEST="${PTZ_BIN_DEST:-$HOME/.local/bin}"
 APP_NAME="PTZ Programmer"
@@ -29,6 +35,27 @@ fail() {
   printf 'error: %s\n' "$*" >&2
   exit 1
 }
+
+INSTALLED="$APP_DEST/$APP_NAME.app"
+
+# A server started from the installed app keeps running from the old files after they are replaced.
+running_from_install() {
+  pgrep -fl 'ptz-(server|app)' 2>/dev/null | grep -F "$INSTALLED/" || true
+}
+
+if [ "${1:-}" = "--uninstall" ]; then
+  if [ "${PTZ_SKIP_CHECKS:-0}" != "1" ] && [ -n "$(running_from_install)" ]; then
+    fail "PTZ Programmer is still running from $INSTALLED. Quit the app and stop ptz-server, then run this again"
+  fi
+  rm -rf "${INSTALLED:?}"
+  for bin in "${TOOLS[@]}"; do
+    if [ -L "$BIN_DEST/$bin" ]; then rm -f "$BIN_DEST/$bin"; fi
+  done
+  say "Removed $INSTALLED and the links in $BIN_DEST"
+  say "Kept: the show data (~/PTZProgrammer unless you chose another folder) and the app's settings"
+  exit 0
+fi
+[ $# -eq 0 ] || fail "unknown option $1. Use --uninstall, or no option to install"
 
 # 1. Tools.
 if [ "${PTZ_SKIP_CHECKS:-0}" != "1" ]; then
@@ -43,6 +70,19 @@ fi
 
 VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/Cargo.toml" | head -n 1)"
 [ -n "$VERSION" ] || fail "could not read the version from Cargo.toml"
+
+if [ "${PTZ_SKIP_CHECKS:-0}" != "1" ]; then
+  NEED="$(sed -n 's/^rust-version = "\(.*\)"/\1/p' "$ROOT/Cargo.toml" | head -n 1)"
+  HAVE="$(rustc --version 2>/dev/null | sed -n 's/^rustc \([0-9]*\.[0-9]*\).*/\1/p')"
+  if [ -n "$NEED" ] && [ -n "$HAVE" ]; then
+    if [ "$(printf '%s\n%s\n' "$NEED" "$HAVE" | sort -t. -k1,1n -k2,2n | head -n 1)" != "$NEED" ]; then
+      fail "Rust $HAVE is too old; this needs $NEED or newer. Update it with: rustup update stable"
+    fi
+  fi
+  if [ -n "$(running_from_install)" ]; then
+    fail "PTZ Programmer is still running from $INSTALLED. Quit the app and stop ptz-server (the show data is kept), then run this again"
+  fi
+fi
 
 # 2. Build.
 RELEASE_DIR="$ROOT/target/$TARGET/release"
@@ -67,6 +107,11 @@ cp "$RELEASE_DIR/ptz-app" "$BUNDLE/Contents/MacOS/ptz-app"
 for bin in "${TOOLS[@]}"; do
   cp "$RELEASE_DIR/$bin" "$BUNDLE/Contents/MacOS/$bin"
 done
+
+# The licences of what is built into the app travel with it.
+mkdir -p "$BUNDLE/Contents/Resources/licenses"
+cp "$ROOT/LICENSE" "$ROOT/THIRD-PARTY-NOTICES.md" "$BUNDLE/Contents/Resources/licenses/"
+cp "$ROOT"/crates/app/assets/fonts/*.txt "$BUNDLE/Contents/Resources/licenses/"
 
 cat >"$BUNDLE/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -109,7 +154,6 @@ fi
 mkdir -p "$APP_DEST" "$BIN_DEST"
 rm -rf "${APP_DEST:?}/$APP_NAME.app"
 cp -R "$BUNDLE" "$APP_DEST/"
-INSTALLED="$APP_DEST/$APP_NAME.app"
 for bin in "${TOOLS[@]}"; do
   ln -sf "$INSTALLED/Contents/MacOS/$bin" "$BIN_DEST/$bin"
 done
