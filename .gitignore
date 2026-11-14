@@ -1,0 +1,14 @@
+/target/
+**/*.rs.bk
+.DS_Store
+*.db
+*.sqlite
+data/
+.ptz-director/
+*.app/
+dist/
+release/
+.idea/
+.vscode/
+*.log
+EOF

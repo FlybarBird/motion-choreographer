@@ -1,0 +1,36 @@
+[package]
+name = "ptz-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Authoritative PTZ Director show server"
+
+[[bin]]
+name = "ptz-server"
+path = "src/main.rs"
+
+[dependencies]
+ptz-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tokio = { workspace = true }
+axum = { workspace = true }
+tower-http = { workspace = true }
+futures-util = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+parking_lot = { workspace = true }
+bytes = { workspace = true }
+cpal = { workspace = true }
+dirs = { workspace = true }
+async-trait = "0.1"
+
+[dev-dependencies]
+reqwest = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
