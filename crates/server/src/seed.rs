@@ -5,8 +5,9 @@ use crate::rig::seeded_presets;
 use crate::storage::Storage;
 use ptz_core::api::MediaInfo;
 use ptz_core::edit;
-use ptz_core::pose::{Preset, Project};
-use ptz_core::song::{Song, Track};
+use ptz_core::pose::{Axis, Preset, Project};
+use ptz_core::song::{Interp, Key, Song, Track};
+use std::collections::BTreeMap;
 
 pub const CLICK_ID: &str = "click-12-4s";
 pub const CLICK_SECONDS: f64 = 12.4;
@@ -87,6 +88,24 @@ pub fn seed(storage: &Storage) -> std::io::Result<()> {
         }
     }
 
+    // A hand-shaped drift on pan alone near the end, so the graph editor opens on real curves.
+    let drift = secs(&project, 4.0);
+    let rest = wide.pose.pan;
+    let mut pan = vec![
+        Key::new(0, rest, Interp::Bezier),
+        Key::new(drift, rest + 6.0, Interp::Bezier),
+        Key::new(2 * drift, rest, Interp::Bezier),
+    ];
+    let reach = 0.42 * drift as f64;
+    pan[0].out_handle = [reach, 0.0];
+    pan[1].in_handle = [-reach, 0.0];
+    pan[1].out_handle = [reach, 0.0];
+    pan[2].in_handle = [-reach, 0.0];
+    let curves = BTreeMap::from([(Axis::Pan, pan)]);
+    if let Ok((next, _)) = edit::punch_keys(&opening, &project, secs(&project, 78.0), 2 * drift, curves, None) {
+        opening = next;
+    }
+
     let awards_bed =
         build(&project, "awards-bed", "Awards Bed", "02:00:00:00", 60.0, &[(0.0, awards)], &[(30.0, "Winner announced")]);
 
@@ -122,6 +141,11 @@ mod tests {
             assert!(c.issues.is_empty(), "{id}: {:?}", c.issues);
             assert!(!song.motion.is_empty());
         }
+        // Opening Number ends on a keys clip that drives pan only.
+        let opening = st.load_working("opening-number").unwrap();
+        let keys: Vec<_> = opening.motion.iter().filter(|c| c.is_keys()).collect();
+        assert_eq!(keys.len(), 1);
+        assert_eq!((keys[0].axes.clone(), keys[0].keys(Axis::Pan).len()), (vec![Axis::Pan], 3));
         let walk_in = st.load_working("walk-in").unwrap();
         assert_eq!(walk_in.motion.len(), 3);
         // Walk-In carries the click from its first frame.
