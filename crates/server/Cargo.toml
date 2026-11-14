@@ -3,6 +3,7 @@ name = "ptz-server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
 description = "PTZ Programmer show server"
 
 [lib]
@@ -22,7 +23,7 @@ name = "ptz-bringup"
 path = "src/bin/bringup.rs"
 
 [dependencies]
-ptz-core = { workspace = true }
+ptz-core = { workspace = true, features = ["client"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
