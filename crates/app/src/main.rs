@@ -20,6 +20,7 @@ mod timeline;
 mod timeline_ui;
 #[cfg(test)]
 mod ui_tests;
+mod units;
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {

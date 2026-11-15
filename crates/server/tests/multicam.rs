@@ -516,6 +516,74 @@ fn a_camera_that_faults_is_held_while_the_others_carry_on_unless_the_project_say
 }
 
 #[test]
+fn a_project_set_to_carry_on_never_holds_a_camera_for_being_off_the_timeline() {
+    let t = TestServer::start("multicam-carry-on");
+    let api = t.client("a");
+    api.take_lease("Luke-MacBook", false).unwrap();
+    let rigs = [Rig::start(), Rig::start()];
+    let mut project = connect(&api, &rigs);
+    project.on_fault = OnFault::CarryOn;
+    let project = api.put_project(&project).unwrap();
+    assert_eq!(api.project().unwrap().on_fault, OnFault::CarryOn);
+    let tol = project.first().rig.tolerance;
+
+    let marks: Vec<Preset> = project
+        .cameras
+        .iter()
+        .map(|camera| store(&api, &camera.id, &format!("Far {}", camera.id), Pose { pan: 60.0, ..Pose::home() }))
+        .collect();
+    let song = song_with_moves(&api, &project, "Carry on", &marks);
+    let end = song.motion.iter().map(|c| c.start_frame + c.duration_frames).max().unwrap();
+
+    do_act(&api, Action::Arm);
+    wait_for(&api, |s| s.transport.output == Output::Armed);
+    do_act(&api, Action::Play);
+    wait_for(&api, |s| s.cameras.iter().all(|c| c.rig_pose.pan > 10.0));
+
+    // The second camera's head starts delivering a third of the speed it is asked for. It falls
+    // well outside its tolerance, which would hold it under either of the other rules.
+    rigs[1].fr7.set_speed_factor(0.33);
+    let mut worst = 0.0f64;
+    let st = wait_for(&api, |s| {
+        worst = worst.max(s.camera("cam2").unwrap().error.pan.abs());
+        s.frame > end + 12 || s.transport.output != Output::Armed || s.telemetry.fault.is_some()
+    });
+    assert!(worst > tol.pan * 2.0, "the head only fell {worst:.1} degrees behind");
+    assert_eq!((st.transport.output, st.transport.run), (Output::Armed, Run::Playing), "fault: {:?}", st.telemetry.fault);
+    assert_eq!(st.telemetry.fault, None);
+    assert!(st.cameras.iter().all(|c| !c.held && c.fault.is_none()), "{:?}", st.cameras);
+    // It is driven on and gets to its mark late.
+    wait_for(&api, |_| close(&rigs[1].pose(), &marks[1].pose, &tol, 0.5));
+    assert!(close(&rigs[0].pose(), &marks[0].pose, &tol, 0.5), "{:?}", rigs[0].pose());
+
+    // Arm with a head that cannot get to the playhead in the time the move should take: the
+    // show is armed all the same, the log says how far off the head was, and it is driven on.
+    do_act(&api, Action::Stop);
+    do_act(&api, Action::Disarm);
+    rigs[1].fr7.set_speed_factor(0.05);
+    seek(&api, 0);
+    do_act(&api, Action::Arm);
+    let st = wait_for(&api, |s| s.transport.output != Output::Positioning);
+    assert_eq!(st.transport.output, Output::Armed, "fault: {:?}", st.telemetry.fault);
+    assert_eq!(st.telemetry.fault, None);
+    assert!(rigs[1].pose().pan > 20.0, "the slow head is nowhere near: {:?}", rigs[1].pose());
+    let records = log(&api);
+    let late: Vec<&LogRecord> = records.iter().filter(|r| r.kind == "positioning_late").collect();
+    assert_eq!(late.iter().map(|r| r.data["camera"].as_str().unwrap()).collect::<Vec<_>>(), ["cam2"]);
+    assert!(late[0].data["error"]["pan"].as_f64().unwrap().abs() > 20.0, "{:?}", late[0].data);
+    assert!(!records.iter().any(|r| r.kind == "fault" || r.kind == "camera_held"), "nothing was held");
+    rigs[1].fr7.set_speed_factor(1.0);
+    wait_for(&api, |_| close(&rigs[1].pose(), &Pose::home(), &tol, 0.5));
+
+    // A rig that stops answering is still a fault: there is nothing to drive.
+    rigs[1].fr7.set_silent(true);
+    let st = wait_for(&api, |s| s.camera("cam2").unwrap().held);
+    assert_eq!(st.transport.output, Output::Armed, "the other camera carries on");
+    assert!(!st.camera("cam1").unwrap().held);
+    rigs[1].fr7.set_silent(false);
+}
+
+#[test]
 fn rig_settings_rebuild_only_the_camera_they_belong_to() {
     let t = TestServer::start("multicam-rebuild");
     let api = t.client("a");

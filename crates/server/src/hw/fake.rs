@@ -450,10 +450,14 @@ impl FakeFr7 {
                 ("/command/inquiry.cgi", Some("ptzf")) => {
                     let (pan, tilt) = head.counts();
                     let (zoom, focus) = (head.zoom.round() as u32, head.focus.round() as u32);
+                    // On an FR7, counts fall in the direction of byte 01 when the axis is set to Opposite.
+                    let direction = |sign: f64| if sign < 0.0 { "opposite" } else { "normal" };
                     Some(Response::text(format!(
-                        "AbsolutePTZF={:05x},{:05x},{zoom:04x},{focus:04x}\r\n",
+                        "AbsolutePTZF={:05x},{:05x},{zoom:04x},{focus:04x}&PanDirection={}&TiltDirection={}\r\n",
                         pan as u32 & 0xF_FFFF,
-                        tilt as u32 & 0xF_FFFF
+                        tilt as u32 & 0xF_FFFF,
+                        direction(head.pan_sign),
+                        direction(head.tilt_sign)
                     )))
                 }
                 (path, _) => {
@@ -584,6 +588,8 @@ struct Column {
     at: Instant,
     calibration: &'static str,
     silent: bool,
+    /// This many requests go unanswered, as on a network that loses one now and then.
+    drop_next: u32,
     speed_factor: f64,
     seen: Vec<String>,
     model: String,
@@ -637,6 +643,7 @@ impl FakeAutoPod {
             at: Instant::now(),
             calibration: "rER00",
             silent: false,
+            drop_next: 0,
             speed_factor: 1.0,
             seen: Vec::new(),
             model: autopod::MODEL.into(),
@@ -650,6 +657,10 @@ impl FakeAutoPod {
             let mut col = shared.lock().unwrap_or_else(|e| e.into_inner());
             col.advance(Instant::now());
             if col.silent {
+                return None;
+            }
+            if col.drop_next > 0 {
+                col.drop_next -= 1;
                 return None;
             }
             let position = |col: &Column| format!("aPC8000{:04X}", col.raw());
@@ -755,6 +766,11 @@ impl FakeAutoPod {
 
     pub fn set_silent(&self, silent: bool) {
         self.column().silent = silent;
+    }
+
+    /// Leave the next `n` requests unanswered.
+    pub fn drop_next(&self, n: u32) {
+        self.column().drop_next = n;
     }
 
     pub fn set_speed_factor(&self, factor: f64) {

@@ -275,7 +275,7 @@ fn paint_surface(ui: &Ui, s: &Session, surface: &Surface, stick: Jog, focused: b
         p.text(
             r.right_top() + vec2(0.0, -4.0),
             Align2::RIGHT_BOTTOM,
-            axis.format(s.cam_status().rig_pose.get(axis)),
+            axis.format_in(s.cam_status().rig_pose.get(axis), s.project.units),
             FontId::monospace(11.0),
             if dim { MUTED } else { OFF_WHITE },
         );
@@ -399,8 +399,10 @@ fn live_state(ui: &mut Ui, s: &Session) {
                 GREEN
             };
             ui.label(RichText::new(axis.label()).color(axis_color(axis)));
-            ui.label(RichText::new(format!("{error:+.2}")).monospace().color(ink))
-                .on_hover_text(format!("Rig minus timeline. A fault is raised beyond {}", axis.format(tol.get(axis))));
+            ui.label(RichText::new(format!("{error:+.2}")).monospace().color(ink)).on_hover_text(format!(
+                "Rig minus timeline. A fault is raised beyond {}",
+                axis.format_in(tol.get(axis), s.project.units)
+            ));
             let (bar, _) = ui.allocate_exact_size(vec2(90.0, 6.0), Sense::hover());
             let p = ui.painter();
             p.rect_filled(bar, 3.0, PANEL_DARK);
@@ -487,7 +489,7 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
                     let lim = s.cam().axes.get(axis);
                     let value = s.cam_status().rig_pose.get(axis);
                     ui.label(RichText::new(axis.label()).color(axis_color(axis)));
-                    ui.label(RichText::new(axis.format(value)).monospace());
+                    ui.label(RichText::new(axis.format_in(value, s.project.units)).monospace());
                     let (bar, _) = ui.allocate_exact_size(vec2(90.0, 6.0), Sense::hover());
                     let p = ui.painter();
                     p.rect_filled(bar, 3.0, PANEL_DARK);

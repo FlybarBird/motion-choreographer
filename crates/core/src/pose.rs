@@ -47,6 +47,88 @@ impl Axis {
             Axis::Elevation => format!("{v:.0} mm"),
         }
     }
+
+    /// `unit`, in the units the show is read in: elevation is the only axis that is a length.
+    pub fn unit_in(self, units: Units) -> &'static str {
+        match self {
+            Axis::Elevation => units.short(),
+            _ => self.unit(),
+        }
+    }
+
+    /// `format`, in the units the show is read in.
+    pub fn format_in(self, v: f64, units: Units) -> String {
+        match self {
+            Axis::Elevation => units.height(v),
+            _ => self.format(v),
+        }
+    }
+}
+
+/// The units lengths are shown and typed in. The show itself is always kept in millimetres
+/// and metres, so changing this changes no pose, limit or position.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Units {
+    #[default]
+    Metric,
+    Imperial,
+}
+
+impl Units {
+    pub const ALL: [Units; 2] = [Units::Metric, Units::Imperial];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Units::Metric => "Metric: millimetres and metres",
+            Units::Imperial => "Imperial: inches and feet",
+        }
+    }
+
+    /// The unit of heights: the column, the lens above the floor.
+    pub fn short(self) -> &'static str {
+        match self {
+            Units::Metric => "mm",
+            Units::Imperial => "in",
+        }
+    }
+
+    /// The unit of distances on the stage.
+    pub fn long(self) -> &'static str {
+        match self {
+            Units::Metric => "m",
+            Units::Imperial => "ft",
+        }
+    }
+
+    /// Millimetres in one of the short unit.
+    pub fn mm_per_short(self) -> f64 {
+        match self {
+            Units::Metric => 1.0,
+            Units::Imperial => 25.4,
+        }
+    }
+
+    /// Metres in one of the long unit.
+    pub fn m_per_long(self) -> f64 {
+        match self {
+            Units::Metric => 1.0,
+            Units::Imperial => 0.3048,
+        }
+    }
+
+    /// A height kept in millimetres, as text: "560 mm" or "22.0 in".
+    pub fn height(self, mm: f64) -> String {
+        match self {
+            Units::Metric => format!("{mm:.0} mm"),
+            Units::Imperial => format!("{:.1} in", mm / 25.4),
+        }
+    }
+
+    /// A distance kept in metres, as text with that many decimals: "3.25 m" or "10.66 ft".
+    pub fn distance(self, m: f64, decimals: usize) -> String {
+        format!("{:.decimals$} {}", m / self.m_per_long(), self.long())
+    }
 }
 
 /// Pan and tilt in degrees (pan positive is counter-clockwise seen from above,
@@ -250,14 +332,19 @@ impl KeepOutRule {
     }
 
     pub fn describe(&self) -> String {
+        self.describe_in(Units::Metric)
+    }
+
+    /// `describe`, in the units the show is read in.
+    pub fn describe_in(&self, units: Units) -> String {
         format!(
             "when {} is {} {}, {} must be {} {}",
             self.when_axis.label().to_lowercase(),
             self.when.word(),
-            self.when_axis.format(self.when_value),
+            self.when_axis.format_in(self.when_value, units),
             self.then_axis.label().to_lowercase(),
             self.must_be.word(),
-            self.then_axis.format(self.must_value),
+            self.then_axis.format_in(self.must_value, units),
         )
     }
 }
@@ -363,6 +450,8 @@ pub struct Project {
     pub ltc_level: f32,
     pub inputs: InputConfig,
     pub on_fault: OnFault,
+    /// The units lengths are shown and typed in at every station.
+    pub units: Units,
     pub stage: Stage,
     /// One to twelve, in the order they are numbered for the operator. `validate` refuses
     /// anything else, and the server only ever holds a project that passed it.
@@ -378,6 +467,7 @@ impl Default for Project {
             ltc_level: 0.5,
             inputs: InputConfig::default(),
             on_fault: OnFault::default(),
+            units: Units::default(),
             stage: Stage::default(),
             cameras: vec![CameraConfig::default()],
         }
@@ -395,6 +485,7 @@ struct ProjectFile {
     ltc_level: Option<f32>,
     inputs: Option<InputConfig>,
     on_fault: OnFault,
+    units: Units,
     stage: Stage,
     /// Absent in a file from before cameras; an empty list is a mistake, kept so it can be refused.
     cameras: Option<Vec<CameraConfig>>,
@@ -421,6 +512,7 @@ impl From<ProjectFile> for Project {
             ltc_level: f.ltc_level.unwrap_or(d.ltc_level),
             inputs: f.inputs.unwrap_or(d.inputs),
             on_fault: f.on_fault,
+            units: f.units,
             stage: f.stage,
             cameras,
         }

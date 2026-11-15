@@ -3,10 +3,11 @@
 use crate::link::Cmd;
 use crate::session::Session;
 use crate::theme::*;
+use crate::units::{distance_box, height_box};
 use egui::{RichText, Ui};
 use ptz_core::camera::{CameraConfig, OnFault, MAX_CAMERAS};
 use ptz_core::lens::{self, Lens};
-use ptz_core::pose::{Axis, CalPoint, ChannelRoute, Cmp, KeepOutRule, RigKind};
+use ptz_core::pose::{Axis, CalPoint, ChannelRoute, Cmp, KeepOutRule, RigKind, Units};
 use ptz_core::transport::{Output, Run};
 
 fn route_label(route: ChannelRoute) -> &'static str {
@@ -91,8 +92,16 @@ fn unit_suffix(axis: Axis) -> String {
     }
 }
 
+/// A box for a value of one axis: elevation in the show's units, the others as they are.
+fn axis_box(value: &mut f64, axis: Axis, units: Units) -> egui::DragValue<'_> {
+    match axis {
+        Axis::Elevation => height_box(value, units),
+        _ => egui::DragValue::new(value).speed(step_for(axis)).suffix(unit_suffix(axis)),
+    }
+}
+
 /// Keep-out rules: poses this camera's rig must never take, whatever the timeline says.
-fn keep_out(ui: &mut Ui, camera: &mut CameraConfig, editable: bool) {
+fn keep_out(ui: &mut Ui, camera: &mut CameraConfig, units: Units, editable: bool) {
     ui.label(
         RichText::new(
             "A pose that breaks a rule is an issue on the timeline that cannot be accepted, and holds the rig if it is ever commanded live.",
@@ -117,15 +126,13 @@ fn keep_out(ui: &mut Ui, camera: &mut CameraConfig, editable: bool) {
                 axis_combo(ui, ("rule_when_axis", i), &mut rule.when_axis);
                 ui.label("is");
                 cmp_combo(ui, ("rule_when", i), &mut rule.when);
-                let step = step_for(rule.when_axis);
-                ui.add(egui::DragValue::new(&mut rule.when_value).speed(step).suffix(unit_suffix(rule.when_axis)));
+                ui.add(axis_box(&mut rule.when_value, rule.when_axis, units));
             });
             ui.horizontal_wrapped(|ui| {
                 axis_combo(ui, ("rule_then_axis", i), &mut rule.then_axis);
                 ui.label("must be");
                 cmp_combo(ui, ("rule_must", i), &mut rule.must_be);
-                let step = step_for(rule.then_axis);
-                ui.add(egui::DragValue::new(&mut rule.must_value).speed(step).suffix(unit_suffix(rule.then_axis)));
+                ui.add(axis_box(&mut rule.must_value, rule.then_axis, units));
             });
             if rule.when_axis == rule.then_axis {
                 ui.label(RichText::new("A rule ties one axis to another. Pick two different axes.").color(AMBER).small());
@@ -148,7 +155,7 @@ fn keep_out(ui: &mut Ui, camera: &mut CameraConfig, editable: bool) {
 }
 
 /// Which rig the server drives for this camera, how to reach it, and how closely it must follow.
-fn rig(ui: &mut Ui, s: &mut Session, camera: &mut CameraConfig, editable: bool) {
+fn rig(ui: &mut Ui, s: &mut Session, camera: &mut CameraConfig, units: Units, editable: bool) {
     let t = s.status.transport;
     let parked = t.run == Run::Stopped && t.output == Output::Rehearse && !t.estop;
     if !parked {
@@ -242,7 +249,11 @@ fn rig(ui: &mut Ui, s: &mut Session, camera: &mut CameraConfig, editable: bool) 
                 let step = step_for(axis) / 5.0;
                 ui.label(RichText::new(axis.label()).color(axis_color(axis)).small());
                 let mut v = rig.tolerance.get(axis);
-                if ui.add(egui::DragValue::new(&mut v).speed(step).range(step..=100000.0)).changed() {
+                let field = match axis {
+                    Axis::Elevation => height_box(&mut v, units),
+                    _ => egui::DragValue::new(&mut v).speed(step),
+                };
+                if ui.add(field.range(step..=100000.0)).changed() {
                     rig.tolerance.set(axis, v);
                 }
             }
@@ -251,28 +262,62 @@ fn rig(ui: &mut Ui, s: &mut Session, camera: &mut CameraConfig, editable: bool) 
         if rig.kind == RigKind::Hardware && !rig.autopod_host.is_empty() {
             ui.add_space(4.0);
             ui.label(RichText::new("AutoPod+ height map: the leg box's raw position at measured heights").color(MUTED).small());
-            let mut remove = None;
-            egui::Grid::new("height_map").num_columns(3).spacing([10.0, 4.0]).show(ui, |ui| {
+            ui.label(
+                RichText::new(
+                    "Measure how far the column is raised above fully down, and type it as the height. Fully down is 0. Double-click a box to type in it.",
+                )
+                .color(MUTED)
+                .small(),
+            );
+            let not_answering = "The AutoPod+ is not answering, so its raw position is not known";
+            let (mut remove, mut retake) = (None, None);
+            egui::Grid::new("height_map").num_columns(4).spacing([10.0, 4.0]).show(ui, |ui| {
+                if !rig.autopod_calibration.is_empty() {
+                    for head in ["Raw position", "Measured height", "", ""] {
+                        ui.label(RichText::new(head).small().color(MUTED));
+                    }
+                    ui.end_row();
+                }
                 for (i, point) in rig.autopod_calibration.iter_mut().enumerate() {
-                    ui.add(egui::DragValue::new(&mut point.raw).speed(10.0).prefix("raw "));
-                    ui.add(egui::DragValue::new(&mut point.mm).speed(1.0).suffix(" mm"));
+                    // Each change here sets the rig up again, so a typed number is taken once, when it is finished.
+                    ui.add(egui::DragValue::new(&mut point.raw).speed(10.0).update_while_editing(false))
+                        .on_hover_text("What the leg box reported at this height");
+                    ui.add(height_box(&mut point.mm, units).update_while_editing(false))
+                        .on_hover_text("Set height: what you measured with the column at this raw position");
+                    let update = ui
+                        .add_enabled(raw.is_some(), egui::Button::new("Update to current").small())
+                        .on_hover_text("The column is at this height now: take the raw position it reports for this row")
+                        .on_disabled_hover_text(not_answering);
+                    if update.clicked() {
+                        retake = Some(i);
+                    }
                     if ui.small_button("Remove").clicked() {
                         remove = Some(i);
                     }
                     ui.end_row();
                 }
             });
+            if let (Some(i), Some(raw)) = (retake, raw) {
+                // One height for each raw position: a row that already had this one gives way.
+                let mm = rig.autopod_calibration[i].mm;
+                rig.autopod_calibration.remove(i);
+                rig.autopod_calibration.retain(|p| p.raw != raw);
+                rig.autopod_calibration.push(CalPoint { raw, mm });
+                rig.autopod_calibration.sort_by(|a, b| a.raw.total_cmp(&b.raw));
+            }
             if let Some(i) = remove {
                 rig.autopod_calibration.remove(i);
             }
             let id = ui.make_persistent_id("height_now");
             let mut mm = ui.data_mut(|d| d.get_temp::<f64>(id)).unwrap_or(0.0);
             ui.horizontal(|ui| {
-                ui.add(egui::DragValue::new(&mut mm).speed(1.0).range(0.0..=5000.0).suffix(" mm"));
+                ui.label(RichText::new("The column is now at").small());
+                ui.add(height_box(&mut mm, units).range(0.0..=5000.0))
+                    .on_hover_text("Set height: what you measure with the column where it is now");
                 let add = ui
                     .add_enabled(raw.is_some(), egui::Button::new("Add the current height").small())
                     .on_hover_text("Measure the column now, enter the height, and add it with the raw position the leg box reports")
-                    .on_disabled_hover_text("The AutoPod+ is not answering, so its raw position is not known");
+                    .on_disabled_hover_text(not_answering);
                 if let (true, Some(raw)) = (add.clicked(), raw) {
                     rig.autopod_calibration.retain(|p| p.raw != raw);
                     rig.autopod_calibration.push(CalPoint { raw, mm });
@@ -324,7 +369,7 @@ impl Page {
     pub fn title(self) -> &'static str {
         match self {
             Page::Cameras => "Cameras",
-            Page::General => "Frame rate and faults",
+            Page::General => "Frame rate, units and faults",
             Page::Stage => "Stage model",
             Page::Rig => "Rig connection",
             Page::Lens => "Lens",
@@ -443,13 +488,14 @@ fn body(ui: &mut Ui, s: &mut Session, page: Page) {
         Page::Timecode => timecode_inputs(ui, s, &mut project, editable),
         Page::Rig | Page::Lens | Page::Position | Page::Limits | Page::KeepOut => {
             let at = project.camera_index(&s.active_camera).unwrap_or(0);
+            let units = project.units;
             let camera = &mut project.cameras[at];
             match page {
-                Page::Rig => rig(ui, s, camera, editable),
-                Page::Lens => lens(ui, s, camera, editable),
-                Page::Position => position(ui, s, camera, editable),
-                Page::Limits => limits(ui, camera, editable),
-                _ => keep_out(ui, camera, editable),
+                Page::Rig => rig(ui, s, camera, units, editable),
+                Page::Lens => lens(ui, s, camera, units, editable),
+                Page::Position => position(ui, s, camera, units, editable),
+                Page::Limits => limits(ui, camera, units, editable),
+                _ => keep_out(ui, camera, units, editable),
             }
         }
     }
@@ -458,7 +504,7 @@ fn body(ui: &mut Ui, s: &mut Session, page: Page) {
     }
 }
 
-/// The frame rate the show is programmed at, and what the other cameras do when one faults.
+/// The frame rate the show is programmed at, the units it is read in, and what the other cameras do when one faults.
 fn general(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::Project, editable: bool) {
     ui.add_enabled_ui(editable, |ui| {
         egui::Grid::new("general_grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
@@ -473,6 +519,18 @@ fn general(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::Project, 
                     }
                 }
             });
+            ui.end_row();
+            ui.label("Measurement units");
+            egui::ComboBox::from_id_salt("units")
+                .selected_text(project.units.label())
+                .width(260.0)
+                .show_ui(ui, |ui| {
+                    for choice in Units::ALL {
+                        ui.selectable_value(&mut project.units, choice, choice.label());
+                    }
+                })
+                .response
+                .on_hover_text("How heights and distances are shown and typed at every station. The show itself does not change");
             ui.end_row();
             ui.label("When a camera faults");
             egui::ComboBox::from_id_salt("on_fault").selected_text(project.on_fault.label()).width(260.0).show_ui(ui, |ui| {
@@ -568,7 +626,7 @@ fn timecode_inputs(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::P
 }
 
 /// How far and how fast each axis of this camera's rig may go.
-fn limits(ui: &mut Ui, camera: &mut CameraConfig, editable: bool) {
+fn limits(ui: &mut Ui, camera: &mut CameraConfig, units: Units, editable: bool) {
     ui.label(
         RichText::new("Auto time and the too-fast warning come from these. Set them to what this camera's rig does safely.")
             .color(MUTED)
@@ -584,10 +642,16 @@ fn limits(ui: &mut Ui, camera: &mut CameraConfig, editable: bool) {
                 let lim = camera.axes.get_mut(axis);
                 let step = step_for(axis);
                 ui.label(RichText::new(axis.label()).color(axis_color(axis)));
-                ui.add(egui::DragValue::new(&mut lim.min).speed(step).range(-100000.0..=lim.max - step));
-                ui.add(egui::DragValue::new(&mut lim.max).speed(step).range(lim.min + step..=100000.0));
-                ui.add(egui::DragValue::new(&mut lim.max_speed).speed(step).range(step..=100000.0));
-                ui.add(egui::DragValue::new(&mut lim.max_accel).speed(step).range(step..=1000000.0));
+                // Elevation is a length, shown in the show's units; the rest are degrees and shares.
+                let field = |value| match axis {
+                    Axis::Elevation => height_box(value, units),
+                    _ => egui::DragValue::new(value).speed(step),
+                };
+                let (low, high) = (lim.min, lim.max);
+                ui.add(field(&mut lim.min).range(-100000.0..=high - step));
+                ui.add(field(&mut lim.max).range(low + step..=100000.0));
+                ui.add(field(&mut lim.max_speed).range(step..=100000.0));
+                ui.add(field(&mut lim.max_accel).range(step..=1000000.0));
                 ui.end_row();
             }
         });
@@ -711,7 +775,7 @@ fn cameras(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::Project, 
 }
 
 /// The lens on the selected camera, and what it sees now.
-fn lens(ui: &mut Ui, s: &Session, camera: &mut CameraConfig, editable: bool) {
+fn lens(ui: &mut Ui, s: &Session, camera: &mut CameraConfig, units: Units, editable: bool) {
     let (pose, _) = s.camera_pose(&camera.id);
     ui.add_enabled_ui(editable, |ui| {
         egui::Grid::new("lens_grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
@@ -807,7 +871,7 @@ fn lens(ui: &mut Ui, s: &Session, camera: &mut CameraConfig, editable: bool) {
         let seen = s.world.centre_distance(camera, &pose).map(f64::from);
         ui.label(RichText::new("Centre of frame").color(MUTED).small());
         match seen {
-            Some(d) => ui.label(RichText::new(format!("{d:.1} m away")).monospace().small()),
+            Some(d) => ui.label(RichText::new(format!("{} away", units.distance(d, 1))).monospace().small()),
             None => ui.label(RichText::new("looks at nothing on the stage").color(AMBER).small()),
         };
         ui.end_row();
@@ -819,10 +883,7 @@ fn lens(ui: &mut Ui, s: &Session, camera: &mut CameraConfig, editable: bool) {
             }
             let from_picture = seen.filter(|_| !use_typed);
             let mut shown = from_picture.unwrap_or(typed);
-            let field = ui.add_enabled(
-                from_picture.is_none(),
-                egui::DragValue::new(&mut shown).speed(0.1).range(0.3..=500.0).suffix(" m").fixed_decimals(1),
-            );
+            let field = ui.add_enabled(from_picture.is_none(), distance_box(&mut shown, units).range(0.3..=500.0));
             if field.changed() {
                 typed = shown;
             }
@@ -831,11 +892,11 @@ fn lens(ui: &mut Ui, s: &Session, camera: &mut CameraConfig, editable: bool) {
         ui.data_mut(|d| d.insert_temp(id, (typed, use_typed)));
         let distance = seen.filter(|_| !use_typed).unwrap_or(typed).max(0.3);
         let (w, h) = l.frame_at(pose.zoom, distance);
-        line(ui, "The frame is", format!("{w:.2} m wide, {h:.2} m high"));
+        line(ui, "The frame is", format!("{} wide, {} high", units.distance(w, 2), units.distance(h, 2)));
         let (near, far) = l.sharp_range_m(pose.zoom, distance);
-        let far = far.map(|f| format!("{f:.1} m")).unwrap_or_else(|| "infinity".into());
-        line(ui, "Sharp from", format!("{near:.1} m to {far} at f/{:.1}", l.f_number));
-        line(ui, "Hyperfocal", format!("{:.1} m", l.hyperfocal_m(pose.zoom)));
+        let far = far.map(|f| units.distance(f, 1)).unwrap_or_else(|| "infinity".into());
+        line(ui, "Sharp from", format!("{} to {far} at f/{:.1}", units.distance(near, 1), l.f_number));
+        line(ui, "Hyperfocal", units.distance(l.hyperfocal_m(pose.zoom), 1));
     });
     ui.label(
         RichText::new("Zoom is taken to run evenly in stops from the wide end to the long end. Bring-up can check it against the real lens.")
@@ -845,15 +906,15 @@ fn lens(ui: &mut Ui, s: &Session, camera: &mut CameraConfig, editable: bool) {
 }
 
 /// Where the selected camera stands on the stage.
-fn position(ui: &mut Ui, s: &Session, camera: &mut CameraConfig, editable: bool) {
+fn position(ui: &mut Ui, s: &Session, camera: &mut CameraConfig, units: Units, editable: bool) {
     ui.add_enabled_ui(editable, |ui| {
         let m = &mut camera.mount;
         egui::Grid::new("mount_grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
             ui.label("Floor position");
             ui.horizontal(|ui| {
-                ui.add(egui::DragValue::new(&mut m.x).speed(0.05).range(-1000.0..=1000.0).prefix("x ").suffix(" m"));
-                ui.add(egui::DragValue::new(&mut m.y).speed(0.05).range(-1000.0..=1000.0).prefix("y ").suffix(" m"));
-                ui.add(egui::DragValue::new(&mut m.z).speed(0.05).range(-100.0..=100.0).prefix("z ").suffix(" m"))
+                ui.add(distance_box(&mut m.x, units).range(-1000.0..=1000.0).prefix("x "));
+                ui.add(distance_box(&mut m.y, units).range(-1000.0..=1000.0).prefix("y "));
+                ui.add(distance_box(&mut m.z, units).range(-100.0..=100.0).prefix("z "))
                     .on_hover_text("Height of the floor or platform the pedestal stands on");
             });
             ui.end_row();
@@ -862,7 +923,7 @@ fn position(ui: &mut Ui, s: &Session, camera: &mut CameraConfig, editable: bool)
                 .on_hover_text("Where pan 0 points, counter-clockwise seen from above. 0 looks along +Y, towards the stage");
             ui.end_row();
             ui.label("Lens height");
-            ui.add(egui::DragValue::new(&mut m.base_height_mm).speed(5.0).range(0.0..=5000.0).suffix(" mm"))
+            ui.add(height_box(&mut m.base_height_mm, units).range(0.0..=5000.0))
                 .on_hover_text("Height of the lens above the floor with the column fully down");
             ui.end_row();
         });
@@ -958,12 +1019,22 @@ fn stage_model(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::Proje
     ui.label(RichText::new(format!("{}   {} triangles", model.name, model.triangles)).strong());
     let size = model.size_m();
     let (low, high) = model.bounds_m();
-    ui.label(RichText::new(format!("{:.1} m wide, {:.1} m deep, {:.1} m high", size[0], size[1], size[2])).monospace().small())
-        .on_hover_text("The size the model has with the unit below. If it is wrong, the unit is wrong");
+    let units = project.units;
+    let wide = |m: f64| units.distance(m, 1);
+    ui.label(
+        RichText::new(format!("{} wide, {} deep, {} high", wide(size[0]), wide(size[1]), wide(size[2]))).monospace().small(),
+    )
+    .on_hover_text("The size the model has with the unit below. If it is wrong, the unit is wrong");
     ui.label(
         RichText::new(format!(
-            "It spans x {:.1} to {:.1}, y {:.1} to {:.1}, z {:.1} to {:.1} m",
-            low[0], high[0], low[1], high[1], low[2], high[2]
+            "It spans x {:.1} to {:.1}, y {:.1} to {:.1}, z {:.1} to {:.1} {}",
+            low[0] / units.m_per_long(),
+            high[0] / units.m_per_long(),
+            low[1] / units.m_per_long(),
+            high[1] / units.m_per_long(),
+            low[2] / units.m_per_long(),
+            high[2] / units.m_per_long(),
+            units.long()
         ))
         .color(MUTED)
         .small(),
@@ -997,13 +1068,7 @@ fn stage_model(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::Proje
             ui.label("Moved");
             ui.horizontal(|ui| {
                 for (k, axis) in ["x ", "y ", "z "].into_iter().enumerate() {
-                    ui.add(
-                        egui::DragValue::new(&mut model.offset[k])
-                            .speed(0.05)
-                            .range(-100000.0..=100000.0)
-                            .prefix(axis)
-                            .suffix(" m"),
-                    );
+                    ui.add(distance_box(&mut model.offset[k], units).range(-100000.0..=100000.0).prefix(axis));
                 }
             });
             ui.end_row();

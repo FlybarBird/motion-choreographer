@@ -111,7 +111,8 @@ impl Cgi {
     }
 
     fn once(&mut self, uri: &str) -> Result<(u16, Option<String>, Vec<u8>), String> {
-        let mut req = self.agent.get(format!("{}{uri}", self.base));
+        // The FR7 answers 403 unless the request names the camera itself as the referrer.
+        let mut req = self.agent.get(format!("{}{uri}", self.base)).header("Referer", format!("{}/", self.base));
         if let Some(c) = &self.challenge {
             self.nc += 1;
             req = req.header("Authorization", authorization(&self.user, &self.password, c, uri, self.nc, &self.cnonce()));

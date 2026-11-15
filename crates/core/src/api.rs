@@ -394,6 +394,17 @@ pub struct StorePreset {
     pub camera: Option<String>,
 }
 
+/// A change to a stored preset. With nothing given, the preset takes the pose its camera's rig stands at now.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+pub struct UpdatePreset {
+    /// The whole pose to store.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pose: Option<Pose>,
+    /// Only the column height, in millimetres; the rest of the pose stays as it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elevation: Option<f64>,
+}
+
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub struct Refit {
     /// Multiplier on the default per-axis tolerance.

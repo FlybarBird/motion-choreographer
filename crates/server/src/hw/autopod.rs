@@ -299,6 +299,9 @@ pub struct AutoPod {
 
 const STARVED_AFTER: Duration = Duration::from_millis(300);
 const GAIN: f64 = 4.0;
+/// The leg box now and then misses a request on a healthy network. It is only called gone
+/// once it has answered nothing for this long: three requests that ran out of time in a row.
+const GONE_AFTER: Duration = Duration::from_millis(1100);
 
 impl AutoPod {
     pub fn start(cfg: PodConfig, limits: AxisLimits) -> AutoPod {
@@ -414,6 +417,7 @@ fn run(cfg: PodConfig, state: Arc<Mutex<State>>) {
     let mut sent_at_cycle = 0u64;
     let (mut stops_sent, mut still) = (0u32, 0u32);
     let mut was = Mode::Idle;
+    let mut heard_at = Instant::now();
     loop {
         if lock().quit {
             let _ = link.stop();
@@ -422,6 +426,7 @@ fn run(cfg: PodConfig, state: Arc<Mutex<State>>) {
         cycle += 1;
         let step = (|| -> Result<(), String> {
             let raw = link.position()? as f64;
+            heard_at = Instant::now();
             let read_at = Instant::now() - link.last_round_trip / 2;
             let round_trip_ms = link.last_round_trip.as_secs_f64() * 1000.0;
             // Calibration and power are asked once a second, and at once after connecting.
@@ -504,6 +509,9 @@ fn run(cfg: PodConfig, state: Arc<Mutex<State>>) {
             if link.last_refused && s.connected {
                 // The unit is there and said no: a setting or firmware matter, not a lost cable.
                 s.refused = Some(why);
+                last_byte = None;
+            } else if s.connected && heard_at.elapsed() < GONE_AFTER {
+                // One request that went unanswered: ask again, and say the speed again when it answers.
                 last_byte = None;
             } else {
                 s.connected = false;

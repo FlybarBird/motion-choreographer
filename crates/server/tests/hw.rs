@@ -427,3 +427,39 @@ fn standby_and_a_refused_speed_command_are_problems_that_keep_the_connection() {
     assert_eq!(rig.problem(), None);
     rig.stop();
 }
+
+#[test]
+fn a_leg_box_that_misses_a_few_requests_is_driven_on_and_one_that_falls_silent_is_named() {
+    let pod = FakeAutoPod::start();
+    let axes = AxisTable::default();
+    let mut rig = HardwareRig::start(&rig_config(None, Some(&pod)), &axes);
+    wait_until("the leg box answers", || rig.problem().is_none());
+    pod.settle_after_connect();
+
+    // Raised 60 mm, with three requests in a row going unanswered six times on the way.
+    let drive = Drive::to(Pose { elevation: 60.0, ..Pose::home() }, 1.0);
+    let began = Instant::now();
+    let mut dropped = 0u32;
+    while began.elapsed() < Duration::from_secs(3) {
+        if dropped < 6 && began.elapsed() > Duration::from_millis(300) * (dropped + 1) {
+            pod.drop_next(3);
+            dropped += 1;
+        }
+        rig.drive(&drive);
+        assert_eq!(rig.problem(), None, "after {dropped} gaps");
+        assert!(rig.status()[0].connected, "after {dropped} gaps");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(dropped, 6);
+    assert!((pod.height_mm() - 60.0).abs() < 1.5, "column ended at {}", pod.height_mm());
+
+    // A leg box that answers nothing at all for a second is gone.
+    pod.set_silent(true);
+    let began = Instant::now();
+    wait_until("the silence is noticed", || {
+        rig.drive(&drive);
+        rig.problem().is_some_and(|p| p.contains("not answering"))
+    });
+    assert!(began.elapsed() >= Duration::from_secs(1), "called gone after {:?}", began.elapsed());
+    assert!(!rig.status()[0].connected);
+}

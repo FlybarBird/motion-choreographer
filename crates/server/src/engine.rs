@@ -281,6 +281,8 @@ struct Live {
     over_since: Option<Instant>,
     /// The pose being positioned to, and when the rig should have reached it.
     positioning: Option<(Pose, Instant)>,
+    /// The rig ran out of time on the way to that pose and was let through.
+    late: bool,
     /// Rig position minus commanded position.
     error: Pose,
     /// Why output was last cut, until the operator arms or plays again.
@@ -677,7 +679,7 @@ impl Show {
                         .issues
                         .iter()
                         .filter(|i| i.clip_id() == Some(clip.id.as_str()))
-                        .map(|i| i.message())
+                        .map(|i| i.message_in(self.project.units))
                         .collect();
                     decisions.push((
                         "issue_accepted",
@@ -961,6 +963,47 @@ impl Show {
         Ok(preset)
     }
 
+    /// Change a stored preset: to a given pose, to a given column height, or, with neither,
+    /// to where its camera's rig stands now. Nothing moves. A move on the timeline keeps
+    /// the pose it was made with until the operator updates it.
+    pub fn update_preset(&mut self, client: &str, id: &str, req: &UpdatePreset) -> Res<Preset> {
+        self.require_lease(client)?;
+        let Some(at) = self.presets.iter().position(|p| p.id == id) else {
+            return Err(Fail::not_found(format!("No preset with id {id}")));
+        };
+        let camera = self.presets[at].camera.clone();
+        let mut pose = match (req.pose, req.elevation) {
+            (Some(pose), _) => pose,
+            (None, Some(_)) => self.presets[at].pose,
+            (None, None) => {
+                let i = self.unit_index(Some(&camera))?;
+                let unit = &self.units[i];
+                if unit.rig.is_simulator() {
+                    self.monitor_pose(i).0
+                } else if let Some(why) = unit.rig.status().iter().find(|a| !a.connected).map(|a| a.detail.clone()) {
+                    return Err(Fail::refused(format!("The rig's pose is not known: {why}")));
+                } else {
+                    unit.rig.pose()
+                }
+            }
+        };
+        if let Some(mm) = req.elevation {
+            pose.elevation = mm;
+        }
+        if Axis::ALL.iter().any(|a| !pose.get(*a).is_finite()) {
+            return Err(Fail::bad("That pose is not a usable number"));
+        }
+        let by = self.who(client);
+        let preset = &mut self.presets[at];
+        let before = preset.pose;
+        preset.pose = pose;
+        let preset = preset.clone();
+        self.storage.save_presets(&self.presets).map_err(Fail::io)?;
+        self.log("preset_updated", json!({ "preset": id, "camera": camera, "by": by, "from": before, "to": pose }));
+        self.push(WsMsg::PresetsChanged);
+        Ok(preset)
+    }
+
     pub fn delete_preset(&mut self, client: &str, id: &str) -> Res<()> {
         self.require_lease(client)?;
         let before = self.presets.len();
@@ -1007,7 +1050,9 @@ impl Show {
                 .find(|e| e.camera == camera && e.camera_number.is_some() && e.camera_number == p.camera_number);
             let id = match known {
                 Some(existing) => {
-                    existing.pose = p.pose;
+                    // The camera stores pan, tilt, zoom and focus. The column height is the
+                    // show's own, so one that was set for this preset is kept.
+                    existing.pose = Pose { elevation: existing.pose.elevation, ..p.pose };
                     existing.name = p.name;
                     existing.has_thumbnail = thumbnail.is_some();
                     existing.id.clone()
@@ -1526,7 +1571,7 @@ impl Show {
         self.log("fault", data);
         let unit = &mut self.units[i];
         unit.live.fault = Some(why);
-        if self.project.on_fault == OnFault::HoldCamera && self.transport.hardware_live() {
+        if self.project.on_fault != OnFault::HoldAll && self.transport.hardware_live() {
             unit.rig.stop();
             unit.live.clear();
             unit.held = true;
@@ -1594,6 +1639,8 @@ impl Show {
         }
         let positioning = self.transport.output == Output::Positioning;
         let stopped = self.transport.run == Run::Stopped;
+        // The project can say that a rig off the timeline is driven on instead of held.
+        let carry_on = self.project.on_fault == OnFault::CarryOn;
         let camera = &self.project.cameras[i];
         let scale = if positioning { camera.rig.positioning_speed.clamp(0.01, 1.0) } else { 1.0 };
         let (axes, tol, window) = (camera.axes, camera.rig.tolerance, Duration::from_millis(camera.rig.tracking_window_ms));
@@ -1609,7 +1656,7 @@ impl Show {
             return Step::Faulted;
         }
         if let Some(rule) = camera.keep_out.iter().find(|r| r.violated(&next)) {
-            let why = format!("Keep-out rule broken: {}. The rig is held", rule.describe());
+            let why = format!("Keep-out rule broken: {}. The rig is held", rule.describe_in(self.project.units));
             self.fault(i, why);
             return Step::Faulted;
         }
@@ -1635,6 +1682,7 @@ impl Show {
             let there = Axis::ALL.iter().all(|a| (reading.pose.get(*a) - target.get(*a)).abs() <= tol.get(*a) * 0.25);
             if there {
                 unit.live.positioning = None;
+                unit.live.late = false;
                 return Step::Arrived;
             }
             let moved = unit.live.positioning.is_none_or(|(to, _)| to != target && stopped);
@@ -1644,7 +1692,18 @@ impl Show {
                     .map(|a| (target.get(*a) - reading.pose.get(*a)).abs() / (axes.get(*a).max_speed * scale).max(1e-9))
                     .fold(0.0, f64::max);
                 unit.live.positioning = Some((target, now + Duration::from_secs_f64(travel * 1.5) + POSITIONING_GRACE));
+                unit.live.late = false;
             } else if unit.live.positioning.is_some_and(|(_, deadline)| now > deadline) {
+                if carry_on {
+                    // It had its time. It counts as there, is driven on toward the pose, and the log says how far off it was.
+                    if !unit.live.late {
+                        unit.live.late = true;
+                        let data = json!({ "camera": unit.id, "frame": self.frame_f.floor() as i64, "pose": reading.pose, "error": error });
+                        let record = self.log.append("positioning_late", data);
+                        self.push(WsMsg::Log { record });
+                    }
+                    return Step::Arrived;
+                }
                 self.fault(i, "The rig did not reach the pose at the playhead. Output is cut".into());
                 return Step::Faulted;
             }
@@ -1657,7 +1716,7 @@ impl Show {
             .into_iter()
             .filter(checked)
             .map(|a| (a, error.get(a).abs() / tol.get(a).max(1e-9)))
-            .filter(|(_, share)| *share > 1.0)
+            .filter(|(_, share)| *share > 1.0 && !carry_on)
             .max_by(|a, b| a.1.total_cmp(&b.1));
         match worst {
             Some((axis, _)) => {
@@ -1668,7 +1727,7 @@ impl Show {
                         format!(
                             "Tracking fault: {} is {} from the timeline. The rig is held",
                             axis.label().to_lowercase(),
-                            axis.format(error.get(axis).abs())
+                            axis.format_in(error.get(axis).abs(), self.project.units)
                         ),
                     );
                     return Step::Faulted;

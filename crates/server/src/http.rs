@@ -305,6 +305,15 @@ async fn post_preset(State(app): State<App>, Client(c): Client, Json(req): Json<
     Ok(Json(lock(&app.show).store_preset(&c, &req)?))
 }
 
+async fn put_preset(
+    State(app): State<App>,
+    Client(c): Client,
+    Path(id): Path<String>,
+    Json(req): Json<UpdatePreset>,
+) -> Reply<Preset> {
+    Ok(Json(lock(&app.show).update_preset(&c, &id, &req)?))
+}
+
 async fn delete_preset(State(app): State<App>, Client(c): Client, Path(id): Path<String>) -> Reply<Vec<Preset>> {
     let mut s = lock(&app.show);
     s.delete_preset(&c, &id)?;
@@ -579,7 +588,7 @@ pub fn router(app: App) -> Router {
         .route("/inputs", get(get_inputs))
         .route("/presets", get(get_presets).post(post_preset))
         .route("/presets/sync", post(sync_presets))
-        .route("/presets/{id}", delete(delete_preset))
+        .route("/presets/{id}", delete(delete_preset).put(put_preset))
         .route("/presets/{id}/thumb.jpg", get(preset_thumb))
         .route("/rig/jog", post(rig_jog))
         .route("/record/{clip}/refit", post(refit))

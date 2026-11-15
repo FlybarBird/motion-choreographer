@@ -7,7 +7,7 @@ use crate::timeline_ui::PresetDrag;
 use egui::{vec2, RichText, Sense, Stroke, StrokeKind, Ui};
 use ptz_core::compile::{suggested_duration, Issue};
 use ptz_core::edit;
-use ptz_core::pose::{Axis, Preset};
+use ptz_core::pose::{Axis, Preset, Units};
 use ptz_core::song::{ClipBody, Ease, FromPose, PresetRef};
 use ptz_core::time::Timecode;
 
@@ -75,8 +75,54 @@ fn drawn_picture(ui: &Ui, s: &mut Session, preset: &Preset) -> Option<egui::Text
 
 const THUMB: egui::Vec2 = vec2(48.0 * 16.0 / 9.0, 48.0);
 
-fn preset_card(ui: &mut Ui, preset: &Preset, picture: Option<egui::TextureId>) -> egui::Response {
-    let width = ui.available_width().clamp(120.0, 400.0);
+/// Room kept at the end of a preset's row for the button that opens its menu.
+const PRESET_MENU_W: f32 = 30.0;
+
+/// What can be done to a stored preset: on its row's button, and on a right-click of the preset.
+fn preset_menu(ui: &mut Ui, s: &mut Session, preset: &Preset) {
+    let can = s.status.you_hold_lease && s.lost.is_none();
+    let no_lease = "Take the edit lease to change presets";
+    ui.label(RichText::new(&preset.name).strong());
+    let update = ui
+        .add_enabled(can, egui::Button::new("Update to the current pose"))
+        .on_hover_text(
+            "Store where the rig is now in this preset. Nothing moves. Moves already on the timeline keep the old pose until they are updated",
+        )
+        .on_disabled_hover_text(no_lease);
+    if update.clicked() {
+        s.link.send(Cmd::UpdatePreset(preset.id.clone(), Default::default()));
+        ui.close();
+    }
+    ui.separator();
+    let units = s.project.units;
+    let limits = s.project.axes_of(&preset.camera).elevation;
+    // What is typed is kept until it is set; a preset whose height has changed starts again from that.
+    let id = ui.make_persistent_id(("preset_height", &preset.id, preset.pose.elevation.to_bits()));
+    let mut mm = ui.data_mut(|d| d.get_temp::<f64>(id)).unwrap_or(preset.pose.elevation);
+    ui.horizontal(|ui| {
+        ui.label("Height");
+        ui.add_enabled(can, crate::units::height_box(&mut mm, units).range(limits.min..=limits.max))
+            .on_hover_text("The column height this preset goes to. Double-click to type it")
+            .on_disabled_hover_text(no_lease);
+        let set = ui
+            .add_enabled(can, egui::Button::new("Set height"))
+            .on_hover_text("Store this column height in the preset. Pan, tilt, zoom and focus stay as they are")
+            .on_disabled_hover_text(no_lease);
+        if set.clicked() {
+            s.link.send(Cmd::UpdatePreset(preset.id.clone(), ptz_core::api::UpdatePreset { pose: None, elevation: Some(mm) }));
+            ui.close();
+        }
+    });
+    ui.data_mut(|d| d.insert_temp(id, mm));
+    ui.separator();
+    if ui.button("Delete preset").clicked() {
+        s.link.send(Cmd::DeletePreset(preset.id.clone()));
+        ui.close();
+    }
+}
+
+fn preset_card(ui: &mut Ui, preset: &Preset, units: Units, picture: Option<egui::TextureId>) -> egui::Response {
+    let width = (ui.available_width() - PRESET_MENU_W).clamp(120.0, 400.0);
     let (rect, resp) = ui.allocate_exact_size(vec2(width, 58.0), Sense::hover());
     let p = ui.painter_at(rect);
     let fill = if resp.hovered() { CONTROL } else { LANE };
@@ -91,7 +137,7 @@ fn preset_card(ui: &mut Ui, preset: &Preset, picture: Option<egui::TextureId>) -
         Axis::Pan.format(preset.pose.pan),
         Axis::Tilt.format(preset.pose.tilt),
         Axis::Zoom.format(preset.pose.zoom),
-        Axis::Elevation.format(preset.pose.elevation)
+        Axis::Elevation.format_in(preset.pose.elevation, units)
     );
     p.text(egui::pos2(x, rect.top() + 30.0), egui::Align2::LEFT_TOP, detail, egui::FontId::proportional(10.5), MUTED);
     if let Some(n) = preset.camera_number {
@@ -182,16 +228,16 @@ pub fn presets(ui: &mut Ui, s: &mut Session) {
                 ui.add_space(6.0);
                 let id = egui::Id::new(("preset_drag", &preset.id));
                 let picture = preset_picture(ui, s, preset).or_else(|| drawn_picture(ui, s, preset));
-                let inner = ui.dnd_drag_source(id, PresetDrag(preset.clone()), |ui| preset_card(ui, preset, picture));
+                let units = s.project.units;
+                let inner = ui.dnd_drag_source(id, PresetDrag(preset.clone()), |ui| preset_card(ui, preset, units, picture));
                 if !ui.ctx().is_being_dragged(id) {
                     s.probe_presets.push((preset.id.clone(), inner.response.rect));
                 }
-                inner.response.on_hover_text("Drag onto the Camera move lane").context_menu(|ui| {
-                    if ui.button("Delete preset").clicked() {
-                        s.link.send(Cmd::DeletePreset(preset.id.clone()));
-                        ui.close();
-                    }
-                });
+                inner.response.on_hover_text("Drag onto the Camera move lane").context_menu(|ui| preset_menu(ui, s, preset));
+                let dots = RichText::new(icon::DOTS_THREE_VERTICAL).font(icon_font(16.0));
+                ui.menu_button(dots, |ui| preset_menu(ui, s, preset))
+                    .response
+                    .on_hover_text(format!("{}: update to the current pose, set its height, or delete it", preset.name));
             });
         }
         ui.add_space(6.0);
@@ -210,11 +256,11 @@ fn tc_row(ui: &mut Ui, s: &Session, label: &str, frame: i64) {
     ui.end_row();
 }
 
-fn issue_rows(ui: &mut Ui, issues: &[Issue]) {
+fn issue_rows(ui: &mut Ui, issues: &[Issue], units: Units) {
     for issue in issues {
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new("!").color(AMBER).strong());
-            ui.label(RichText::new(issue.message()).color(AMBER));
+            ui.label(RichText::new(issue.message_in(units)).color(AMBER));
         });
     }
 }
@@ -251,7 +297,7 @@ fn inspect_move(ui: &mut Ui, s: &mut Session, id: &str) {
 
     if !issues.is_empty() {
         section(ui, "Issues");
-        issue_rows(ui, &issues);
+        issue_rows(ui, &issues, s.project.units);
         ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
             let overrun = issues.iter().any(|i| i.acceptable());
@@ -686,7 +732,7 @@ fn inspect_song(ui: &mut Ui, s: &mut Session) {
         let issues = s.compiled.issues.clone();
         let mut seen = std::collections::BTreeSet::new();
         for issue in &issues {
-            let key = (issue.clip_id().map(str::to_string), issue.message());
+            let key = (issue.clip_id().map(str::to_string), issue.message_in(s.project.units));
             if !seen.insert(key) {
                 continue;
             }
@@ -699,7 +745,7 @@ fn inspect_song(ui: &mut Ui, s: &mut Session) {
                         s.timeline.selection.insert(id.to_string());
                     }
                 }
-                ui.label(RichText::new(issue.message()).color(AMBER));
+                ui.label(RichText::new(issue.message_in(s.project.units)).color(AMBER));
             });
         }
     }
@@ -733,7 +779,7 @@ pub fn inspector(ui: &mut Ui, s: &mut Session) {
                         many.iter().flat_map(|id| s.issues_for(id).into_iter().cloned().collect::<Vec<_>>()).collect();
                     if !issues.is_empty() {
                         section(ui, "Issues");
-                        issue_rows(ui, &issues);
+                        issue_rows(ui, &issues, s.project.units);
                     }
                 }
             }
@@ -745,14 +791,14 @@ pub fn inspector(ui: &mut Ui, s: &mut Session) {
 
 /// A log record in words. With several cameras, a record about one of them starts with its number and name.
 fn log_line(project: &ptz_core::Project, kind: &str, data: &serde_json::Value) -> String {
-    let line = log_text(kind, data);
+    let line = log_text(kind, data, project.units);
     match data.get("camera").and_then(|v| v.as_str()) {
         Some(camera) if project.cameras.len() > 1 => format!("{}: {line}", project.label(camera)),
         _ => line,
     }
 }
 
-fn log_text(kind: &str, data: &serde_json::Value) -> String {
+fn log_text(kind: &str, data: &serde_json::Value, units: Units) -> String {
     let text = |k: &str| data.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
     match kind {
         "camera_held" => {
@@ -820,7 +866,9 @@ fn log_text(kind: &str, data: &serde_json::Value) -> String {
             };
             let axes: Vec<String> = Axis::ALL
                 .iter()
-                .map(|a| format!("{} {} ({:+.2})", a.label().to_lowercase(), a.format(value("pose", *a)), value("error", *a)))
+                .map(|a| {
+                    format!("{} {} ({:+.2})", a.label().to_lowercase(), a.format_in(value("pose", *a), units), value("error", *a))
+                })
                 .collect();
             format!("frame {frame}   {}", axes.join("   "))
         }

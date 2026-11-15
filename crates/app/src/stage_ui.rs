@@ -6,7 +6,7 @@ use crate::stage::{self, Key};
 use crate::theme::*;
 use egui::{vec2, Align2, FontId, PointerButton, Pos2, Rect, Sense, Stroke, Ui};
 use ptz_core::camera::Mount;
-use ptz_core::pose::Pose;
+use ptz_core::pose::{Pose, Units};
 use ptz_scene::mesh::Mesh;
 use ptz_scene::render::{self, Camera, Look};
 
@@ -407,10 +407,11 @@ fn toolbar(ui: &mut Ui, s: &mut Session) {
                 "Top: hide what is above the height beside this, such as a ceiling. Front and Side: hide what is nearer than the middle of the view",
             );
             if s.stage_view.angle == Angle::Top {
-                ui.add_enabled(
-                    s.stage_view.cut,
-                    egui::DragValue::new(&mut s.stage_view.cut_height).speed(0.1).range(-100.0..=1000.0).suffix(" m"),
-                );
+                let mut height = s.stage_view.cut_height as f64;
+                let field = crate::units::distance_box(&mut height, s.project.units).range(-100.0..=1000.0);
+                if ui.add_enabled(s.stage_view.cut, field).changed() {
+                    s.stage_view.cut_height = height as f32;
+                }
             }
         }
         let undo_button = ui
@@ -584,14 +585,15 @@ fn interact(ui: &Ui, s: &mut Session, resp: &egui::Response, poses: &[Pose]) {
 }
 
 /// The distance between two measured points, in words.
-pub fn measured(a: [f32; 3], b: [f32; 3]) -> String {
+pub fn measured(a: [f32; 3], b: [f32; 3], units: Units) -> String {
     let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
     let (straight, floor) = ((d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt(), d[0].hypot(d[1]));
+    let say = |m: f32| units.distance(m as f64, 2);
     if d[2].abs() < 0.005 {
-        format!("{straight:.2} m")
+        say(straight)
     } else {
         let way = if d[2] > 0.0 { "up" } else { "down" };
-        format!("{straight:.2} m  ({floor:.2} m along the floor, {:.2} m {way})", d[2].abs())
+        format!("{}  ({} along the floor, {} {way})", say(straight), say(floor), say(d[2].abs()))
     }
 }
 
@@ -673,14 +675,15 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
     // What is in hand, where the selected camera stands, and the scale.
     let camera = s.cam();
     let m = camera.mount;
+    let units = s.project.units;
     let stands = format!(
-        "{}   x {:.2}  y {:.2}  z {:.2} m   heading {:.1}°   lens at {:.2} m",
+        "{}   x {:.2}  y {:.2}  z {}   heading {:.1}°   lens at {}",
         s.project.label(&camera.id),
-        m.x,
-        m.y,
-        m.z,
+        m.x / units.m_per_long(),
+        m.y / units.m_per_long(),
+        units.distance(m.z, 2),
         m.heading_deg,
-        m.lens_position(poses[selected].elevation)[2]
+        units.distance(m.lens_position(poses[selected].elevation)[2], 2)
     );
     let text = |at: Pos2, anchor: Align2, text: String, ink: egui::Color32| {
         let font = FontId::proportional(11.5);
@@ -691,7 +694,7 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
     };
     text(rect.left_top() + vec2(8.0, 8.0), Align2::LEFT_TOP, stands, camera_color(selected));
     let hint = match (&s.stage_view.measure[..], s.stage_view.tool) {
-        ([a, b], Tool::Measure) => format!("Measured {}", measured(*a, *b)),
+        ([a, b], Tool::Measure) => format!("Measured {}", measured(*a, *b, units)),
         ([_], Tool::Measure) => "Click the second point".to_string(),
         (_, tool) => format!("{}. Right-drag or Shift-drag slides the view; scroll zooms", tool.hint()),
     };
@@ -782,9 +785,11 @@ mod tests {
         assert_eq!(wrap_heading(180.0), 180.0);
         assert_eq!(wrap_heading(-180.0), 180.0);
         assert_eq!(wrap_heading(45.5), 45.5);
-        assert_eq!(measured([0.0, 0.0, 0.0], [3.0, 4.0, 0.0]), "5.00 m");
-        assert_eq!(measured([0.0, 0.0, 0.0], [3.0, 4.0, 12.0]), "13.00 m  (5.00 m along the floor, 12.00 m up)");
-        assert_eq!(measured([0.0, 0.0, 2.0], [0.0, 1.0, 0.0]), "2.24 m  (1.00 m along the floor, 2.00 m down)");
+        let m = Units::Metric;
+        assert_eq!(measured([0.0, 0.0, 0.0], [3.0, 4.0, 0.0], m), "5.00 m");
+        assert_eq!(measured([0.0, 0.0, 0.0], [3.0, 4.0, 12.0], m), "13.00 m  (5.00 m along the floor, 12.00 m up)");
+        assert_eq!(measured([0.0, 0.0, 2.0], [0.0, 1.0, 0.0], m), "2.24 m  (1.00 m along the floor, 2.00 m down)");
+        assert_eq!(measured([0.0, 0.0, 0.0], [0.0, 3.048, 0.0], Units::Imperial), "10.00 ft");
     }
 
     #[test]

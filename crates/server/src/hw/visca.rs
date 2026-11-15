@@ -139,6 +139,12 @@ pub fn zoom_stop() -> Vec<u8> {
     vec![0x81, 0x01, 0x04, 0x07, 0x00, 0xFF]
 }
 
+/// Zoom toward tele or wide at a speed step, 0 slow through 7 fast.
+/// A power-zoom lens that refuses a direct position still takes this.
+pub fn zoom_toward(tele: bool, step: u8) -> Vec<u8> {
+    vec![0x81, 0x01, 0x04, 0x07, (if tele { 0x20 } else { 0x30 }) | step.clamp(0, 7), 0xFF]
+}
+
 /// Focus position: `81 01 04 48 0p 0p 0p 0p FF`, 0000 far to FFFF near.
 pub fn focus_direct(counts: u16) -> Vec<u8> {
     let mut out = vec![0x81, 0x01, 0x04, 0x48];

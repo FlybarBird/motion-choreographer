@@ -263,7 +263,7 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
     {
         let issues = s.issues_for(id);
         if !issues.is_empty() {
-            let text = issues.iter().map(|i| i.message()).collect::<Vec<_>>().join("\n");
+            let text = issues.iter().map(|i| i.message_in(s.project.units)).collect::<Vec<_>>().join("\n");
             hint_box(&painter, *p + vec2(14.0, 18.0), &text, AMBER, rect);
         }
     }

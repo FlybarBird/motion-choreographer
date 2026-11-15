@@ -20,6 +20,6 @@ pub mod time;
 pub mod transport;
 
 pub use camera::{CameraConfig, FIRST_CAMERA};
-pub use pose::{Axis, Pose, Preset, Project};
+pub use pose::{Axis, Pose, Preset, Project, Units};
 pub use song::Song;
 pub use time::{FrameRate, Timecode};

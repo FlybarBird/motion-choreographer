@@ -2,7 +2,7 @@
 
 use crate::camera::{first_camera, is_first_camera};
 use crate::eval::{ease_keys, peak_factor, segment_value, Evaluator};
-use crate::pose::{Axis, AxisLimits, AxisTable, KeepOutRule, Pose, Project};
+use crate::pose::{Axis, AxisLimits, AxisTable, KeepOutRule, Pose, Project, Units};
 use crate::song::{ClipBody, Ease, FromPose, MotionClip, Song};
 use crate::time::FrameRate;
 use serde::{Deserialize, Serialize};
@@ -94,18 +94,24 @@ impl Issue {
     }
 
     pub fn message(&self) -> String {
+        self.message_in(Units::Metric)
+    }
+
+    /// `message`, with lengths in the units the show is read in.
+    pub fn message_in(&self, units: Units) -> String {
+        let say = |axis: &Axis, v: &f64| axis.format_in(*v, units);
         match self {
             Issue::TooFast { axis, speed, limit, .. } => {
-                format!("{} is too fast: {} per second, limit {}", axis.label(), axis.format(*speed), axis.format(*limit))
+                format!("{} is too fast: {} per second, limit {}", axis.label(), say(axis, speed), say(axis, limit))
             }
             Issue::TooMuchAcceleration { axis, .. } => {
                 format!("{} starts or stops too sharply", axis.label())
             }
             Issue::OutOfRange { axis, value, .. } => {
-                format!("{} reaches {}, outside its range", axis.label(), axis.format(*value))
+                format!("{} reaches {}, outside its range", axis.label(), say(axis, value))
             }
             Issue::Jump { axis, distance, .. } => {
-                format!("{} steps by {} at the start of this move", axis.label(), axis.format(*distance))
+                format!("{} steps by {} at the start of this move", axis.label(), say(axis, distance))
             }
             Issue::KeepOut { rule, .. } => format!("Keep-out rule broken: {rule}"),
             Issue::MissingCamera { .. } => "This move is for a camera that is no longer in the project".into(),
@@ -151,7 +157,7 @@ pub fn compile(song: &Song, project: &Project) -> Compiled {
     let fps = project.rate.fps();
     let mut out = Compiled::default();
     for cam in &project.cameras {
-        let poses = compile_camera(song, &cam.id, &cam.axes, &cam.keep_out, fps, &mut out.issues);
+        let poses = compile_camera(song, &cam.id, &cam.axes, &cam.keep_out, project.units, fps, &mut out.issues);
         out.tracks.push(PoseTrack { camera: cam.id.clone(), poses });
     }
     for c in song.motion.iter().filter(|c| project.camera(&c.camera).is_none()) {
@@ -166,6 +172,7 @@ fn compile_camera(
     camera: &str,
     axes: &AxisTable,
     keep_out: &[KeepOutRule],
+    units: Units,
     fps: f64,
     issues: &mut Vec<Issue>,
 ) -> Vec<Pose> {
@@ -264,7 +271,7 @@ fn compile_camera(
 
     for rule in keep_out {
         if let Some(f) = poses[..=last].iter().position(|p| rule.violated(p)) {
-            issues.push(Issue::KeepOut { camera: camera.to_string(), frame: f as i64, rule: rule.describe() });
+            issues.push(Issue::KeepOut { camera: camera.to_string(), frame: f as i64, rule: rule.describe_in(units) });
         }
     }
     poses

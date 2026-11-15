@@ -43,6 +43,8 @@ pub enum Cmd {
     DeleteSong(String),
     PutProject(Box<Project>),
     StorePreset(StorePreset),
+    /// Change one stored preset: its id, and what to change.
+    UpdatePreset(String, UpdatePreset),
     DeletePreset(String),
     /// Read one camera's presets from its rig.
     SyncPresets(String),
@@ -525,6 +527,18 @@ impl Worker {
             Cmd::StorePreset(req) => match self.api.post::<_, Preset>("/presets", &req) {
                 Ok(p) => self.emit(Event::Info(format!("Stored preset {}", p.name))),
                 Err(e) => self.refused("Store preset", e),
+            },
+            Cmd::UpdatePreset(id, req) => match self.api.put::<_, Preset>(&format!("/presets/{id}"), &req) {
+                Ok(p) => {
+                    self.emit(Event::Info(match req.elevation {
+                        Some(_) if req.pose.is_none() => format!("Set the height of {}", p.name),
+                        _ => format!("Updated {} to the current pose", p.name),
+                    }));
+                    if let Ok(all) = self.api.presets() {
+                        self.emit(Event::Presets(all));
+                    }
+                }
+                Err(e) => self.refused("Update preset", e),
             },
             Cmd::DeletePreset(id) => match self.api.delete::<Vec<Preset>>(&format!("/presets/{id}")) {
                 Ok(p) => self.emit(Event::Presets(p)),

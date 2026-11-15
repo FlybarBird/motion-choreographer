@@ -877,18 +877,27 @@ fn paint(painter: &Painter, plot: &Plot, song: &Song, clip: Option<&MotionClip>,
         paint_speed(painter, plot, s, &pg);
     } else {
         let (lo, hi) = plot.ranges[active.index()];
-        let step = nice_step(hi - lo, (plot.body.height() / 42.0).max(2.0) as f64);
+        // Lines fall on round numbers of what is read: inches for an elevation shown in inches.
+        let units = s.project.units;
+        let per = if active == Axis::Elevation { units.mm_per_short() } else { 1.0 };
+        let step = nice_step((hi - lo) / per, (plot.body.height() / 42.0).max(2.0) as f64) * per;
         let mut v = (lo / step).ceil() * step;
         while v <= hi {
             let y = plot.y_of(active, v);
             pb.hline(plot.body.x_range(), y, Stroke::new(1.0, with_alpha(LINE, 70)));
-            pg.text(pos2(gutter.right() - 8.0, y), Align2::RIGHT_CENTER, active.format(v), FontId::monospace(10.5), ink);
+            pg.text(
+                pos2(gutter.right() - 8.0, y),
+                Align2::RIGHT_CENTER,
+                active.format_in(v, units),
+                FontId::monospace(10.5),
+                ink,
+            );
             v += step;
         }
         painter.text(
             pos2(plot.rect.left() + 10.0, plot.ruler.center().y),
             Align2::LEFT_CENTER,
-            format!("{} ({})", active.label(), active.unit()),
+            format!("{} ({})", active.label(), active.unit_in(units)),
             FontId::proportional(11.5),
             ink,
         );
@@ -985,10 +994,15 @@ fn paint_speed(painter: &Painter, plot: &Plot, s: &Session, gutter: &Painter) {
     let active = g.active;
     let limits = s.project.axes_of(&g.camera);
     let lim = limits.get(active);
+    let units = s.project.units;
+    let top = match active {
+        Axis::Elevation if units.mm_per_short() != 1.0 => format!("{:.1}", lim.max_speed / units.mm_per_short()),
+        _ => format!("{:.0}", lim.max_speed),
+    };
     gutter.text(
         pos2(plot.body.left() - 8.0, limit_y),
         Align2::RIGHT_CENTER,
-        format!("max {:.0} {}/s", lim.max_speed, active.unit()),
+        format!("max {top} {}/s", active.unit_in(units)),
         FontId::proportional(10.5),
         AMBER,
     );

@@ -94,7 +94,8 @@ impl CameraConfig {
     }
 }
 
-/// What the other cameras do when one faults while the show is live.
+/// What happens when a camera faults while the show is live, and whether being off the
+/// timeline counts as a fault at all.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum OnFault {
@@ -103,15 +104,21 @@ pub enum OnFault {
     HoldCamera,
     /// Output is cut for every camera.
     HoldAll,
+    /// A camera that is off the timeline is not a fault: it is driven on, however far off it
+    /// is, and Arm does not wait for ever for a rig that cannot reach the playhead. Only
+    /// E-Stop stops it. A rig that stops answering, a limit or a keep-out rule still holds
+    /// that camera.
+    CarryOn,
 }
 
 impl OnFault {
-    pub const ALL: [OnFault; 2] = [OnFault::HoldCamera, OnFault::HoldAll];
+    pub const ALL: [OnFault; 3] = [OnFault::HoldCamera, OnFault::HoldAll, OnFault::CarryOn];
 
     pub fn label(self) -> &'static str {
         match self {
             OnFault::HoldCamera => "Hold that camera, the others carry on",
             OnFault::HoldAll => "Hold every camera",
+            OnFault::CarryOn => "Never hold a camera for being off the timeline",
         }
     }
 }

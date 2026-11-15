@@ -139,7 +139,7 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
         painter.text(
             pos2(x + 12.0, y),
             Align2::LEFT_CENTER,
-            format!("{} {}", axis.label(), axis.format(pose.get(*axis))),
+            format!("{} {}", axis.label(), axis.format_in(pose.get(*axis), s.project.units)),
             FontId::proportional(11.5),
             OFF_WHITE,
         );
