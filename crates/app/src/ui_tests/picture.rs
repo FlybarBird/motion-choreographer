@@ -1,11 +1,46 @@
 //! The window as a picture, for tests that have to see what was drawn and not
 //! only where things were laid out. A small software rasteriser of egui's own
 //! triangles: text and flat fills, which is all the bars are made of. Pictures
-//! from the server (video frames, thumbnails) are drawn as plain plates.
+//! the app uploads (stage views, video frames, thumbnails) are drawn from the pixels it gave.
 
 use super::Rig;
 use egui::epaint::{ClippedPrimitive, Primitive};
 use egui::{Color32, Pos2, Rect};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+/// Every picture the window has uploaded, as the pixels it was given. It stands where a renderer
+/// would in the test harness, so nothing uploaded is missed.
+#[derive(Clone, Default)]
+pub struct Textures(Arc<Mutex<HashMap<egui::TextureId, egui::ColorImage>>>);
+
+impl egui_kittest::TestRenderer for Textures {
+    fn handle_delta(&mut self, delta: &mut egui::TexturesDelta) {
+        let mut kept = self.0.lock().expect("the pictures are not poisoned");
+        let mut delta = std::mem::take(delta);
+        let changes = delta.set.iter().flat_map(|(id, changes)| changes.iter().map(move |change| (*id, change)));
+        for (id, change) in changes {
+            let egui::ImageData::Color(image) = &change.image;
+            match (change.pos, kept.get_mut(&id)) {
+                (Some([left, top]), Some(whole)) => {
+                    for y in 0..image.size[1] {
+                        let to = (top + y) * whole.size[0] + left;
+                        whole.pixels[to..to + image.size[0]]
+                            .copy_from_slice(&image.pixels[y * image.size[0]..(y + 1) * image.size[0]]);
+                    }
+                }
+                _ => {
+                    kept.insert(id, image.as_ref().clone());
+                }
+            }
+        }
+        for id in &delta.free {
+            kept.remove(id);
+        }
+        // Everything in it has been taken: it may be dropped without complaint.
+        delta.clear();
+    }
+}
 
 pub struct Picture {
     pub width: usize,
@@ -39,15 +74,24 @@ fn sample(atlas: &egui::ColorImage, u: f32, v: f32) -> [f32; 4] {
 impl Rig {
     /// What the last frame drew.
     pub fn picture(&self) -> Picture {
-        let ctx = &self.harness.ctx;
+        Picture::of(&self.harness.ctx, self.harness.output(), &self.textures)
+    }
+}
+
+impl Picture {
+    /// What a frame drew, from the shapes it put out and the pictures uploaded so far.
+    pub fn of(ctx: &egui::Context, output: &egui::FullOutput, textures: &Textures) -> Picture {
         let scale = ctx.pixels_per_point();
         let size = ctx.content_rect().size() * scale;
         let (width, height) = (size.x.round() as usize, size.y.round() as usize);
         let atlas = ctx.fonts(|f| f.image());
+        let uploaded = textures.0.lock().expect("the pictures are not poisoned");
         let mut pixels = vec![[0.0f32; 3]; width * height];
-        for ClippedPrimitive { clip_rect, primitive } in ctx.tessellate(self.harness.output().shapes.clone(), scale) {
+        for ClippedPrimitive { clip_rect, primitive } in ctx.tessellate(output.shapes.clone(), scale) {
             let Primitive::Mesh(mesh) = primitive else { continue };
-            let text = mesh.texture_id == egui::TextureId::default();
+            // Text and flat fills are both cut from the font atlas; anything else is a picture.
+            let texture =
+                if mesh.texture_id == egui::TextureId::default() { Some(&atlas) } else { uploaded.get(&mesh.texture_id) };
             let clip =
                 Rect::from_min_max((clip_rect.min.to_vec2() * scale).to_pos2(), (clip_rect.max.to_vec2() * scale).to_pos2())
                     .intersect(Rect::from_min_size(Pos2::ZERO, size));
@@ -77,8 +121,8 @@ impl Rig {
                         }
                         let mix = |f: &dyn Fn(usize) -> f32| w[0] * f(0) + w[1] * f(1) + w[2] * f(2);
                         let mut ink: [f32; 4] = std::array::from_fn(|c| mix(&|i| colors[i][c]));
-                        if text {
-                            let texel = sample(&atlas, mix(&|i| v[i].uv.x), mix(&|i| v[i].uv.y));
+                        if let Some(texture) = texture {
+                            let texel = sample(texture, mix(&|i| v[i].uv.x), mix(&|i| v[i].uv.y));
                             ink = std::array::from_fn(|c| ink[c] * texel[c]);
                         }
                         let under = &mut pixels[y * width + x];
@@ -91,9 +135,7 @@ impl Rig {
         }
         Picture { width, height, scale, pixels }
     }
-}
 
-impl Picture {
     pub fn at(&self, point: Pos2) -> Color32 {
         let x = ((point.x * self.scale) as usize).min(self.width - 1);
         let y = ((point.y * self.scale) as usize).min(self.height - 1);

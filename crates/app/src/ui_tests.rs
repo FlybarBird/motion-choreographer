@@ -33,6 +33,8 @@ pub struct Rig {
     pub cmds: Receiver<Cmd>,
     #[allow(dead_code)]
     pub events: Sender<Event>,
+    /// The pictures the window has uploaded, for [`Rig::picture`].
+    textures: picture::Textures,
 }
 
 pub fn rig(song: Song) -> Rig {
@@ -68,7 +70,8 @@ pub fn rig_sized(window: egui::Vec2, project: Project, presets: Vec<Preset>, son
     let session = Session::offline(link, project, presets, song);
     let shell = Shell::new(session, None);
     let mut themed = false;
-    let harness = Harness::builder().with_size(window).build_ui_state(
+    let textures = picture::Textures::default();
+    let harness = Harness::builder().with_size(window).renderer(textures.clone()).build_ui_state(
         move |ui, shell: &mut Shell| {
             if !themed {
                 // Fonts set on the context are bound from the next pass, so the first one draws nothing.
@@ -80,7 +83,7 @@ pub fn rig_sized(window: egui::Vec2, project: Project, presets: Vec<Preset>, son
         },
         shell,
     );
-    let mut rig = Rig { harness, cmds, events };
+    let mut rig = Rig { harness, cmds, events, textures };
     rig.harness.run_steps(4);
     rig
 }
@@ -1842,3 +1845,4 @@ fn servers_this_station_reached_are_remembered_newest_first() {
 mod picture;
 mod safety;
 mod settings;
+mod shots;

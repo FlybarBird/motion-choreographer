@@ -1341,86 +1341,7 @@ impl PtzApp {
             self.have_server = Some((std::time::Instant::now(), link::local_server().is_some()));
         }
         let have_server = self.have_server.is_some_and(|(_, found)| found);
-        let mut go = false;
-        let mut start_local = false;
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(BASE)).show(ui, |ui| {
-            ui.vertical_centered(|ui| {
-                ui.add_space((ui.available_height() * 0.18).max(20.0));
-                ui.label(RichText::new("PTZ Programmer").size(30.0).strong());
-                ui.label(RichText::new("Timeline programming and playout for the FR7 and its pedestal").color(MUTED));
-                ui.add_space(18.0);
-                egui::Frame::new().fill(PANEL).corner_radius(10).inner_margin(egui::Margin::same(18)).show(ui, |ui| {
-                    ui.set_width(430.0);
-                    egui::Grid::new("connect_grid").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
-                        ui.label("Show server");
-                        let r = ui.add_enabled(
-                            !busy,
-                            egui::TextEdit::singleline(&mut self.settings.server)
-                                .desired_width(290.0)
-                                .hint_text("http://127.0.0.1:8787"),
-                        );
-                        if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
-                            go = true;
-                        }
-                        ui.end_row();
-                        let others: Vec<String> =
-                            self.settings.recent.iter().filter(|r| r.as_str() != self.settings.server.trim()).cloned().collect();
-                        if !others.is_empty() {
-                            ui.label(RichText::new("Recent").color(MUTED));
-                            ui.vertical(|ui| {
-                                for url in others {
-                                    let link = ui.add_enabled(!busy, egui::Button::new(&url).frame(false));
-                                    if link.on_hover_text("Use this server").clicked() {
-                                        self.settings.server = url;
-                                    }
-                                }
-                            });
-                            ui.end_row();
-                        }
-                        ui.label("Station name");
-                        ui.add_enabled(!busy, egui::TextEdit::singleline(&mut self.settings.station).desired_width(290.0))
-                            .on_hover_text("Shown to other stations when this one holds the edit lease");
-                        ui.end_row();
-                        ui.label("Access key");
-                        ui.add_enabled(
-                            !busy,
-                            egui::TextEdit::singleline(&mut self.settings.access_key)
-                                .password(true)
-                                .desired_width(290.0)
-                                .hint_text("only for a remote server"),
-                        );
-                        ui.end_row();
-                    });
-                    ui.add_space(10.0);
-                    ui.horizontal(|ui| {
-                        if busy {
-                            ui.spinner();
-                            ui.label("Connecting");
-                        } else {
-                            let ok = !self.settings.server.trim().is_empty() && !self.settings.station.trim().is_empty();
-                            if ui.add_enabled(ok, filled("Connect", ACCENT).min_size(vec2(110.0, 32.0))).clicked() {
-                                go = true;
-                            }
-                            if ui
-                                .add_enabled(
-                                    have_server,
-                                    egui::Button::new("Start a server on this computer").min_size(vec2(0.0, 32.0)),
-                                )
-                                .on_hover_text("Runs ptz-server here on the show folder in your home folder, then connects to it. It drives the rig that project names, the simulator on a new folder, and keeps running after the app quits")
-                                .on_disabled_hover_text(link::NO_LOCAL_SERVER)
-                                .clicked()
-                            {
-                                start_local = true;
-                            }
-                        }
-                    });
-                    if let Some(e) = &error {
-                        ui.add_space(8.0);
-                        ui.label(RichText::new(e).color(AMBER));
-                    }
-                });
-            });
-        });
+        let (mut go, start_local) = connect_form(ui, &mut self.settings, error.as_deref(), busy, have_server);
         if start_local {
             match link::start_local_server() {
                 Ok(url) => {
@@ -1437,6 +1358,98 @@ impl PtzApp {
             self.connect();
         }
     }
+}
+
+/// The connect screen: where the show server is and who this station is. Returns whether Connect
+/// was asked for, and whether a server is to be started on this computer first.
+pub(crate) fn connect_form(
+    ui: &mut Ui,
+    settings: &mut Settings,
+    error: Option<&str>,
+    busy: bool,
+    have_server: bool,
+) -> (bool, bool) {
+    let mut go = false;
+    let mut start_local = false;
+    egui::CentralPanel::default().frame(egui::Frame::new().fill(BASE)).show(ui, |ui| {
+        ui.vertical_centered(|ui| {
+            ui.add_space((ui.available_height() * 0.18).max(20.0));
+            ui.label(RichText::new("PTZ Programmer").size(30.0).strong());
+            ui.label(RichText::new("Timeline programming and playout for the FR7 and its pedestal").color(MUTED));
+            ui.add_space(18.0);
+            egui::Frame::new().fill(PANEL).corner_radius(10).inner_margin(egui::Margin::same(18)).show(ui, |ui| {
+                ui.set_width(430.0);
+                egui::Grid::new("connect_grid").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
+                    ui.label("Show server");
+                    let r = ui.add_enabled(
+                        !busy,
+                        egui::TextEdit::singleline(&mut settings.server)
+                            .desired_width(290.0)
+                            .hint_text("http://127.0.0.1:8787"),
+                    );
+                    if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                        go = true;
+                    }
+                    ui.end_row();
+                    let others: Vec<String> =
+                        settings.recent.iter().filter(|r| r.as_str() != settings.server.trim()).cloned().collect();
+                    if !others.is_empty() {
+                        ui.label(RichText::new("Recent").color(MUTED));
+                        ui.vertical(|ui| {
+                            for url in others {
+                                let link = ui.add_enabled(!busy, egui::Button::new(&url).frame(false));
+                                if link.on_hover_text("Use this server").clicked() {
+                                    settings.server = url;
+                                }
+                            }
+                        });
+                        ui.end_row();
+                    }
+                    ui.label("Station name");
+                    ui.add_enabled(!busy, egui::TextEdit::singleline(&mut settings.station).desired_width(290.0))
+                        .on_hover_text("Shown to other stations when this one holds the edit lease");
+                    ui.end_row();
+                    ui.label("Access key");
+                    ui.add_enabled(
+                        !busy,
+                        egui::TextEdit::singleline(&mut settings.access_key)
+                            .password(true)
+                            .desired_width(290.0)
+                            .hint_text("only for a remote server"),
+                    );
+                    ui.end_row();
+                });
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if busy {
+                        ui.spinner();
+                        ui.label("Connecting");
+                    } else {
+                        let ok = !settings.server.trim().is_empty() && !settings.station.trim().is_empty();
+                        if ui.add_enabled(ok, filled("Connect", ACCENT).min_size(vec2(110.0, 32.0))).clicked() {
+                            go = true;
+                        }
+                        if ui
+                            .add_enabled(
+                                have_server,
+                                egui::Button::new("Start a server on this computer").min_size(vec2(0.0, 32.0)),
+                            )
+                            .on_hover_text("Runs ptz-server here on the show folder in your home folder, then connects to it. It drives the rig that project names, the simulator on a new folder, and keeps running after the app quits")
+                            .on_disabled_hover_text(link::NO_LOCAL_SERVER)
+                            .clicked()
+                        {
+                            start_local = true;
+                        }
+                    }
+                });
+                if let Some(e) = error {
+                    ui.add_space(8.0);
+                    ui.label(RichText::new(e).color(AMBER));
+                }
+            });
+        });
+    });
+    (go, start_local)
 }
 
 impl eframe::App for PtzApp {

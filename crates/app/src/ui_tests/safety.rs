@@ -178,7 +178,7 @@ fn e_stop_is_painted_whole_with_and_without_a_fault() {
 }
 
 /// Put a dialog on the screen. Every dialog there is has an arm here: a new one does not compile without.
-fn open(r: &mut Rig, prompt: Prompt) {
+pub(super) fn open(r: &mut Rig, prompt: Prompt) {
     use crate::app::Dialog;
     let ctx = r.harness.ctx.clone();
     let shell = r.harness.state_mut();
