@@ -539,7 +539,9 @@ fn syncing_presets_recalls_each_one_on_the_camera_and_is_refused_while_live() {
     assert_eq!(by_number(2).name, "Lectern");
     assert_eq!(by_number(3).name, "Two-Shot");
     let lectern = by_number(2);
-    let want = Pose { pan: -24.0, tilt: 1.5, zoom: 0.62, focus: 0.5, elevation: 140.0 };
+    // The head and lens are the camera's; the column height is not the camera's to say, so a sync keeps
+    // the height the preset already had.
+    let want = Pose { pan: -24.0, tilt: 1.5, zoom: 0.62, focus: 0.5, elevation: 310.0 };
     assert!(
         close(&lectern.pose, &want, &Pose { pan: 0.05, tilt: 0.05, zoom: 0.002, focus: 0.002, elevation: 1.0 }, 1.0),
         "{:?}",
