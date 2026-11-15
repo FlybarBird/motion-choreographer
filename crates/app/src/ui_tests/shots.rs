@@ -236,7 +236,7 @@ fn on_hardware(r: &mut Rig) {
 }
 
 /// The pictures taken of the smallest window as well: the ones where room is shortest.
-const AT_THE_SMALLEST: [&str; 11] = [
+const AT_THE_SMALLEST: [&str; 12] = [
     "00-connect",
     "01-main",
     "02-timeline-axis-lanes",
@@ -248,6 +248,7 @@ const AT_THE_SMALLEST: [&str; 11] = [
     "10-fault-held",
     "11-estop-latched",
     "14-media-stage-rig-log",
+    "20-twelve-cameras",
 ];
 
 fn wanted(name: &str) -> bool {
@@ -448,5 +449,38 @@ fn design_pictures() {
         let view = safety::rect_of(&r, "View").center();
         r.click(view);
         save(&mut r, &dir, &format!("17-view-menu-{tag}"));
+
+        // The Lock menu, with the file on the timeline in it.
+        let mut r = window(size);
+        let lock = safety::rect_of(&r, "Lock").center();
+        r.click(lock);
+        save(&mut r, &dir, &format!("18-lock-menu-{tag}"));
+
+        // The Inspector on the audio clip: its file timecode and the lock to it.
+        let mut r = window(size);
+        {
+            let s = &mut r.harness.state_mut().session;
+            let audio = s.song.as_ref().and_then(|song| song.media.first()).map(|c| c.id.clone()).expect("the show has audio");
+            s.timeline.selection.clear();
+            s.timeline.selection.insert(audio);
+        }
+        save(&mut r, &dir, &format!("19-inspector-audio-{tag}"));
+
+        // Twelve cameras: the camera bar at its fullest, and a tile for each.
+        let mut project = Project::default();
+        for n in 2..=12 {
+            let mut camera = ptz_core::CameraConfig::new(&format!("cam{n}"), &format!("Camera {n}"));
+            camera.mount.x = (n as f64 - 6.5) * 2.0;
+            project.cameras.push(camera);
+        }
+        let mut r = rig_sized(size, project, presets(), Song::new("s", "Opening Number", "01:00:00:00", 1500));
+        r.harness.state_mut().show_tab(Tab::Multiview);
+        save(&mut r, &dir, &format!("20-twelve-cameras-{tag}"));
+
+        // No song open: what the panels say when they have nothing to show.
+        let mut r = rig_sized(size, Project::default(), Vec::new(), Song::new("s", "Opening Number", "01:00:00:00", 1500));
+        r.harness.state_mut().session.song = None;
+        r.harness.state_mut().show_tab(Tab::Media);
+        save(&mut r, &dir, &format!("21-nothing-open-{tag}"));
     }
 }

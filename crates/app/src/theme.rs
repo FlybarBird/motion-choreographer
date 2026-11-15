@@ -569,7 +569,9 @@ pub fn stop_latched(ui: &mut egui::Ui, text: &str, ground: egui::Vec2, size: egu
     let plate = egui::Rect::from_center_size(ground.center(), size);
     ui.painter().rect_filled(ground, RADIUS, AMBER);
     ui.painter().rect_filled(plate, RADIUS, RED);
-    let galley = ui.painter().layout_job(chip_job(text, ink_on(RED), f32::INFINITY));
+    let format =
+        egui::TextFormat { font_id: semibold(SMALL), color: ink_on(RED), extra_letter_spacing: TRACKING, ..Default::default() };
+    let galley = ui.painter().layout_job(egui::text::LayoutJob::single_section(text.to_string(), format));
     ui.painter().galley(plate.center() - galley.size() / 2.0, galley, ink_on(RED));
     response
 }
