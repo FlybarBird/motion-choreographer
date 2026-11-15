@@ -250,3 +250,107 @@ fn a_keyed_server_gives_its_panel_the_key() {
     wait_for(&api, |s| s.transport.estop);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The panel set in Show settings: the server runs it without `--panel`, and follows the setting.
+#[test]
+fn a_panel_set_in_show_settings_is_run_by_the_server_and_follows_the_setting() {
+    let dir = temp_dir("panel-setting");
+    let (first, second) = (FakePanel::start(), FakePanel::start());
+    let server = launch(&dir, &[]);
+    let api = Api::new(&server.url, "a", None);
+    api.take_lease("Luke-MacBook", false).unwrap();
+    let st = api.status().unwrap();
+    assert!(st.panel.is_none() && st.panel_host.is_none(), "no panel until one is asked for");
+    let host =
+        |address: std::net::SocketAddr| PanelHost { address: address.to_string(), from_command_line: false, problem: None };
+
+    // Switched on without an address is refused, and nothing is started.
+    let mut project = api.project().unwrap();
+    project.panel.enabled = true;
+    match api.put_project(&project) {
+        Err(ptz_core::client::ApiErr::Refused { msg, .. }) => {
+            assert_eq!(msg, "Give the control panel's address before switching it on")
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(api.status().unwrap().panel_host.is_none());
+
+    // With an address the server connects, and the panel is a station of the show.
+    project.panel.address = first.addr.to_string();
+    api.put_project(&project).unwrap();
+    let st = wait_for(&api, |s| s.panel.as_ref().is_some_and(|p| p.connected));
+    assert_eq!(st.panel_host, Some(host(first.addr)));
+    assert_eq!(st.panel.unwrap().model, FAKE_MODEL);
+
+    // Another address: the first panel is let go and told so, the second is connected.
+    project.panel.address = second.addr.to_string();
+    api.put_project(&project).unwrap();
+    wait_for(&api, |s| s.panel_host == Some(host(second.addr)) && s.panel.as_ref().is_some_and(|p| p.connected));
+    wait("the first panel to show that its controller stopped", || {
+        let shown = first.text(STATUS_TILE).all();
+        shown.contains("Controller") && shown.contains("stopped")
+    });
+    first.press(ESTOP);
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!api.status().unwrap().transport.estop, "the panel that was let go no longer reaches the show");
+    second.press(ESTOP);
+    wait_for(&api, |s| s.transport.estop);
+
+    // Switched off: the controller stops and the server says at once that it runs no panel.
+    project.panel.enabled = false;
+    api.put_project(&project).unwrap();
+    let began = Instant::now();
+    wait_for(&api, |s| s.panel.is_none() && s.panel_host.is_none());
+    assert!(began.elapsed() < Duration::from_secs(2), "it took {:?} to let the panel go", began.elapsed());
+    assert_eq!(api.project().unwrap().panel.address, second.addr.to_string(), "the address is kept for next time");
+
+    // The setting is the show's: a server started again on the same data runs the panel again.
+    project.panel.enabled = true;
+    api.put_project(&project).unwrap();
+    wait_for(&api, |s| s.panel.as_ref().is_some_and(|p| p.connected));
+    drop(server);
+    let again = launch(&dir, &[]);
+    let api = Api::new(&again.url, "b", None);
+    let st = wait_for(&api, |s| s.panel.as_ref().is_some_and(|p| p.connected));
+    assert_eq!(st.panel_host, Some(host(second.addr)));
+    drop(again);
+
+    // Asked for where the server is started, that panel is run and Show settings is told so.
+    let mut flagged = launch(&dir, &["--panel", &first.addr.to_string()]);
+    assert_eq!(flagged.line(), format!("panel: connecting to {}", first.addr));
+    let api = Api::new(&flagged.url, "c", None);
+    let st = wait_for(&api, |s| s.panel.as_ref().is_some_and(|p| p.connected));
+    assert_eq!(st.panel_host, Some(PanelHost { from_command_line: true, ..host(first.addr) }));
+    wait("the first panel to be the one in use", || !first.text(STATUS_TILE).all().contains("stopped"));
+    drop(flagged);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A control map that cannot be read keeps a panel set in Show settings from starting, and says why;
+/// the server itself carries on.
+#[test]
+fn a_bad_map_keeps_the_panel_in_show_settings_from_starting_and_says_why() {
+    let dir = temp_dir("panel-setting-map");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("panel.json"), "{\"roles\": {\"big red button\": 56}}").unwrap();
+    let panel = FakePanel::start();
+    let server = launch(&dir, &[]);
+    let api = Api::new(&server.url, "a", None);
+    api.take_lease("Luke-MacBook", false).unwrap();
+    let mut project = api.project().unwrap();
+    project.panel = ptz_core::pose::PanelConfig { enabled: true, address: panel.addr.to_string() };
+    api.put_project(&project).unwrap();
+    let st = wait_for(&api, |s| s.panel_host.is_some());
+    let host = st.panel_host.unwrap();
+    let why = host.problem.expect("the reason is given");
+    assert!(why.contains("panel.json") && why.contains("there is no role \"big red button\""), "{why}");
+    assert!(st.panel.is_none(), "no controller was started");
+
+    // Put right, it starts by itself within a few seconds.
+    std::fs::write(dir.join("panel.json"), format!("{{\"roles\": {{\"estop\": {GO}, \"go\": {ESTOP}}}}}")).unwrap();
+    let st = wait_for(&api, |s| s.panel.as_ref().is_some_and(|p| p.connected));
+    assert_eq!(st.panel_host.unwrap().problem, None);
+    panel.press(GO);
+    wait_for(&api, |s| s.transport.estop);
+    let _ = std::fs::remove_dir_all(&dir);
+}

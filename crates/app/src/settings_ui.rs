@@ -356,6 +356,7 @@ pub enum Page {
     KeepOut,
     Audio,
     Timecode,
+    Panel,
 }
 
 impl Page {
@@ -364,7 +365,7 @@ impl Page {
     /// What belongs to the camera selected on the camera bar.
     pub const CAMERA: [Page; 5] = [Page::Rig, Page::Lens, Page::Position, Page::Limits, Page::KeepOut];
     /// Devices on the server machine.
-    pub const SERVER: [Page; 2] = [Page::Audio, Page::Timecode];
+    pub const SERVER: [Page; 3] = [Page::Audio, Page::Timecode, Page::Panel];
 
     pub fn title(self) -> &'static str {
         match self {
@@ -378,6 +379,7 @@ impl Page {
             Page::KeepOut => "Keep-out rules",
             Page::Audio => "Audio output",
             Page::Timecode => "Timecode inputs",
+            Page::Panel => "Control panel",
         }
     }
 
@@ -486,6 +488,7 @@ fn body(ui: &mut Ui, s: &mut Session, page: Page) {
         Page::Stage => stage_model(ui, s, &mut project, editable),
         Page::Audio => audio_output(ui, s, &mut project, editable),
         Page::Timecode => timecode_inputs(ui, s, &mut project, editable),
+        Page::Panel => control_panel(ui, s, &mut project, editable),
         Page::Rig | Page::Lens | Page::Position | Page::Limits | Page::KeepOut => {
             let at = project.camera_index(&s.active_camera).unwrap_or(0);
             let units = project.units;
@@ -576,6 +579,81 @@ fn audio_output(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::Proj
         RichText::new("Program is the mono mix of every unmuted clip. LTC carries the song's timecode while it plays.")
             .color(MUTED)
             .small(),
+    );
+}
+
+/// What the server says about the control panel, and whether that is good news.
+pub fn panel_state(status: &ptz_core::api::Status, wanted: Option<&str>) -> (String, bool) {
+    let (host, panel) = (status.panel_host.as_ref(), status.panel.as_ref());
+    if let Some(why) = host.and_then(|h| h.problem.as_ref()) {
+        return (format!("The server could not start the panel: {why}. It tries again every few seconds."), false);
+    }
+    match (panel, host) {
+        (Some(p), _) if p.connected => {
+            let name = if p.name.is_empty() { p.model.clone() } else { format!("{} ({})", p.name, p.model) };
+            let more = if p.message.is_empty() { String::new() } else { format!(" {}", p.message) };
+            (format!("Connected to {name}. It is the station \"{}\".{more}", p.station), true)
+        }
+        (_, Some(h)) => (
+            format!("Looking for the panel at {}. Check that it is on, on this network, and in Raw Panel mode.", h.address),
+            false,
+        ),
+        (Some(p), None) => (format!("The station \"{}\" runs a panel, and is looking for it.", p.station), false),
+        (None, None) if wanted.is_some() => ("Starting.".to_string(), false),
+        (None, None) => ("No panel is in use.".to_string(), true),
+    }
+}
+
+/// The SKAARHOJ panel the server runs as one more station of the show.
+fn control_panel(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::Project, editable: bool) {
+    ui.label(
+        RichText::new(
+            "A SKAARHOJ PTZ Pro in Raw Panel mode. The server connects to it and it runs the show as one more station.",
+        )
+        .color(MUTED)
+        .small(),
+    );
+    let from_command_line = s.status.panel_host.as_ref().is_some_and(|h| h.from_command_line);
+    ui.add_enabled_ui(editable && !from_command_line, |ui| {
+        egui::Grid::new("panel_grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+            ui.label("Panel address");
+            if let Some(address) = crate::panels::text_field(ui, "panel_address", &project.panel.address, 190.0) {
+                let was = std::mem::replace(&mut project.panel.address, address.trim().to_string());
+                if project.panel.address.is_empty() {
+                    project.panel.enabled = false;
+                } else if let Err(why) = project.panel.validate() {
+                    project.panel.address = was;
+                    s.toast(why, true);
+                }
+            }
+            ui.end_row();
+            ui.label("");
+            ui.add_enabled(!project.panel.address.is_empty(), egui::Checkbox::new(&mut project.panel.enabled, "Use this panel"))
+                .on_disabled_hover_text("Give the panel's address first");
+            ui.end_row();
+        });
+    });
+    ui.add_space(4.0);
+    if from_command_line {
+        ui.label(
+            RichText::new(
+                "This server was started with a panel of its own (--panel). It is changed where the server is started.",
+            )
+            .color(AMBER)
+            .small(),
+        );
+    }
+    let (state, good) = panel_state(&s.status, s.project.panel.wanted());
+    let state = RichText::new(state);
+    ui.label(if good { state } else { state.color(AMBER) });
+    ui.add_space(4.0);
+    ui.label(
+        RichText::new(
+            "The address is the panel's own, like 192.168.0.60; port 9923 is used unless another is given. \
+             A layout other than the PTZ Pro's is read from panel.json in the server's data folder.",
+        )
+        .color(MUTED)
+        .small(),
     );
 }
 

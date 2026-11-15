@@ -198,6 +198,8 @@ pub struct Show {
     lock_problem: Option<String>,
     /// What the hardware panel controller last reported, who sent it and when.
     panel: Option<(PanelState, String, Instant)>,
+    /// The panel this server runs for itself, when it was asked to run one.
+    panel_host: Option<PanelHost>,
     started: Instant,
     last_tick: Instant,
     log: RunLog,
@@ -402,6 +404,7 @@ impl Show {
             external: None,
             lock_problem: None,
             panel: None,
+            panel_host: None,
             started: now,
             last_tick: now,
             log,
@@ -547,6 +550,23 @@ impl Show {
             self.poke();
         }
         Ok(state)
+    }
+
+    /// The panel this server runs for itself, or `None` when it runs none.
+    pub fn set_panel_host(&mut self, host: Option<PanelHost>) {
+        if self.panel_host != host {
+            self.log("panel_host", json!({ "host": host }));
+            self.panel_host = host;
+            self.poke();
+        }
+    }
+
+    /// The server stopped the controller it was running: its last report is not kept until it times out.
+    pub fn forget_panel(&mut self) {
+        if let Some((state, _, _)) = self.panel.take() {
+            self.log("panel", json!({ "station": state.station, "gone": true }));
+            self.poke();
+        }
     }
 
     // ---- songs ----
@@ -2359,6 +2379,7 @@ impl Show {
             },
             telemetry,
             panel: self.panel.as_ref().map(|(p, _, _)| p.clone()),
+            panel_host: self.panel_host.clone(),
         }
     }
 }

@@ -176,6 +176,21 @@ pub struct Status {
     /// The hardware panel controlling the show, while one is reporting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub panel: Option<PanelState>,
+    /// The panel the server itself runs or is trying to run, when it was asked to run one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub panel_host: Option<PanelHost>,
+}
+
+/// The panel the server runs for itself: where it is, who asked for it, and what is in the way.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+#[serde(default)]
+pub struct PanelHost {
+    /// The address the server connects to, with its port; or where it waits for a panel that dials in.
+    pub address: String,
+    /// It was asked for where the server was started, not in Show settings, and is changed there.
+    pub from_command_line: bool,
+    /// Why the server could not start running the panel, when it could not.
+    pub problem: Option<String>,
 }
 
 /// What a hardware panel controller is doing, so the app can follow it. The

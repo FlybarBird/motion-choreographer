@@ -440,6 +440,36 @@ impl Default for InputConfig {
     }
 }
 
+/// A hardware control panel the server runs as one more station of the show.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+#[serde(default)]
+pub struct PanelConfig {
+    /// The server connects to the panel and runs the show from it as well.
+    pub enabled: bool,
+    /// The panel's address in Raw Panel mode: `192.168.0.60`, with `:port` when it is not the usual one.
+    pub address: String,
+}
+
+impl PanelConfig {
+    /// The address the server should connect to, when it should connect to one.
+    pub fn wanted(&self) -> Option<&str> {
+        let address = self.address.trim();
+        (self.enabled && !address.is_empty()).then_some(address)
+    }
+
+    /// Why these settings cannot be used, as operator text.
+    pub fn validate(&self) -> Result<(), String> {
+        let address = self.address.trim();
+        if self.enabled && address.is_empty() {
+            return Err("Give the control panel's address before switching it on".into());
+        }
+        if address.len() > 255 || address.chars().any(|c| c.is_whitespace() || c.is_control() || c == '/') {
+            return Err(format!("{address:?} is not a panel address. Use one like 192.168.0.60, or 192.168.0.60:9923"));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 #[serde(from = "ProjectFile")]
 pub struct Project {
@@ -452,6 +482,8 @@ pub struct Project {
     pub on_fault: OnFault,
     /// The units lengths are shown and typed in at every station.
     pub units: Units,
+    /// The control panel the server runs, if it runs one.
+    pub panel: PanelConfig,
     pub stage: Stage,
     /// One to twelve, in the order they are numbered for the operator. `validate` refuses
     /// anything else, and the server only ever holds a project that passed it.
@@ -468,6 +500,7 @@ impl Default for Project {
             inputs: InputConfig::default(),
             on_fault: OnFault::default(),
             units: Units::default(),
+            panel: PanelConfig::default(),
             stage: Stage::default(),
             cameras: vec![CameraConfig::default()],
         }
@@ -486,6 +519,7 @@ struct ProjectFile {
     inputs: Option<InputConfig>,
     on_fault: OnFault,
     units: Units,
+    panel: PanelConfig,
     stage: Stage,
     /// Absent in a file from before cameras; an empty list is a mistake, kept so it can be refused.
     cameras: Option<Vec<CameraConfig>>,
@@ -513,6 +547,7 @@ impl From<ProjectFile> for Project {
             inputs: f.inputs.unwrap_or(d.inputs),
             on_fault: f.on_fault,
             units: f.units,
+            panel: f.panel,
             stage: f.stage,
             cameras,
         }
@@ -577,6 +612,7 @@ impl Project {
         if self.cameras.len() > MAX_CAMERAS {
             return Err(format!("A project can hold {MAX_CAMERAS} cameras; this one has {}", self.cameras.len()));
         }
+        self.panel.validate()?;
         for (i, cam) in self.cameras.iter().enumerate() {
             let label = format!("Camera {}", i + 1);
             let id_ok = !cam.id.is_empty() && cam.id.len() <= 32 && cam.id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');

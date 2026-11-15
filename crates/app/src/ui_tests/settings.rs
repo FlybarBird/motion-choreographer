@@ -15,7 +15,7 @@ fn open_page(r: &Rig) -> Option<Page> {
 }
 
 /// Every page, with something only that page shows.
-const PAGES: [(Page, &str); 10] = [
+const PAGES: [(Page, &str); 11] = [
     (Page::Cameras, "Add a camera"),
     (Page::General, "When a camera faults"),
     (Page::Stage, "Import a model"),
@@ -26,6 +26,7 @@ const PAGES: [(Page, &str); 10] = [
     (Page::KeepOut, "Add a keep-out rule"),
     (Page::Audio, "Right"),
     (Page::Timecode, "List devices again"),
+    (Page::Panel, "Use this panel"),
 ];
 
 impl Rig {
@@ -238,4 +239,42 @@ fn the_frame_rate_and_the_fault_rule_are_set_on_their_own_page() {
     assert_eq!(sent.on_fault, other);
     assert_eq!(sent.rate, rate);
     sent.validate().unwrap();
+}
+
+#[test]
+fn the_control_panel_page_says_what_the_server_says_about_the_panel() {
+    use crate::settings_ui::panel_state;
+    use ptz_core::api::{PanelHost, PanelState};
+    let mut st = rig(song()).harness.state().session.status.clone();
+    assert_eq!(panel_state(&st, None), ("No panel is in use.".to_string(), true));
+    assert_eq!(panel_state(&st, Some("10.0.0.5")).0, "Starting.");
+    st.panel_host = Some(PanelHost { address: "10.0.0.5:9923".into(), ..Default::default() });
+    let (text, good) = panel_state(&st, Some("10.0.0.5"));
+    assert!(text.starts_with("Looking for the panel at 10.0.0.5:9923.") && !good, "{text}");
+    st.panel = Some(PanelState { station: "Panel".into(), connected: true, model: "PTZ Pro".into(), ..Default::default() });
+    let (text, good) = panel_state(&st, Some("10.0.0.5"));
+    assert!(text.starts_with("Connected to PTZ Pro.") && good, "{text}");
+    st.panel_host.as_mut().unwrap().problem = Some("panel.json: bad".into());
+    let (text, good) = panel_state(&st, Some("10.0.0.5"));
+    assert!(text.contains("panel.json: bad") && !good, "{text}");
+
+    // On the page: the box cannot be ticked before there is an address, and a panel from --panel is not changed here.
+    let mut r = rig(song());
+    r.settings(Page::Panel);
+    let _ = r.cmds.try_iter().count();
+    r.harness.get_by_label("No panel is in use.");
+    r.press("Use this panel");
+    assert!(r.projects().is_empty(), "no panel is switched on without an address");
+    r.harness.state_mut().session.project.panel.address = "10.0.0.5".into();
+    r.harness.run_steps(3);
+    r.press("Use this panel");
+    let sent = r.projects().pop().expect("the project was sent");
+    assert!(sent.panel.enabled && sent.panel.address == "10.0.0.5");
+    sent.validate().unwrap();
+
+    r.harness.state_mut().session.status.panel_host =
+        Some(PanelHost { address: "10.0.0.9:9923".into(), from_command_line: true, problem: None });
+    r.harness.run_steps(3);
+    r.press("Use this panel");
+    assert!(r.projects().is_empty(), "a panel given where the server was started is not changed here");
 }

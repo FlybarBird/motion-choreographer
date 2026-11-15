@@ -297,7 +297,7 @@ The pages are listed down the left side, in three groups:
 | --- | --- |
 | The show | Cameras, Frame rate and faults, Stage model |
 | The selected camera | Rig connection, Lens, Position on the stage, Rig limits, Keep-out rules |
-| The server | Audio output, Timecode inputs |
+| The server | Audio output, Timecode inputs, Control panel |
 
 Settings can be changed while you hold the edit lease and the show is
 disarmed. Otherwise the page says why, and they can only be read.
@@ -711,13 +711,21 @@ panel:
    the panel.
 3. Leave the port at 9923, or note what you change it to.
 
-**Start it.** Either let the server run the panel:
+**Start it.** The usual way is in the app: open **Show settings**, choose
+**Control panel**, type the panel's address and tick **Use this panel**. You
+need the edit lease, and the show must not be armed. The address is saved with
+the show, so the server connects to the panel every time it starts, and the
+page says whether the panel is connected, still being looked for, or what is
+in the way.
+
+You can also give the address where the server is started. That panel is then
+used whatever Show settings says, and is changed there, not in the app:
 
 ```sh
 ptz-server --panel 192.168.0.60
 ```
 
-or run `ptz-panel` yourself, on the server machine or on any machine that can
+Or run `ptz-panel` yourself, on the server machine or on any machine that can
 reach both the server and the panel:
 
 ```sh

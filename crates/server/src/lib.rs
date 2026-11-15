@@ -7,6 +7,7 @@ pub mod http;
 pub mod hw;
 pub mod lock;
 pub mod media;
+pub mod panel_host;
 pub mod record;
 pub mod rig;
 pub mod runlog;

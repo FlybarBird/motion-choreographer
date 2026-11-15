@@ -1,5 +1,5 @@
 use ptz_server::engine::{AudioChoice, Config};
-use ptz_server::{audio, http, runlog};
+use ptz_server::{audio, http, panel_host, runlog};
 use std::path::PathBuf;
 
 const HELP: &str = "\
@@ -132,15 +132,10 @@ fn main() {
             let _ = out.flush();
             // The panel is one more station of this server, reached like any other. It has no
             // part in stopping the server: the rigs are stopped before `wait` returns.
+            let reach = panel_host::Reach::new(running.addr, access_key, data.clone());
             let station = panel_map.map(|map| {
-                let addr = running.addr;
-                let local: std::net::IpAddr = match addr.ip() {
-                    ip if !ip.is_unspecified() => ip,
-                    std::net::IpAddr::V4(_) => std::net::Ipv4Addr::LOCALHOST.into(),
-                    std::net::IpAddr::V6(_) => std::net::Ipv6Addr::LOCALHOST.into(),
-                };
-                let mut options = ptz_panel::Options::new(&format!("http://{}", std::net::SocketAddr::new(local, addr.port())));
-                options.access_key = access_key.filter(|k| !k.is_empty());
+                let mut options = ptz_panel::Options::new(&reach.server);
+                options.access_key = reach.access_key.clone();
                 options.panel = panel.as_deref().map(ptz_panel::with_port);
                 options.listen = panel_listen;
                 options.map = map;
@@ -162,24 +157,40 @@ fn main() {
                     (None, Some(on)) => format!("panel: waiting for one to dial in on {on}\n"),
                     (None, None) => String::new(),
                 };
-                let file = data.join("panel.json");
+                let file = reach.map_file();
                 if file.exists() {
                     line.push_str(&format!("panel map: {}\n", file.display()));
                 }
                 let _ = out.write_all(line.as_bytes());
                 let _ = out.flush();
+                // The app shows where the panel is, and that it is changed here and not in Show settings.
+                let address = match (&panel, station.listening) {
+                    (Some(addr), _) => ptz_panel::with_port(addr),
+                    (None, Some(on)) => format!("a panel that dials in on {on}"),
+                    (None, None) => String::new(),
+                };
+                http::lock(&running.show).set_panel_host(Some(ptz_core::api::PanelHost {
+                    address,
+                    from_command_line: true,
+                    problem: None,
+                }));
             }
+            // With no panel asked for here, the one in Show settings is run, and follows its settings.
+            let follower = station.is_none().then(|| panel_host::follow(running.show.clone(), reach));
             running.wait();
             // The panel is told the controller has stopped, but a controller that is slow
             // to stop does not keep the process alive.
-            if let Some(mut station) = station {
-                let (done, stopped) = std::sync::mpsc::channel();
-                std::thread::spawn(move || {
+            let (done, stopped) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                if let Some(mut station) = station {
                     station.stop();
-                    let _ = done.send(());
-                });
-                let _ = stopped.recv_timeout(std::time::Duration::from_secs(1));
-            }
+                }
+                if let Some(mut follower) = follower {
+                    follower.stop();
+                }
+                let _ = done.send(());
+            });
+            let _ = stopped.recv_timeout(std::time::Duration::from_secs(1));
         }
         Err(e) => fail(&e),
     }
