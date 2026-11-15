@@ -1,7 +1,7 @@
 import { Marked } from "marked";
-import ptz from "../../docs/ptz-pro.md?raw";
-import setup from "../../docs/setup-guide.md?raw";
-import programming from "../../docs/programming-manual.md?raw";
+import ptz from "../content/ptz-pro.md?raw";
+import setup from "../content/setup-guide.md?raw";
+import programming from "../content/programming-manual.md?raw";
 
 const BOOKS = [
   { id: "ptz-pro", short: "PTZ Pro", blurb: "Setup and programming from the panel", source: ptz },
