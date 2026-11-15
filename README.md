@@ -36,6 +36,12 @@ Three documents go with this one:
   rehearse and play a show in the app, with a first-song walkthrough and a
   reference.
 
+The same three, as a web page with search and a contents list:
+
+```sh
+cd manual && npm install && npm run dev    # http://127.0.0.1:43123
+```
+
 ## Run it
 
 Rust 1.95 or newer (`rustup update stable`).
