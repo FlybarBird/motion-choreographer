@@ -2,7 +2,7 @@
 
 use crate::chase::ChaseState;
 use crate::compile::Issue;
-use crate::pose::{Axis, Pose, Routing};
+use crate::pose::{Axis, Pose, Preset, Routing};
 use crate::song::Song;
 use crate::time::FrameRate;
 use crate::transport::{Guidance, TransportState};
@@ -423,6 +423,28 @@ pub struct StoreTc {
     /// A typed start timecode; `ltc:<n>` to decode it from channel `n` (1 is the
     /// first channel); or empty to clear a typed or decoded stamp.
     pub start_tc: String,
+}
+
+/// Capture where a camera's rig stands as a preset to program a move to: a preset the camera
+/// already has when the pose is within the project's range of one, otherwise a new one.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+pub struct CapturePreset {
+    /// The camera. Omitted is the first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera: Option<String>,
+    /// The name for a new preset. Omitted takes the camera's next free "Preset N".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+/// The preset a capture gave, and whether the camera already had it.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub struct Captured {
+    pub preset: Preset,
+    /// The pose was within range of this preset, which was there before. Nothing was stored.
+    pub reused: bool,
+    /// The pose the rig stood at.
+    pub pose: Pose,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]

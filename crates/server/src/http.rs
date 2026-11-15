@@ -309,6 +309,10 @@ async fn post_preset(State(app): State<App>, Client(c): Client, Json(req): Json<
     Ok(Json(lock(&app.show).store_preset(&c, &req)?))
 }
 
+async fn capture_preset(State(app): State<App>, Client(c): Client, Json(req): Json<CapturePreset>) -> Reply<Captured> {
+    Ok(Json(lock(&app.show).capture_preset(&c, &req)?))
+}
+
 async fn put_preset(
     State(app): State<App>,
     Client(c): Client,
@@ -593,6 +597,7 @@ pub fn router(app: App) -> Router {
         .route("/inputs", get(get_inputs))
         .route("/presets", get(get_presets).post(post_preset))
         .route("/presets/sync", post(sync_presets))
+        .route("/presets/capture", post(capture_preset))
         .route("/presets/{id}", delete(delete_preset).put(put_preset))
         .route("/presets/{id}/thumb.jpg", get(preset_thumb))
         .route("/rig/jog", post(rig_jog))

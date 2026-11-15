@@ -470,6 +470,63 @@ impl PanelConfig {
     }
 }
 
+/// When a pose captured while programming counts as a preset the camera already has.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
+#[serde(default)]
+pub struct PresetMatch {
+    /// A captured pose within range of a preset uses that preset instead of making another.
+    pub enabled: bool,
+    /// How far each axis may be from the preset's, in axis units, and still count as it.
+    pub range: Pose,
+}
+
+impl Default for PresetMatch {
+    fn default() -> Self {
+        PresetMatch { enabled: true, range: Pose { pan: 1.0, tilt: 1.0, zoom: 0.02, focus: 0.05, elevation: 10.0 } }
+    }
+}
+
+impl PresetMatch {
+    /// How far `pose` is from `other`, as a share of the range on the axis that is furthest out.
+    /// `None` when any axis is out of range.
+    fn distance(&self, pose: &Pose, other: &Pose) -> Option<f64> {
+        let mut worst: f64 = 0.0;
+        for axis in Axis::ALL {
+            let (off, range) = ((pose.get(axis) - other.get(axis)).abs(), self.range.get(axis));
+            if off > range + 1e-9 {
+                return None;
+            }
+            if range > 0.0 {
+                worst = worst.max(off / range);
+            }
+        }
+        Some(worst)
+    }
+
+    /// The preset of `camera` that `pose` counts as: the nearest one within range on every axis.
+    pub fn nearest<'a>(&self, presets: &'a [Preset], camera: &str, pose: &Pose) -> Option<&'a Preset> {
+        if !self.enabled {
+            return None;
+        }
+        presets
+            .iter()
+            .filter(|p| p.camera == camera)
+            .filter_map(|p| self.distance(pose, &p.pose).map(|d| (d, p)))
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, p)| p)
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        for axis in Axis::ALL {
+            let range = self.range.get(axis);
+            if !range.is_finite() || range < 0.0 {
+                return Err(format!("The preset range for {} must be zero or more", axis.label().to_lowercase()));
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 #[serde(from = "ProjectFile")]
 pub struct Project {
@@ -484,6 +541,8 @@ pub struct Project {
     pub units: Units,
     /// The control panel the server runs, if it runs one.
     pub panel: PanelConfig,
+    /// When a pose captured while programming uses a preset the camera already has.
+    pub preset_match: PresetMatch,
     pub stage: Stage,
     /// One to twelve, in the order they are numbered for the operator. `validate` refuses
     /// anything else, and the server only ever holds a project that passed it.
@@ -501,6 +560,7 @@ impl Default for Project {
             on_fault: OnFault::default(),
             units: Units::default(),
             panel: PanelConfig::default(),
+            preset_match: PresetMatch::default(),
             stage: Stage::default(),
             cameras: vec![CameraConfig::default()],
         }
@@ -520,6 +580,7 @@ struct ProjectFile {
     on_fault: OnFault,
     units: Units,
     panel: PanelConfig,
+    preset_match: PresetMatch,
     stage: Stage,
     /// Absent in a file from before cameras; an empty list is a mistake, kept so it can be refused.
     cameras: Option<Vec<CameraConfig>>,
@@ -548,6 +609,7 @@ impl From<ProjectFile> for Project {
             on_fault: f.on_fault,
             units: f.units,
             panel: f.panel,
+            preset_match: f.preset_match,
             stage: f.stage,
             cameras,
         }
@@ -613,6 +675,7 @@ impl Project {
             return Err(format!("A project can hold {MAX_CAMERAS} cameras; this one has {}", self.cameras.len()));
         }
         self.panel.validate()?;
+        self.preset_match.validate()?;
         for (i, cam) in self.cameras.iter().enumerate() {
             let label = format!("Camera {}", i + 1);
             let id_ok = !cam.id.is_empty() && cam.id.len() <= 32 && cam.id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
@@ -674,6 +737,46 @@ impl Preset {
 mod tests {
     use super::*;
     use crate::camera::FIRST_CAMERA;
+
+    #[test]
+    fn a_captured_pose_counts_as_the_nearest_preset_within_range_on_every_axis() {
+        let rule = PresetMatch::default();
+        let at = |pan: f64, tilt: f64| Pose { pan, tilt, ..Pose::home() };
+        let preset = |id: &str, camera: &str, pose: Pose| Preset { camera: camera.into(), ..Preset::new(id, id, pose) };
+        let presets = [
+            preset("wide", "cam1", at(10.0, 0.0)),
+            preset("close", "cam1", at(10.8, 0.0)),
+            preset("other", "cam2", at(10.5, 0.0)),
+        ];
+        let found = |pose: Pose| rule.nearest(&presets, "cam1", &pose).map(|p| p.id.as_str());
+
+        assert_eq!(found(at(10.1, 0.0)), Some("wide"));
+        assert_eq!(found(at(10.5, 0.0)), Some("close"), "0.3 from close and 0.5 from wide: the nearer one, not another camera's");
+        assert_eq!(found(at(9.0, 0.0)), Some("wide"), "exactly at the edge of the range still counts");
+        assert_eq!(found(at(11.9, 0.0)), None);
+        assert_eq!(found(at(10.0, 1.5)), None, "one axis out of range is enough");
+        assert_eq!(found(Pose { zoom: 0.5, ..at(10.0, 0.0) }), None);
+        assert_eq!(rule.nearest(&presets, "cam3", &at(10.0, 0.0)), None);
+
+        // A range of zero asks for the same value; a wide one ignores the axis.
+        let exact = PresetMatch { range: Pose { pan: 0.0, ..rule.range }, ..rule };
+        assert_eq!(exact.nearest(&presets, "cam1", &at(10.0, 0.5)).map(|p| p.id.as_str()), Some("wide"));
+        assert_eq!(exact.nearest(&presets, "cam1", &at(10.01, 0.0)), None);
+        let any_focus = PresetMatch { range: Pose { focus: 1.0, ..rule.range }, ..rule };
+        assert!(any_focus.nearest(&presets, "cam1", &Pose { focus: 0.9, ..at(10.0, 0.0) }).is_some());
+
+        let off = PresetMatch { enabled: false, ..rule };
+        assert_eq!(off.nearest(&presets, "cam1", &at(10.0, 0.0)), None);
+
+        // An old project file has the rule with its defaults, and a bad range is refused.
+        let project: Project = serde_json::from_str(OLD).unwrap();
+        assert_eq!(project.preset_match, PresetMatch::default());
+        let mut bad = Project::default();
+        bad.preset_match.range.tilt = -1.0;
+        assert_eq!(bad.validate().unwrap_err(), "The preset range for tilt must be zero or more");
+        bad.preset_match.range.tilt = f64::NAN;
+        assert!(bad.validate().is_err());
+    }
 
     /// `project.json` as stage 5 wrote it: one rig at the top level.
     const OLD: &str = r#"{

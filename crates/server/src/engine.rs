@@ -1013,6 +1013,41 @@ impl Show {
         Ok(preset)
     }
 
+    /// Capture where a camera's rig stands, to program a move to it. A pose within the project's
+    /// range of a preset the camera already has gives that preset; otherwise a new one is stored.
+    /// Nothing moves. A rig that does not answer is refused: its last reading may be old.
+    pub fn capture_preset(&mut self, client: &str, req: &CapturePreset) -> Res<Captured> {
+        self.require_lease(client)?;
+        let i = self.unit_index(req.camera.as_deref())?;
+        let unit = &self.units[i];
+        let camera = unit.id.clone();
+        let pose = if unit.rig.is_simulator() {
+            self.monitor_pose(i).0
+        } else if let Some(why) = unit.rig.status().iter().find(|a| !a.connected).map(|a| a.detail.clone()) {
+            return Err(Fail::refused(format!("The rig's pose is not known: {why}")));
+        } else {
+            unit.rig.pose()
+        };
+        if let Some(found) = self.project.preset_match.nearest(&self.presets, &camera, &pose) {
+            let preset = found.clone();
+            self.log("preset_captured", json!({ "camera": camera, "preset": preset.id, "reused": true, "pose": pose }));
+            return Ok(Captured { preset, reused: true, pose });
+        }
+        let name = match req.name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+            Some(name) => name.to_string(),
+            None => {
+                let taken = |name: &str| self.presets.iter().any(|p| p.camera == camera && p.name == name);
+                (1..).map(|n| format!("Preset {n}")).find(|name| !taken(name)).unwrap_or_default()
+            }
+        };
+        let preset = Preset { camera: camera.clone(), ..Preset::new(&self.unique_preset_id(&name), &name, pose) };
+        self.presets.push(preset.clone());
+        self.storage.save_presets(&self.presets).map_err(Fail::io)?;
+        self.push(WsMsg::PresetsChanged);
+        self.log("preset_captured", json!({ "camera": camera, "preset": preset.id, "reused": false, "pose": pose }));
+        Ok(Captured { preset, reused: false, pose })
+    }
+
     /// Change a stored preset: to a given pose, to a given column height, or, with neither,
     /// to where its camera's rig stands now. Nothing moves. A move on the timeline keeps
     /// the pose it was made with until the operator updates it.

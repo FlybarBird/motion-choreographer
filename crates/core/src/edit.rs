@@ -97,6 +97,41 @@ pub fn insert_preset_move(song: &Song, project: &Project, preset: &Preset, frame
     Ok((finish(next, project)?, id))
 }
 
+/// A move marked at two times: the camera leaves at `from_frame` and stands on the preset at
+/// `to_frame`. Marked the other way round, or twice in one place, it is a move dropped at
+/// `to_frame` that takes its auto time. Returns the new clip's id.
+pub fn insert_marked_move(
+    song: &Song,
+    project: &Project,
+    preset: &Preset,
+    from_frame: i64,
+    to_frame: i64,
+) -> Result<(Song, String), Refusal> {
+    let (from_frame, to_frame) = (from_frame.max(0), to_frame.max(0));
+    if to_frame <= from_frame {
+        return insert_preset_move(song, project, preset, to_frame);
+    }
+    let mut next = song.clone();
+    let id = next.next_id("c");
+    next.motion.push(MotionClip {
+        id: id.clone(),
+        camera: preset.camera.clone(),
+        start_frame: from_frame,
+        duration_frames: to_frame - from_frame,
+        axes: Axis::ALL.to_vec(),
+        body: ClipBody::PresetMove {
+            auto_duration: false,
+            from: FromPose::linked(),
+            to: PresetRef::of(preset),
+            ease: Ease::EaseInOut,
+        },
+        accepted: None,
+        recorded_pass: None,
+    });
+    grow(&mut next, to_frame);
+    Ok((finish(next, project)?, id))
+}
+
 /// Room a new auto-timed move would get at `frame` and the time it wants.
 /// `None` for room means nothing follows it.
 pub fn drop_preview(song: &Song, project: &Project, preset: &Preset, frame: i64) -> Result<DropPreview, Refusal> {
@@ -936,6 +971,41 @@ mod tests {
 
     fn base() -> (Song, Project) {
         (Song::new("s", "S", "01:00:00:00", 1500), Project::default())
+    }
+
+    #[test]
+    fn a_marked_move_leaves_at_the_first_mark_and_has_arrived_at_the_second() {
+        let (song, p) = base();
+        let wide = preset("Stage Wide", 20.0, 100.0);
+        let (marked, id) = insert_marked_move(&song, &p, &wide, 100, 400).unwrap();
+        let clip = marked.motion_clip(&id).unwrap();
+        assert_eq!((clip.start_frame, clip.end_frame()), (100, 400));
+        assert!(matches!(&clip.body, ClipBody::PresetMove { auto_duration: false, to, .. } if to.name == "Stage Wide"));
+        assert_eq!(pose_at(&marked, CAM, 400).pan, 20.0, "it stands on the preset at the second mark");
+        assert!(compile(&marked, &p).issues.is_empty());
+
+        // Marked twice in one place, or the second mark first: a move dropped there, on its auto time.
+        for (from, to) in [(250, 250), (400, 250)] {
+            let (same, id) = insert_marked_move(&song, &p, &wide, from, to).unwrap();
+            assert_eq!(same, insert_preset_move(&song, &p, &wide, 250).unwrap().0);
+            assert!(matches!(&same.motion_clip(&id).unwrap().body, ClipBody::PresetMove { auto_duration: true, .. }));
+        }
+
+        // Too short for the rig: placed as marked, and reported as a problem to fix or accept.
+        let (fast, id) = insert_marked_move(&song, &p, &wide, 100, 103).unwrap();
+        assert_eq!(fast.motion_clip(&id).unwrap().duration_frames, 3);
+        assert!(compile(&fast, &p).issues.iter().any(|i| i.clip_id() == Some(id.as_str()) && i.acceptable()));
+
+        // Across a move that camera already makes: refused, and the song is as it was.
+        let tight = preset("Tight", -10.0, 100.0);
+        let err = insert_marked_move(&marked, &p, &tight, 300, 500).unwrap_err();
+        assert!(matches!(err, Refusal::Invalid(Invalid::Overlap { .. })), "{err:?}");
+        // Another camera's lane is free, and the song grows to hold a move marked past its end.
+        let (song2, p2) = two_cameras();
+        let (both, _) = insert_marked_move(&song2, &p2, &wide, 100, 400).unwrap();
+        let (both, far) = insert_marked_move(&both, &p2, &preset_on("cam2", "Left", 5.0), 300, 1800).unwrap();
+        assert_eq!(both.motion_clip(&far).unwrap().camera, "cam2");
+        assert_eq!(both.length_frames, 1800);
     }
 
     #[test]
