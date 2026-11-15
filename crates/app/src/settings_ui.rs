@@ -349,6 +349,7 @@ pub enum Page {
     Cameras,
     General,
     Stage,
+    Programming,
     Rig,
     Lens,
     Position,
@@ -361,7 +362,7 @@ pub enum Page {
 
 impl Page {
     /// What the show has and how it runs.
-    pub const SHOW: [Page; 3] = [Page::Cameras, Page::General, Page::Stage];
+    pub const SHOW: [Page; 4] = [Page::Cameras, Page::General, Page::Stage, Page::Programming];
     /// What belongs to the camera selected on the camera bar.
     pub const CAMERA: [Page; 5] = [Page::Rig, Page::Lens, Page::Position, Page::Limits, Page::KeepOut];
     /// Devices on the server machine.
@@ -372,6 +373,7 @@ impl Page {
             Page::Cameras => "Cameras",
             Page::General => "Frame rate, units and faults",
             Page::Stage => "Stage model",
+            Page::Programming => "Programming",
             Page::Rig => "Rig connection",
             Page::Lens => "Lens",
             Page::Position => "Position on the stage",
@@ -429,14 +431,21 @@ fn camera_tag(ui: &mut Ui, s: &Session) {
 }
 
 fn nav(ui: &mut Ui, s: &Session, page: &mut Page) {
+    // In a short window the list is set closer, so that every page is on it without scrolling.
+    let tight = ui.available_height() < 600.0;
     let group = |ui: &mut Ui, title: &str| {
-        ui.add_space(8.0);
+        ui.add_space(if tight { 4.0 } else { 8.0 });
         ui.label(RichText::new(title.to_uppercase()).small().color(MUTED));
         ui.add_space(2.0);
     };
     let items = |ui: &mut Ui, page: &mut Page, pages: &[Page]| {
         ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), |ui| {
-            ui.spacing_mut().button_padding = egui::vec2(10.0, 5.0);
+            if tight {
+                let spacing = ui.spacing_mut();
+                spacing.button_padding.y = 3.0;
+                spacing.interact_size.y = 23.0;
+                spacing.item_spacing.y = 5.0;
+            }
             for p in pages {
                 if ui.selectable_label(*page == *p, p.title()).clicked() {
                     *page = *p;
@@ -486,6 +495,7 @@ fn body(ui: &mut Ui, s: &mut Session, page: Page) {
         Page::Cameras => cameras(ui, s, &mut project, editable),
         Page::General => general(ui, s, &mut project, editable),
         Page::Stage => stage_model(ui, s, &mut project, editable),
+        Page::Programming => programming(ui, &mut project, editable),
         Page::Audio => audio_output(ui, s, &mut project, editable),
         Page::Timecode => timecode_inputs(ui, s, &mut project, editable),
         Page::Panel => control_panel(ui, s, &mut project, editable),
@@ -553,6 +563,63 @@ fn general(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::Project, 
         .small(),
     );
     ui.label(RichText::new("E-Stop always stops every camera, whatever is chosen here.").color(MUTED).small());
+}
+
+/// How near a captured pose must be to a preset the camera has for that preset to be used again.
+fn programming(ui: &mut Ui, project: &mut ptz_core::pose::Project, editable: bool) {
+    ui.label(
+        RichText::new(
+            "In Program mode on the control panel, a camera's number stores where its rig stands. \
+             When every axis is within these ranges of a preset that camera already has, that preset is used and no new one is stored.",
+        )
+        .color(MUTED)
+        .small(),
+    );
+    ui.add_space(6.0);
+    let units = project.units;
+    let matching = &mut project.preset_match;
+    ui.add_enabled_ui(editable, |ui| {
+        ui.checkbox(&mut matching.enabled, "Use a preset within range");
+        ui.add_space(4.0);
+        ui.add_enabled_ui(matching.enabled, |ui| {
+            egui::Grid::new("preset_match_grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+                ui.label(RichText::new("").small());
+                ui.label(RichText::new("Within").small().color(MUTED));
+                ui.end_row();
+                for axis in Axis::ALL {
+                    let mut value = matching.range.get(axis);
+                    ui.label(RichText::new(axis.label()).color(axis_color(axis)));
+                    match axis {
+                        Axis::Pan | Axis::Tilt => {
+                            ui.add(egui::DragValue::new(&mut value).speed(0.1).range(0.0..=90.0).max_decimals(2).suffix(" deg"));
+                        }
+                        // Zoom and focus are kept as a share of their travel and typed as a percentage of it.
+                        Axis::Zoom | Axis::Focus => {
+                            let mut percent = value * 100.0;
+                            ui.add(egui::DragValue::new(&mut percent).speed(0.1).range(0.0..=100.0).max_decimals(1).suffix(" %"));
+                            value = percent / 100.0;
+                        }
+                        Axis::Elevation => {
+                            ui.add(height_box(&mut value, units).range(0.0..=100000.0));
+                        }
+                    }
+                    if (value - matching.range.get(axis)).abs() > 1e-9 {
+                        matching.range.set(axis, value.max(0.0));
+                    }
+                    ui.end_row();
+                }
+            });
+        });
+    });
+    ui.add_space(4.0);
+    ui.label(
+        RichText::new(
+            "Wider ranges give fewer presets that are nearly the same; narrower ones keep small differences apart. \
+             The nearest preset in range is the one used. Presets stored in the app are not looked up this way.",
+        )
+        .color(MUTED)
+        .small(),
+    );
 }
 
 /// Where the server plays the song's audio and timecode.

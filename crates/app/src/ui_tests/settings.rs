@@ -15,10 +15,11 @@ fn open_page(r: &Rig) -> Option<Page> {
 }
 
 /// Every page, with something only that page shows.
-const PAGES: [(Page, &str); 11] = [
+const PAGES: [(Page, &str); 12] = [
     (Page::Cameras, "Add a camera"),
     (Page::General, "When a camera faults"),
     (Page::Stage, "Import a model"),
+    (Page::Programming, "Use a preset within range"),
     (Page::Rig, "Arm moves at"),
     (Page::Lens, "Focal length"),
     (Page::Position, "Floor position"),
@@ -30,15 +31,19 @@ const PAGES: [(Page, &str); 11] = [
 ];
 
 impl Rig {
-    /// Click a page's name in the list at the left of Show settings.
-    fn choose_page(&mut self, page: Page) {
+    /// Where a page's name is in the list at the left of Show settings.
+    fn page_in_list(&self, page: Page) -> egui::Rect {
         let list = rect_of(self, "THE SHOW").left();
-        let at = self
-            .harness
+        self.harness
             .query_all_by_label(page.title())
             .map(|n| n.rect())
             .find(|rect| (rect.left() - list).abs() < 4.0)
-            .unwrap_or_else(|| panic!("{} is in the list of pages", page.title()));
+            .unwrap_or_else(|| panic!("{} is in the list of pages", page.title()))
+    }
+
+    /// Click a page's name in the list.
+    fn choose_page(&mut self, page: Page) {
+        let at = self.page_in_list(page);
         self.click(at.center());
     }
 }
@@ -93,6 +98,12 @@ fn every_page_is_reached_from_the_list_and_fits_the_smallest_window() {
         let mut r = rig_sized(window, project, presets, song());
         r.press("Show settings");
         let inside = egui::Rect::from_min_size(Pos2::ZERO, window);
+        // The whole list is on screen: no page is reached only by scrolling.
+        let list = inside.with_max_y(inside.bottom() - 8.0);
+        for (page, _) in PAGES {
+            let at = r.page_in_list(page);
+            assert!(list.contains_rect(at), "{window:?}: {page:?} is in the list at {at:?}");
+        }
         for (page, shows) in PAGES {
             r.choose_page(page);
             assert_eq!(open_page(&r), Some(page));
@@ -277,4 +288,28 @@ fn the_control_panel_page_says_what_the_server_says_about_the_panel() {
     r.harness.run_steps(3);
     r.press("Use this panel");
     assert!(r.projects().is_empty(), "a panel given where the server was started is not changed here");
+}
+
+#[test]
+fn the_programming_page_sets_how_near_a_pose_must_be_to_a_preset_to_use_it_again() {
+    let mut r = rig(song());
+    r.settings(Page::Programming);
+    let _ = r.cmds.try_iter().count();
+    for axis in ["Pan", "Tilt", "Zoom", "Focus", "Elevation"] {
+        r.harness.get_by_label(axis);
+    }
+
+    r.press("Use a preset within range");
+    let sent = r.projects().pop().expect("the project was sent");
+    assert!(!sent.preset_match.enabled, "the box switches it off");
+    assert_eq!(sent.preset_match.range, r.harness.state().session.project.preset_match.range, "the ranges are kept");
+    sent.validate().unwrap();
+
+    // Nothing is changed by a station that may not edit.
+    let mut r = rig(song());
+    r.harness.state_mut().session.status.you_hold_lease = false;
+    r.settings(Page::Programming);
+    let _ = r.cmds.try_iter().count();
+    r.press("Use a preset within range");
+    assert!(r.projects().is_empty(), "a station without the lease changes nothing");
 }
