@@ -484,7 +484,11 @@ mod tests {
         let topology = ptz_pro();
         assert_eq!(map.problems(Some(&topology)), Vec::new());
         for role in Role::all() {
-            let optional = matches!(role, Role::ZoomRocker | Role::KeyDisplay(_) | Role::GoDisplay | Role::EstopDisplay);
+            // Program has no button on this panel: it is Shift and Presets.
+            let optional = matches!(
+                role,
+                Role::ZoomRocker | Role::KeyDisplay(_) | Role::GoDisplay | Role::EstopDisplay | Role::Mode(Mode::Program)
+            );
             assert_eq!(map.hwc(role).is_some(), !optional, "{}", role.key());
         }
         // The fixed keys sit where the plan says: CAM 9, CAM 8, U4, and the modes on EXP to U3.
