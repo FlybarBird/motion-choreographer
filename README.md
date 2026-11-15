@@ -423,6 +423,14 @@ While armed and stopped, **Cue**, Home, a click on the ruler, or a jump in the
 timecode the show is locked to sends every rig to the pose at the new
 playhead, at the Arm speed; the bar reads ARMING until they are there.
 
+The **Set list** tab holds the show's songs in running order. While armed and
+stopped, another song can be loaded from it (a click, **Next**, **Previous**,
+Page Down or Page Up) without disarming: the rigs travel to the new song the
+same way, and a lock to LTC, MTC or Art-Net is kept. Only a committed song with
+no open issues is loaded into an armed show. With **Follow timecode** ticked
+there, locked to an input with Play to code pressed, the server loads whichever
+song the incoming code is in and plays it.
+
 A camera's rig is held and its output is cut, with the reason in red on the bar and in the
 Rig controller tab, until the show is disarmed and armed again (Play does not
 bring a held camera back), when:

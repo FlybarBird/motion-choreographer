@@ -633,18 +633,96 @@ impl Show {
         Ok(())
     }
 
+    /// Load a song. Stopped is enough: a show that is armed stays armed and its rig travels to
+    /// the new song, and a lock to outside code is kept, so the set list can be stepped through.
     pub fn load_song(&mut self, client: &str, id: &str) -> Res<WorkingSong> {
         self.require_lease(client)?;
         let out = self.song_entry(id)?.working();
         if self.current.as_deref() != Some(id) {
-            self.require_parked("loading another song")?;
-            self.current = Some(id.to_string());
-            self.reset_for_new_song();
-            self.log("song_loaded", json!({ "song": id }));
-            self.push(WsMsg::SongListChanged);
-            self.poke();
+            if self.transport.run != Run::Stopped {
+                return Err(Fail::refused("Stop before loading another song"));
+            }
+            if self.transport.output != Output::Rehearse {
+                self.fit_to_go_live(id).map_err(|why| Fail::refused(format!("{why}. Disarm to load it")))?;
+            }
+            let who = self.who(client);
+            self.change_song(id, &who);
         }
         Ok(out)
+    }
+
+    /// Why a song cannot be loaded into a show that is armed. Arm asks the same of the song it arms.
+    fn fit_to_go_live(&self, id: &str) -> Result<(), String> {
+        let Some(e) = self.songs.get(id) else { return Err(format!("There is no song {id}")) };
+        if !e.committed_clean() {
+            return Err(format!("{} is not committed", e.song.name));
+        }
+        match e.compiled.blocking_count(&e.song) {
+            0 => Ok(()),
+            1 => Err(format!("{} has a timeline issue to fix or accept", e.song.name)),
+            n => Err(format!("{} has {n} timeline issues to fix or accept", e.song.name)),
+        }
+    }
+
+    /// Make another song the loaded one, at its start. A lock to outside code is kept, with Play
+    /// still pressed if it was. An armed show stays armed: the rig travels to the new song's pose
+    /// under the playhead, as it does after a seek.
+    fn change_song(&mut self, id: &str, by: &str) {
+        let before = self.transport;
+        let kept = (before.time == TimeMode::LockedExternal).then(|| (self.external.take(), self.lock_source.take()));
+        self.current = Some(id.to_string());
+        self.reset_for_new_song();
+        let mut after = self.transport;
+        if let Some((external, source)) = kept {
+            (self.external, self.lock_source) = (external, source);
+            after.time = TimeMode::LockedExternal;
+            if before.run != Run::Stopped {
+                after.run = Run::WaitingForCode;
+            }
+        }
+        if before.output != Output::Rehearse {
+            after.output = Output::Positioning;
+        }
+        self.transport = after;
+        let revision = self.entry().and_then(|e| e.revision());
+        self.log("song_loaded", json!({ "song": id, "by": by, "revision": revision, "state": after }));
+        self.sync_capture();
+        self.push(WsMsg::SongListChanged);
+        self.poke();
+    }
+
+    /// Code has left the loaded song. With Play pressed, load the song the code is in now: the
+    /// first such in the set list, or among every song while the set list is empty. True when
+    /// another song was loaded.
+    fn follow_code(&mut self, code: f64) -> bool {
+        if self.transport.run == Run::Stopped || self.transport.record {
+            return false;
+        }
+        let rate = self.rate();
+        let holds = |e: &Entry| (0.0..e.song.length_frames as f64).contains(&e.song.clock(rate).offset_of(code));
+        let listed: Vec<&String> =
+            if self.project.set_list.is_empty() { self.songs.keys().collect() } else { self.project.set_list.iter().collect() };
+        let next = listed
+            .into_iter()
+            .find(|id| self.current.as_deref() != Some(id.as_str()) && self.songs.get(*id).is_some_and(holds))
+            .cloned();
+        let Some(id) = next else { return false };
+        if self.transport.output != Output::Rehearse {
+            if let Err(why) = self.fit_to_go_live(&id) {
+                // Said once, not every tick the code stays there.
+                let why = format!("Code is in a song that cannot go live: {why}");
+                if self.lock_problem.as_deref() != Some(why.as_str()) {
+                    self.log("follow_refused", json!({ "song": id, "reason": why }));
+                    self.lock_problem = Some(why);
+                    self.poke();
+                }
+                return false;
+            }
+        }
+        // The song the code left stops first; the next starts when the code is found inside it.
+        self.event(Event::CodeLost);
+        self.change_song(&id, "timecode");
+        true
     }
 
     fn reset_for_new_song(&mut self) {
@@ -670,6 +748,11 @@ impl Show {
         }
         self.storage.delete_song(id).map_err(Fail::io)?;
         self.songs.remove(id);
+        if self.project.set_position(id).is_some() {
+            self.project.set_list.retain(|listed| listed != id);
+            self.storage.save_project(&self.project).map_err(Fail::io)?;
+            self.push(WsMsg::ProjectChanged);
+        }
         self.log("song_deleted", json!({ "song": id }));
         self.push(WsMsg::SongListChanged);
         self.poke();
@@ -821,8 +904,11 @@ impl Show {
 
     // ---- project and presets ----
 
-    pub fn put_project(&mut self, client: &str, project: Project) -> Res<Project> {
+    pub fn put_project(&mut self, client: &str, mut project: Project) -> Res<Project> {
         self.require_lease(client)?;
+        // The set list names songs there are, each once.
+        let mut listed = HashSet::new();
+        project.set_list.retain(|id| self.songs.contains_key(id) && listed.insert(id.clone()));
         if self.transport.output != Output::Rehearse {
             return Err(Fail::refused("Disarm to change project settings"));
         }
@@ -1985,6 +2071,11 @@ impl Show {
         let (clock, length) = (e.song.clock(rate), e.song.length_frames as f64);
         // Code inside the song, as a playhead position.
         let at = code.map(|c| clock.offset_of(c)).filter(|f| (0.0..length).contains(f));
+        if let (None, Some(code), true) = (at, code, self.project.follow_code && state == ChaseState::Locked) {
+            if self.follow_code(code) {
+                return;
+            }
+        }
         match (self.transport.run, at) {
             (Run::WaitingForCode, Some(frame)) => {
                 self.frame_f = frame;

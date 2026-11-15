@@ -1713,6 +1713,11 @@ fn a_layout_saved_before_the_stage_tabs_existed_gains_them_beside_the_program_mo
     let leaf = shell.dock[program.surface][program.node].get_leaf().unwrap();
     assert_eq!(leaf.active, program.tab, "the Program monitor stays in front");
     assert_eq!(leaf.tabs(), &[Tab::Reference, Tab::Program, Tab::Stage, Tab::Multiview]);
+    // The set list joins the presets, behind them.
+    let presets_at = shell.dock.find_tab(&Tab::Presets).unwrap();
+    let leaf = shell.dock[presets_at.surface][presets_at.node].get_leaf().unwrap();
+    assert_eq!(leaf.tabs(), &[Tab::Presets, Tab::Media, Tab::SetList]);
+    assert_eq!(leaf.active, presets_at.tab);
     // The splits the operator made are untouched.
     let nodes = |v: &serde_json::Value| v["surfaces"][0]["Main"]["nodes"].as_array().map(Vec::len);
     assert_eq!(nodes(&before), nodes(&serde_json::to_value(&shell.dock).unwrap()));
@@ -1840,6 +1845,47 @@ fn servers_this_station_reached_are_remembered_newest_first() {
     }
     assert_eq!(recent.len(), 5);
     assert_eq!(recent[0], "http://host8:8787");
+}
+
+#[test]
+fn the_set_list_tab_arranges_the_show_and_loads_a_song_at_a_click() {
+    use ptz_core::api::SongSummary;
+    let summary = |id: &str, name: &str, start: &str| SongSummary {
+        id: id.into(),
+        name: name.into(),
+        start_tc: start.into(),
+        length_frames: 1500,
+        revision: Some(1),
+        dirty: false,
+        loaded: false,
+    };
+    let project = Project { set_list: vec!["opener".into()], ..Project::default() };
+    let mut r = rig_with(project, presets(), Song::new("s", "Test Song", "01:00:00:00", 1500));
+    r.harness.state_mut().session.songs =
+        vec![summary("opener", "Opener", "01:00:00:00"), summary("closer", "Closer", "01:10:00:00")];
+    r.harness.state_mut().show_tab(Tab::SetList);
+    r.harness.run_steps(3);
+    let _ = r.cmds.try_iter().count();
+
+    // Until Arrange is pressed a row is only a song to load.
+    {
+        use egui_kittest::kittest::Queryable as _;
+        assert!(r.harness.query_by_label("Add").is_none() && r.harness.query_by_label("Remove").is_none());
+    }
+    r.press("Arrange");
+    // The one song outside the list is added at its end, and the show is sent.
+    r.press("Add");
+    let sent: Vec<Cmd> = r.cmds.try_iter().collect();
+    let lists: Vec<&Vec<String>> =
+        sent.iter().filter_map(|c| if let Cmd::PutProject(p) = c { Some(&p.set_list) } else { None }).collect();
+    assert_eq!(lists, [&vec!["opener".to_string(), "closer".to_string()]]);
+
+    // A click on a song loads it. Page Up from a song that is not in the list goes to the last one.
+    r.press("Opener");
+    r.harness.key_press(egui::Key::PageUp);
+    r.harness.run_steps(2);
+    let loads: Vec<String> = r.cmds.try_iter().filter_map(|c| if let Cmd::LoadSong(id) = c { Some(id) } else { None }).collect();
+    assert_eq!(loads, ["opener", "closer"]);
 }
 
 mod picture;

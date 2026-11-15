@@ -618,6 +618,17 @@ The camera bar shows the camera's state, and hovering its chip shows each
 device, for example *AutoPod+ V3.49e at 192.168.60.204:80 answers in 3 ms*. An
 AutoPod+ in standby blocks Arm; the program never switches it on by itself.
 
+An FR7 keeps speed settings of its own: a pan and tilt speed scale, a zoom speed
+scale, a slow mode, and whether it counts 24 speed steps or 50. Every speed
+asked of the camera goes through them, so one left turned down runs slower than
+the timeline expects, and one counting 50 steps tops out near a fifth of its
+speed. Each time the show server connects to an FR7 it sets both scales to 100,
+slow mode off and 24 speed steps, and the camera's chip says what it changed,
+for example *Raised to full speed: pan and tilt speed scale from 58 to 100*.
+Bring-up does the same before it measures. The camera keeps the new values after
+the server stops, so any other controller that drives the same camera has to be
+set for 24 speed steps too.
+
 ### 7.5 Set the limits
 
 Under **Rig limits**, for each axis (pan, tilt, zoom, focus, elevation) set the

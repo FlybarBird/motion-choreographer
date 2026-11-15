@@ -27,11 +27,13 @@ pub enum Tab {
     Log,
     Stage,
     Multiview,
+    SetList,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 11] = [
+    pub const ALL: [Tab; 12] = [
         Tab::Presets,
+        Tab::SetList,
         Tab::Media,
         Tab::Program,
         Tab::Stage,
@@ -57,6 +59,7 @@ impl Tab {
             Tab::Log => "Log",
             Tab::Stage => "Stage",
             Tab::Multiview => "Multiview",
+            Tab::SetList => "Set list",
         }
     }
 }
@@ -65,7 +68,7 @@ pub fn default_layout() -> DockState<Tab> {
     let mut state = DockState::new(vec![Tab::Program, Tab::Stage, Tab::Multiview, Tab::Reference]);
     let surface = state.main_surface_mut();
     let [top, _] = surface.split_below(NodeIndex::root(), 0.5, vec![Tab::Timeline, Tab::Graph, Tab::Log]);
-    let [centre, _] = surface.split_left(top, 0.2, vec![Tab::Presets, Tab::Media]);
+    let [centre, _] = surface.split_left(top, 0.2, vec![Tab::Presets, Tab::SetList, Tab::Media]);
     let [_, _] = surface.split_right(centre, 0.7, vec![Tab::Inspector, Tab::Rig]);
     state
 }
@@ -255,6 +258,7 @@ impl egui_dock::TabViewer for Viewer<'_> {
             Tab::Log => panels::log(ui, s),
             Tab::Stage => crate::stage_ui::show(ui, s),
             Tab::Multiview => crate::multiview::show(ui, s),
+            Tab::SetList => crate::setlist_ui::show(ui, s),
         }
     }
 
@@ -562,7 +566,8 @@ impl Shell {
                 let n = s.songs.len() + 1;
                 self.dialog = Dialog::New { name: format!("Song {n}"), start_tc: next_start(s) };
             }
-            if gate(ui, park_why.is_none(), icon::FOLDER_OPEN, "Load", park_why.clone(), "Open another song") {
+            let load_why = s.can_change_song().err();
+            if gate(ui, load_why.is_none(), icon::FOLDER_OPEN, "Load", load_why, "Open another song") {
                 s.link.send(Cmd::RefreshSongs);
                 self.dialog = Dialog::Load;
             }
@@ -915,6 +920,13 @@ impl Shell {
         if pressed(Key::Home) && s.offers(Action::Cue) {
             s.act(Action::Cue);
         }
+        // Page Down and Page Up step through the set list.
+        if pressed(Key::PageDown) {
+            s.step_song(1);
+        }
+        if pressed(Key::PageUp) {
+            s.step_song(-1);
+        }
         let step = if shift { 10 } else { 1 };
         // While the rig controller has the keyboard, the arrows drive the rig.
         let can_seek = s.offers(Action::Seek) && !s.rig.keyboard;
@@ -1035,8 +1047,10 @@ impl Shell {
                                     ui.label("");
                                 }
                                 ui.horizontal(|ui| {
-                                    if ui.add_enabled(!song.loaded, egui::Button::new("Load")).clicked() {
-                                        s.link.send(Cmd::LoadSong(song.id.clone()));
+                                    let can = if song.loaded { Err("This song is open".to_string()) } else { s.can_load(&song) };
+                                    let load = ui.add_enabled(can.is_ok(), egui::Button::new("Load"));
+                                    if can.err().map_or(load.clone(), |why| load.on_disabled_hover_text(why)).clicked() {
+                                        s.load_song(&song.id);
                                         close = true;
                                     }
                                     if ui.add_enabled(!song.loaded, egui::Button::new("Delete")).clicked() {
@@ -1336,13 +1350,14 @@ impl Shell {
 }
 
 /// A layout saved by an earlier version lacks the tabs added since: they join the Program monitor's group,
-/// and the arrangement the operator made is kept.
+/// or the set list the Presets group, and the arrangement the operator made is kept.
 fn with_every_tab(mut state: DockState<Tab>) -> DockState<Tab> {
     for tab in Tab::ALL {
         if state.find_tab(&tab).is_some() {
             continue;
         }
-        let beside = state.find_tab(&Tab::Program).or_else(|| state.iter_all_tabs().next().map(|(path, _)| path));
+        let home = if tab == Tab::SetList { Tab::Presets } else { Tab::Program };
+        let beside = state.find_tab(&home).or_else(|| state.iter_all_tabs().next().map(|(path, _)| path));
         let Some(path) = beside else { return default_layout() };
         let Some(leaf) = state[path.surface][path.node].get_leaf_mut() else { return default_layout() };
         // Appending brings the new tab to the front; the one the operator was looking at stays in front.
