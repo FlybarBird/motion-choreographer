@@ -5,6 +5,7 @@
 //! steer the head along the curve or let it run plain moves by itself.
 
 use crate::hw::autopod;
+use crate::hw::cgi;
 use crate::hw::fr7::{self, Fr7, Fr7Config};
 use crate::hw::visca::{self, Turn};
 use crate::rig::Drive;
@@ -341,6 +342,114 @@ fn settle(link: &mut fr7::Link, timeout: Duration) -> Result<(i32, i32), String>
     Ok(last)
 }
 
+/// Counts as the web interface writes them: five hex digits, twenty bits with the sign on top.
+fn hex_counts(text: &str) -> Option<i32> {
+    let v = i32::from_str_radix(text.trim(), 16).ok().filter(|v| (0..0x10_0000).contains(v))?;
+    Some(if v & 0x8_0000 != 0 { v - 0x10_0000 } else { v })
+}
+
+/// Which way to run each axis for a speed test, and how many counts of room it has that way:
+/// toward the end stop that is further off. `fields` is the camera's `inq=ptzf` answer and `at`
+/// where the head stands. None when the camera does not say.
+fn roomy_turns(fields: &[(String, String)], at: (i32, i32)) -> Option<[(Turn, i32); 2]> {
+    let axis = |direction: &str, limit: &str, at: i32| -> Option<(Turn, i32)> {
+        // Counts fall in the direction of byte 01 when the axis is set to Opposite.
+        let rises = !cgi::field(fields, direction)?.eq_ignore_ascii_case("opposite");
+        let (a, b) = cgi::field(fields, limit)?.split_once(',')?;
+        let (a, b) = (hex_counts(a)?, hex_counts(b)?);
+        let (above, below) = (a.max(b) - at, at - a.min(b));
+        Some(if (above >= below) == rises { (Turn::Plus, above.max(below)) } else { (Turn::Minus, above.max(below)) })
+    };
+    Some([axis("PanDirection", "PanLimit", at.0)?, axis("TiltDirection", "TiltLimit", at.1)?])
+}
+
+/// Degrees pan may cover in one speed run before it is stopped, and the most it takes to stop.
+const PAN_RUN: f64 = 100.0;
+const PAN_STOPS_IN: f64 = 30.0;
+/// The same for tilt, which is only run at steps of up to `TILT_UP_TO` degrees per second: one
+/// table serves both axes, and the fastest steps would swing the camera over its own top.
+const TILT_RUN: f64 = 35.0;
+const TILT_STOPS_IN: f64 = 5.0;
+const TILT_UP_TO: f64 = 20.0;
+/// While the head gets up to speed, its travel is compared over spans this long.
+const SPEED_SPAN: Duration = Duration::from_millis(150);
+/// A span that covers this much more than the one before it is a head still gaining speed.
+const STILL_GAINING: f64 = 1.03;
+/// A head that is still gaining speed after this long is timed as it is.
+const UP_TO_SPEED_WITHIN: Duration = Duration::from_secs(3);
+
+/// What one speed step ran at, in degrees per second, and whether the head had stopped gaining
+/// speed when it was timed. One that had not reads low.
+struct StepSpeed {
+    pan: f64,
+    tilt: f64,
+    level: bool,
+}
+
+/// Run the head at one speed step, wait until it is up to speed, and time it over `seconds`.
+/// The run ends early when an axis has covered its share of `room`, in degrees.
+fn run_step(
+    link: &mut fr7::Link,
+    per_degree: f64,
+    pan: (u8, Turn),
+    tilt: (u8, Turn),
+    seconds: f64,
+    room: (f64, f64),
+) -> Result<StepSpeed, String> {
+    type Mark = (Instant, (i32, i32));
+    fn read(link: &mut fr7::Link) -> Result<Mark, String> {
+        let counts = link.read_counts()?;
+        Ok((Instant::now() - link.last_round_trip / 2, counts))
+    }
+    let from = link.read_counts()?;
+    let degrees = |a: (i32, i32), b: (i32, i32)| ((b.0 - a.0).abs() as f64 / per_degree, (b.1 - a.1).abs() as f64 / per_degree);
+    let out_of_room = |at: (i32, i32)| {
+        let (pan, tilt) = degrees(from, at);
+        pan >= room.0 || tilt >= room.1
+    };
+    let speed = |a: Mark, b: Mark| {
+        let (pan, tilt) = degrees(a.1, b.1);
+        let seconds = b.0.duration_since(a.0).as_secs_f64().max(1e-3);
+        (pan / seconds, tilt / seconds)
+    };
+
+    link.drive_steps(pan, tilt)?;
+    let began = Instant::now();
+    std::thread::sleep(Duration::from_millis(200));
+    let mut before = read(link)?;
+    let mut gaining = None::<f64>;
+    let (mut level, mut cut_short) = (false, false);
+    let mut a = loop {
+        std::thread::sleep(SPEED_SPAN);
+        let now = read(link)?;
+        let (pan, tilt) = speed(before, now);
+        if out_of_room(now.1) {
+            cut_short = true;
+        } else if gaining.is_some_and(|last| pan + tilt <= last * STILL_GAINING) {
+            level = true;
+        } else if began.elapsed() < UP_TO_SPEED_WITHIN {
+            gaining = Some(pan + tilt);
+            before = now;
+            continue;
+        }
+        break now;
+    };
+    let mut b = a;
+    while !cut_short && b.0.duration_since(a.0).as_secs_f64() < seconds {
+        let left = seconds - b.0.duration_since(a.0).as_secs_f64();
+        std::thread::sleep(Duration::from_secs_f64(left.clamp(0.01, 0.1)));
+        b = read(link)?;
+        cut_short = out_of_room(b.1);
+    }
+    link.stop_all()?;
+    if b.0.duration_since(a.0).as_secs_f64() < seconds * 0.5 {
+        // Out of room before it could be timed: the last span is all there is.
+        (a, level) = (before, false);
+    }
+    let (pan, tilt) = speed(a, b);
+    Ok(StepSpeed { pan, tilt, level })
+}
+
 /// Send the head to raw counts at a brisk step and wait for it to arrive.
 fn return_to(link: &mut fr7::Link, counts: (i32, i32)) -> Result<(i32, i32), String> {
     let step = visca::step_at_least(link.speed_table(), 20.0);
@@ -489,6 +598,29 @@ impl Run<'_> {
         }
     }
 
+    /// The show server gives a camera its full speed, and the 24 speed steps it sends, when it
+    /// connects to it. The same is done here, so that what is measured is what the server will
+    /// find. Gives the camera's own account of its pan, tilt and lens settings, as it was before.
+    fn full_speed(&mut self, cfg: &Fr7Config) -> Option<Vec<(String, String)>> {
+        let mut web = cgi::Cgi::new(&cfg.http, &cfg.user, &cfg.password, Duration::from_secs(3));
+        match web.get_text("/command/inquiry.cgi?inq=ptzf") {
+            Ok(text) => {
+                let fields = cgi::fields(&text);
+                if let Some(note) = fr7::full_speed(&mut web, &fields).note() {
+                    self.note(format!("{note}."));
+                }
+                Some(fields)
+            }
+            Err(why) => {
+                self.problem(format!(
+                    "The FR7's speed settings could not be read at {} ({why}). If its speed scales are below 100 or it counts 50 speed steps, it runs at other speeds than measured once the show server has set them.",
+                    cfg.http
+                ));
+                None
+            }
+        }
+    }
+
     fn pod(&self) -> Option<autopod::Link> {
         self.opts.autopod.as_deref().map(autopod::Link::new)
     }
@@ -515,6 +647,7 @@ impl Run<'_> {
                     cfg.http
                 )),
             }
+            self.full_speed(&cfg);
         }
         if let Some(mut pod) = self.pod() {
             let state = pod.calibration()?;
@@ -758,38 +891,66 @@ impl Run<'_> {
             return Err(Halt::Skipped("No FR7 was named".into()));
         };
         self.go_ahead(
-            "This runs the head at each speed step in turn, up to 35 degrees to its left and up from where it is now, and brings it back each time. Is the head clear to move?",
+            "This runs the head at each speed step in turn and brings it back each time. From where it is now, pan turns as much as 130 degrees and tilt as much as 40, each toward its further end stop. Is the head clear to move?",
         )?;
         let cfg = self.cfg.clone().expect("a link exists");
+        let settings = self.full_speed(&cfg);
         let assumed = visca::speed_table();
         let steps: Vec<u8> = if self.opts.quick { vec![4, 9, 14, 19, visca::TOP_STEP] } else { (1..=visca::TOP_STEP).collect() };
         let home = settle(&mut link, Duration::from_secs(5))?;
+        // Each axis runs toward the end stop that is further off. Run into a stop it would read nothing.
+        let (turns, room) = match settings.as_deref().and_then(|fields| roomy_turns(fields, home)) {
+            Some([(pan, pan_room), (tilt, tilt_room)]) => {
+                let degrees = |counts: i32| counts as f64 / cfg.counts_per_degree;
+                let room = ((degrees(pan_room) - PAN_STOPS_IN).min(PAN_RUN), (degrees(tilt_room) - TILT_STOPS_IN).min(TILT_RUN));
+                ((pan, tilt), room)
+            }
+            None => {
+                self.note(
+                    "The camera did not say where its end stops are, so each axis is run the way of direction byte 01. An axis that meets a stop reads low.",
+                );
+                ((Turn::Plus, Turn::Plus), (PAN_RUN, TILT_RUN))
+            }
+        };
         let mut pan_speeds = Vec::new();
         let mut tilt_speeds = Vec::new();
+        // The steps that count toward the table, and what went wrong with the others.
+        let mut measured: Vec<(u8, f64)> = Vec::new();
+        let (mut not_level, mut tilt_stuck, mut differ) = (Vec::new(), Vec::new(), Vec::new());
         for step in &steps {
             let guess = assumed[*step as usize - 1];
-            let run = (20.0 / guess).clamp(0.5, 2.0);
-            link.drive_steps((*step, Turn::Plus), (*step, Turn::Plus))?;
-            std::thread::sleep(Duration::from_secs_f64(0.2));
-            let a = link.read_counts()?;
-            let at_a = Instant::now() - link.last_round_trip / 2;
-            std::thread::sleep(Duration::from_secs_f64(run - 0.2));
-            let b = link.read_counts()?;
-            let at_b = Instant::now() - link.last_round_trip / 2;
-            link.stop_all()?;
-            let seconds = at_b.duration_since(at_a).as_secs_f64().max(1e-3);
-            let pan = (b.0 - a.0).abs() as f64 / cfg.counts_per_degree / seconds;
-            let tilt = (b.1 - a.1).abs() as f64 / cfg.counts_per_degree / seconds;
-            self.note(format!("Step {step:>2}: pan {pan:.3} and tilt {tilt:.3} degrees per second (expected about {guess:.3})."));
-            pan_speeds.push((*step, pan));
-            tilt_speeds.push((*step, tilt));
+            let with_tilt = guess <= TILT_UP_TO;
+            let tilt = if with_tilt { (*step, turns.1) } else { (1, Turn::Hold) };
+            let seconds = (15.0 / guess).clamp(0.3, 2.0);
+            let ran = run_step(&mut link, cfg.counts_per_degree, (*step, turns.0), tilt, seconds, room)?;
+            let level = if ran.level { "" } else { " It was still gaining speed, so this reads low." };
+            if with_tilt {
+                self.note(format!(
+                    "Step {step:>2}: pan {:.3} and tilt {:.3} degrees per second (expected about {guess:.3}).{level}",
+                    ran.pan, ran.tilt
+                ));
+                tilt_speeds.push((*step, ran.tilt));
+            } else {
+                self.note(format!("Step {step:>2}: pan {:.3} degrees per second (expected about {guess:.3}).{level}", ran.pan));
+            }
+            pan_speeds.push((*step, ran.pan));
+            let both = with_tilt && ran.tilt > 0.0;
+            if with_tilt && ran.pan > 0.0 && ran.tilt <= 0.0 {
+                tilt_stuck.push(step.to_string());
+            } else if both && ran.pan > 0.5 && (ran.pan - ran.tilt).abs() / ran.pan > 0.15 {
+                differ.push(step.to_string());
+            }
+            let value = if both { (ran.pan + ran.tilt) / 2.0 } else { ran.pan };
+            if !ran.level {
+                not_level.push(step.to_string());
+            } else if value > 0.0 {
+                measured.push((*step, value));
+            }
             settle(&mut link, Duration::from_secs(5))?;
             return_to(&mut link, home)?;
         }
 
-        // One table serves both axes. Steps not run are filled in between their neighbours by ratio.
-        let measured: Vec<(u8, f64)> =
-            pan_speeds.iter().zip(&tilt_speeds).map(|((s, p), (_, t))| (*s, (p + t) / 2.0)).filter(|(_, v)| *v > 0.0).collect();
+        // One table serves both axes. Steps not measured are filled in between their neighbours by ratio.
         if measured.len() < 2 {
             return Err(Halt::Failed("The head did not move at enough speed steps to build a table".into()));
         }
@@ -812,12 +973,18 @@ impl Run<'_> {
             let floor = table.last().copied().unwrap_or(0.0);
             table.push(value.max(floor));
         }
-        let differ = pan_speeds
-            .iter()
-            .zip(&tilt_speeds)
-            .filter(|((_, p), (_, t))| *p > 0.5 && (p - t).abs() / p > 0.15)
-            .map(|((s, _), _)| s.to_string())
-            .collect::<Vec<_>>();
+        if !not_level.is_empty() {
+            self.problem(format!(
+                "The head was still gaining speed at step {} when it ran out of room or time. Those steps are left out and filled in from the ones measured.",
+                not_level.join(", ")
+            ));
+        }
+        if !tilt_stuck.is_empty() {
+            self.problem(format!(
+                "Tilt did not move at step {}; it may be against an end stop. The table is from pan alone there.",
+                tilt_stuck.join(", ")
+            ));
+        }
         if !differ.is_empty() {
             self.problem(format!(
                 "Pan and tilt run at different speeds at step {}. The adapter uses one table for both; expect a larger tilt error.",
@@ -826,7 +993,7 @@ impl Run<'_> {
         }
         let top = table[table.len() - 1];
         self.note(format!(
-            "Speed table: {:.3} to {top:.1} degrees per second. The fastest steps are measured over a short run and may read low.",
+            "Speed table: {:.3} to {top:.1} degrees per second. Each step was timed once the head was up to speed; tilt was run at the steps of up to {TILT_UP_TO:.0} degrees per second.",
             table[0]
         ));
         self.report.measured.pan_step_speeds = pan_speeds;

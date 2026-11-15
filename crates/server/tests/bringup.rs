@@ -278,3 +278,33 @@ fn a_rig_that_is_not_there_or_not_ready_is_reported_and_nothing_else_is_tried() 
     let report = bringup::run(&opts, &mut Unattended { echo: false });
     assert!(report.settings.max_speed_elevation.is_some_and(|v| v > 30.0 && v < POD_TOP_MM_S), "{:?}", report.settings);
 }
+
+#[test]
+fn speeds_are_timed_once_the_head_is_up_to_speed_and_away_from_its_end_stops() {
+    // A head near the left and top end stops, which counts tilt the other way round and takes
+    // most of a second to reach its top speed. Run toward the stops, or timed too soon, it reads low.
+    let fr7 = FakeFr7::start();
+    fr7.set_count_signs(1.0, -1.0);
+    fr7.set_ramp(75.0);
+    fr7.place(160.0, 192.0, 0.0, 0.5);
+    let opts = Options { fr7: Some(config(&fr7)), quick: true, steps: vec![Step::Connect, Step::Speeds], ..Options::default() };
+    let report = bringup::run(&opts, &mut Unattended { echo: false });
+    let text = report.sections.iter().flat_map(|s| s.lines.clone()).collect::<Vec<_>>().join("\n");
+    assert_eq!(outcomes(&report), [("connect", "passed"), ("speeds", "passed")], "{text}");
+    assert_eq!(report.problems, Vec::<String>::new(), "{text}");
+
+    // The steps it ran are the head's own speeds. The ones between are filled in by ratio, less exactly.
+    let (table, real) = (report.settings.fr7_speed_steps.as_ref().expect("a speed table"), visca::speed_table());
+    for (step, got) in &report.measured.pan_step_speeds {
+        let want = real[*step as usize - 1];
+        assert!((got - want).abs() / want < 0.02, "step {step}: {got} against {want}\n{text}");
+    }
+    for (i, (got, want)) in table.iter().zip(&real).enumerate() {
+        assert!((got - want).abs() / want < 0.12, "step {}: {got} against {want}\n{text}", i + 1);
+    }
+    // Tilt ran at the slower steps and moved; the fastest step is pan's alone.
+    assert_eq!(report.measured.tilt_step_speeds.len(), 4, "{text}");
+    assert!(report.measured.tilt_step_speeds.iter().all(|(_, speed)| *speed > 0.0), "{text}");
+    let (pan, tilt, _, _) = fr7.pose();
+    assert!((pan - 160.0).abs() < 0.05 && (tilt - 192.0).abs() < 0.05, "head left at {pan}, {tilt}");
+}

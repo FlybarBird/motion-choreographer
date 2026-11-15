@@ -551,8 +551,9 @@ tested against a stand-in built from the same reading. It has not met the real
 camera. Each of these is measured or shown by a bring-up step and is a setting,
 not a constant:
 
-- The speed of each VISCA pan and tilt step (assumed: 24 steps spread evenly
-  by ratio from 0.02 to 60 degrees per second).
+- The speed of each VISCA pan and tilt step. The built-in table is the one
+  measured on an FR7 in its 24-step mode, from 0.05 to about 60 degrees per
+  second; the server puts each camera in that mode when it connects.
 - 236 counts per degree, and which way the pan and tilt counts run.
 - Zoom reported over 0 to 0x4000 and focus over 0 to 0xFFFF.
 - Preset recall as `81 01 04 3F 02 pp FF` with `pp` one less than the preset

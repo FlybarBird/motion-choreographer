@@ -192,6 +192,20 @@ struct Head {
     last_seq: Option<u32>,
     silent: bool,
     speed_factor: f64,
+    /// The camera's own speed scales, 1 to 100, and its slow mode. Pan and tilt run at the scale's share
+    /// of every commanded speed.
+    pan_tilt_scale: u32,
+    zoom_scale: u32,
+    slow_mode: bool,
+    /// The camera counts 50 speed steps, not 24: the 24 a controller sends are the slow half of them.
+    extended_steps: bool,
+    /// The web interface refuses a change to a speed setting.
+    speed_locked: bool,
+    /// Degrees per second gained each second on the way to a commanded speed. None is at once.
+    ramp: Option<f64>,
+    /// The speed pan and tilt are turning at now, on the way to the commanded one.
+    pan_rate: f64,
+    tilt_rate: f64,
     pan_sign: f64,
     tilt_sign: f64,
     first_after_reset: u32,
@@ -207,15 +221,26 @@ impl Head {
         let dt = now.duration_since(self.at).as_secs_f64();
         self.at = now;
         let toward = |at: f64, to: f64, step: f64| at + (to - at).clamp(-step, step);
+        let share = self.speed_factor * self.pan_tilt_scale as f64 / 100.0;
         if let Some((pan, tilt, pan_speed, tilt_speed)) = self.going_to {
-            self.pan = toward(self.pan, pan, pan_speed * self.speed_factor * dt);
-            self.tilt = toward(self.tilt, tilt, tilt_speed * self.speed_factor * dt);
+            self.pan = toward(self.pan, pan, pan_speed * share * dt);
+            self.tilt = toward(self.tilt, tilt, tilt_speed * share * dt);
+            (self.pan_rate, self.tilt_rate) = (0.0, 0.0);
             if self.pan == pan && self.tilt == tilt {
                 self.going_to = None;
             }
         } else {
-            self.pan += self.pan_speed * self.speed_factor * dt;
-            self.tilt += self.tilt_speed * self.speed_factor * dt;
+            // With a ramp the head gains and sheds speed steadily, and covers the mean of the two speeds.
+            let reach = |rate: f64, want: f64| match self.ramp {
+                Some(ramp) => toward(rate, want, ramp * dt),
+                None => want,
+            };
+            let (pan_rate, tilt_rate) =
+                (reach(self.pan_rate, self.pan_speed * share), reach(self.tilt_rate, self.tilt_speed * share));
+            let mean = |was: f64, is: f64| if self.ramp.is_some() { (was + is) / 2.0 } else { is };
+            self.pan += mean(self.pan_rate, pan_rate) * dt;
+            self.tilt += mean(self.tilt_rate, tilt_rate) * dt;
+            (self.pan_rate, self.tilt_rate) = (pan_rate, tilt_rate);
         }
         self.pan = self.pan.clamp(PAN_RANGE.0, PAN_RANGE.1);
         self.tilt = self.tilt.clamp(TILT_RANGE.0, TILT_RANGE.1);
@@ -237,10 +262,21 @@ impl Head {
     /// Act on one command and return the replies to send, in order.
     fn handle(&mut self, kind: u16, payload: &[u8]) -> Vec<Vec<u8>> {
         let table = visca::speed_table();
-        let speed = |step: u8, turn: Turn| match turn {
-            Turn::Plus => table[(step.clamp(1, visca::TOP_STEP) - 1) as usize],
-            Turn::Minus => -table[(step.clamp(1, visca::TOP_STEP) - 1) as usize],
-            Turn::Hold => 0.0,
+        let extended = self.extended_steps;
+        let speed = |step: u8, turn: Turn| {
+            let step = step.clamp(1, visca::TOP_STEP);
+            let fast = if extended {
+                // Fifty steps cover the same range by ratio, so step 24 is not half way up it.
+                let (low, top) = (table[0], table[table.len() - 1]);
+                low * (top / low).powf((step - 1) as f64 / 49.0)
+            } else {
+                table[(step - 1) as usize]
+            };
+            match turn {
+                Turn::Plus => fast,
+                Turn::Minus => -fast,
+                Turn::Hold => 0.0,
+            }
         };
         let Some(cmd) = visca::parse_command(payload) else {
             return vec![visca::error(0, 0x02)];
@@ -352,6 +388,14 @@ impl FakeFr7 {
             last_seq: None,
             silent: false,
             speed_factor: 1.0,
+            pan_tilt_scale: 100,
+            zoom_scale: 100,
+            slow_mode: false,
+            extended_steps: false,
+            speed_locked: false,
+            ramp: None,
+            pan_rate: 0.0,
+            tilt_rate: 0.0,
             pan_sign: 1.0,
             tilt_sign: 1.0,
             first_after_reset: 1,
@@ -452,13 +496,48 @@ impl FakeFr7 {
                     let (zoom, focus) = (head.zoom.round() as u32, head.focus.round() as u32);
                     // On an FR7, counts fall in the direction of byte 01 when the axis is set to Opposite.
                     let direction = |sign: f64| if sign < 0.0 { "opposite" } else { "normal" };
+                    // The end stops in counts: pan as left then right, tilt as down then up.
+                    let stop = |degrees: f64, sign: f64| (degrees * sign * COUNTS_PER_DEGREE).round() as i32 as u32 & 0xF_FFFF;
                     Some(Response::text(format!(
-                        "AbsolutePTZF={:05x},{:05x},{zoom:04x},{focus:04x}&PanDirection={}&TiltDirection={}\r\n",
+                        "AbsolutePTZF={:05x},{:05x},{zoom:04x},{focus:04x}&PanDirection={}&TiltDirection={}&PanLimit={:05x},{:05x}&TiltLimit={:05x},{:05x}&PanTiltSpeedMode={}&PanTiltSpeedScale={}&PanTiltSpeedStep={}&ZoomSpeedScale={}\r\n",
                         pan as u32 & 0xF_FFFF,
                         tilt as u32 & 0xF_FFFF,
                         direction(head.pan_sign),
-                        direction(head.tilt_sign)
+                        direction(head.tilt_sign),
+                        stop(PAN_RANGE.1, head.pan_sign),
+                        stop(PAN_RANGE.0, head.pan_sign),
+                        stop(TILT_RANGE.0, head.tilt_sign),
+                        stop(TILT_RANGE.1, head.tilt_sign),
+                        if head.slow_mode { "slow" } else { "normal" },
+                        head.pan_tilt_scale,
+                        if head.extended_steps { "extended" } else { "normal" },
+                        head.zoom_scale
                     )))
+                }
+                // A speed setting is changed one at a time, and answered with no content.
+                ("/command/ptzf.cgi", _)
+                    if ["PanTiltSpeedScale", "ZoomSpeedScale", "PanTiltSpeedMode", "PanTiltSpeedStep"]
+                        .iter()
+                        .any(|name| req.query(name).is_some()) =>
+                {
+                    if head.speed_locked {
+                        return Some(Response::status(403));
+                    }
+                    let scale =
+                        |name: &str| req.query(name).and_then(|v| v.parse::<u32>().ok()).filter(|v| (1..=100).contains(v));
+                    if let Some(v) = scale("PanTiltSpeedScale") {
+                        head.pan_tilt_scale = v;
+                    }
+                    if let Some(v) = scale("ZoomSpeedScale") {
+                        head.zoom_scale = v;
+                    }
+                    if let Some(mode) = req.query("PanTiltSpeedMode") {
+                        head.slow_mode = mode == "slow";
+                    }
+                    if let Some(steps) = req.query("PanTiltSpeedStep") {
+                        head.extended_steps = steps == "extended";
+                    }
+                    Some(Response::status(204))
                 }
                 (path, _) => {
                     let number = path
@@ -497,11 +576,13 @@ impl FakeFr7 {
         let mut h = self.head();
         (h.pan, h.tilt, h.zoom, h.focus) = (pan, tilt, zoom * visca::ZOOM_TELE as f64, focus * 65535.0);
         (h.pan_speed, h.tilt_speed, h.going_to, h.zoom_target, h.focus_target) = (0.0, 0.0, None, None, None);
+        (h.pan_rate, h.tilt_rate) = (0.0, 0.0);
     }
 
     pub fn is_moving(&self) -> bool {
         let h = self.head();
-        h.pan_speed != 0.0 || h.tilt_speed != 0.0 || h.going_to.is_some()
+        let coasting = h.ramp.is_some() && (h.pan_rate != 0.0 || h.tilt_rate != 0.0);
+        h.pan_speed != 0.0 || h.tilt_speed != 0.0 || h.going_to.is_some() || coasting
     }
 
     /// The picture served for every preset, in place of the stub.
@@ -517,6 +598,39 @@ impl FakeFr7 {
     /// Move at this share of every commanded speed: a head that cannot keep up.
     pub fn set_speed_factor(&self, factor: f64) {
         self.head().speed_factor = factor;
+    }
+
+    /// The camera's own speed settings, as someone left them: the pan and tilt scale and the zoom
+    /// scale from 1 to 100, and slow mode.
+    pub fn set_speed_settings(&self, pan_tilt_scale: u32, zoom_scale: u32, slow_mode: bool) {
+        let mut h = self.head();
+        (h.pan_tilt_scale, h.zoom_scale, h.slow_mode) = (pan_tilt_scale, zoom_scale, slow_mode);
+    }
+
+    /// Pan and tilt scale, zoom scale and slow mode, as the camera is set now.
+    pub fn speed_settings(&self) -> (u32, u32, bool) {
+        let h = self.head();
+        (h.pan_tilt_scale, h.zoom_scale, h.slow_mode)
+    }
+
+    /// Count 50 speed steps, as a camera set to "extended" does, or the usual 24.
+    pub fn set_extended_speed_steps(&self, extended: bool) {
+        self.head().extended_steps = extended;
+    }
+
+    pub fn extended_speed_steps(&self) -> bool {
+        self.head().extended_steps
+    }
+
+    /// Take time to reach a commanded speed and to stop, gaining this many degrees per second
+    /// each second, as the real head does. Without it the fake is at any speed at once.
+    pub fn set_ramp(&self, degrees_per_second_squared: f64) {
+        self.head().ramp = Some(degrees_per_second_squared);
+    }
+
+    /// Refuse a change to a speed setting, as a camera does to a login that may not change it.
+    pub fn lock_speed_settings(&self) {
+        self.head().speed_locked = true;
     }
 
     /// Count positions the other way round on an axis.

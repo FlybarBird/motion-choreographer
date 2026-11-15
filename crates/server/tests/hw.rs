@@ -322,6 +322,57 @@ fn an_absolute_move_is_one_command_and_the_head_runs_its_own_ramp() {
 }
 
 #[test]
+fn a_camera_left_at_a_low_speed_is_given_its_full_speed_when_it_is_connected_to() {
+    let axes = AxisTable::default();
+    let speed_sets =
+        |fake: &FakeFr7| -> Vec<String> { fake.web_requests().into_iter().filter(|r| r.contains("Speed")).collect() };
+    let detail = |rig: &HardwareRig| rig.status()[0].detail.clone();
+
+    // As whoever used it last left it: pan and tilt turned down to 58, zoom to 38, slow mode on,
+    // and counting 50 speed steps where this program sends 24.
+    let low = FakeFr7::start();
+    low.set_speed_settings(58, 38, true);
+    low.set_extended_speed_steps(true);
+    let rig = HardwareRig::start(&rig_config(Some(&low), None), &axes);
+    wait_until("the camera answers", || rig.problem().is_none());
+    assert_eq!(low.speed_settings(), (100, 100, false));
+    assert!(!low.extended_speed_steps());
+    assert_eq!(
+        speed_sets(&low),
+        vec![
+            "/command/ptzf.cgi?PanTiltSpeedScale=100",
+            "/command/ptzf.cgi?ZoomSpeedScale=100",
+            "/command/ptzf.cgi?PanTiltSpeedMode=normal",
+            "/command/ptzf.cgi?PanTiltSpeedStep=normal"
+        ]
+    );
+    let said = detail(&rig);
+    assert!(
+        said.ends_with(
+            "Raised to full speed: pan and tilt speed scale from 58 to 100, zoom speed scale from 38 to 100, pan and tilt speed mode from slow to normal, pan and tilt speed steps from extended to normal"
+        ),
+        "{said}"
+    );
+
+    // A camera already at full speed is asked for nothing, and nothing is said about it.
+    let full = FakeFr7::start();
+    let rig = HardwareRig::start(&rig_config(Some(&full), None), &axes);
+    wait_until("the camera answers", || rig.problem().is_none());
+    assert_eq!(speed_sets(&full), Vec::<String>::new());
+    assert!(detail(&rig).ends_with(" ms"), "{}", detail(&rig));
+
+    // One that will not take the change is driven as it is, and the operator is told it is slow.
+    let locked = FakeFr7::start();
+    locked.set_speed_settings(58, 100, false);
+    locked.lock_speed_settings();
+    let rig = HardwareRig::start(&rig_config(Some(&locked), None), &axes);
+    wait_until("the camera answers", || rig.problem().is_none());
+    assert_eq!(locked.speed_settings(), (58, 100, false));
+    let said = detail(&rig);
+    assert!(said.contains("Left below full speed: pan and tilt speed scale stays at 58") && said.contains("403"), "{said}");
+}
+
+#[test]
 fn a_missing_device_and_an_uncalibrated_pedestal_are_named() {
     let axes = AxisTable::default();
     let none = HardwareRig::start(&RigConfig { kind: RigKind::Hardware, ..RigConfig::default() }, &axes);

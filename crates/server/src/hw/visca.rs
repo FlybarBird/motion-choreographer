@@ -289,13 +289,16 @@ pub fn parse_command(p: &[u8]) -> Option<Command> {
     }
 }
 
-/// Degrees per second of each speed step, slowest first. Sony gives the ends of
-/// the range (0.02 and 60 degrees per second); the steps between are spread
-/// evenly by ratio here until the bring-up tool has measured them on the head.
+/// Degrees per second of each of the 24 speed steps, slowest first, as measured on an FR7
+/// (firmware 4.00, 24-step mode, speed scale 100). Steps 1 to 19 are the measured speeds. Steps
+/// 20 to 24 continue the measured curve by its own ratio, because the head needs most of a second
+/// to reach them; they end near the 60 degrees per second Sony gives. Bring-up measures a head's own
+/// table, which then takes this one's place.
 pub fn speed_table() -> Vec<f64> {
-    let n = TOP_STEP as usize;
-    let ratio = (60.0f64 / 0.02).powf(1.0 / (n as f64 - 1.0));
-    (0..n).map(|i| 0.02 * ratio.powi(i as i32)).collect()
+    vec![
+        0.050, 0.115, 0.221, 0.359, 0.546, 0.777, 1.09, 1.44, 1.91, 2.48, 3.136, 4.00, 5.08, 6.46, 7.97, 10.0, 12.5, 15.5, 19.4,
+        24.3, 30.3, 37.9, 47.4, 59.2,
+    ]
 }
 
 /// The step and direction for a wanted speed in degrees per second. Speeds
@@ -396,10 +399,10 @@ mod tests {
     }
 
     #[test]
-    fn speed_steps_run_from_a_fiftieth_of_a_degree_to_sixty_and_blend_between() {
+    fn speed_steps_run_from_a_twentieth_of_a_degree_to_sixty_and_blend_between() {
         let table = speed_table();
-        assert_eq!(table.len(), 24);
-        assert!((table[0] - 0.02).abs() < 1e-9 && (table[23] - 60.0).abs() < 1e-6);
+        assert_eq!(table.len(), TOP_STEP as usize);
+        assert!((table[0] - 0.05).abs() < 1e-9 && (table[23] - 60.0).abs() < 1.0);
         assert!(table.windows(2).all(|w| w[1] > w[0]));
 
         let mut carry = 0.0;

@@ -1023,6 +1023,62 @@ pub fn focus_counts(focus: f64) -> u16 {
     (focus.clamp(0.0, 1.0) * 65535.0).round() as u16
 }
 
+/// The camera's own settings that hold it below its full speed, the value each is given, and its
+/// name in words. Every speed this program asks for is scaled by them, so a camera left low by
+/// whoever used it last runs slower than the timeline expects. The last is how many speed steps
+/// the camera counts: set to 50 ("extended"), the 24 this program sends are the slow half of them
+/// and the head tops out near a fifth of its speed.
+const FULL_SPEED: [(&str, &str, &str); 4] = [
+    ("PanTiltSpeedScale", "100", "pan and tilt speed scale"),
+    ("ZoomSpeedScale", "100", "zoom speed scale"),
+    ("PanTiltSpeedMode", "normal", "pan and tilt speed mode"),
+    ("PanTiltSpeedStep", "normal", "pan and tilt speed steps"),
+];
+
+/// What became of the settings that held a camera below its full speed.
+#[derive(Clone, PartialEq, Debug, Default)]
+pub struct SpeedSetup {
+    /// Settings that were raised, in words.
+    pub raised: Vec<String>,
+    /// Settings the camera would not take, and why.
+    pub refused: Vec<String>,
+}
+
+impl SpeedSetup {
+    /// What to tell the operator, if anything was low.
+    pub fn note(&self) -> Option<String> {
+        let mut parts = Vec::new();
+        if !self.raised.is_empty() {
+            parts.push(format!("Raised to full speed: {}", self.raised.join(", ")));
+        }
+        if !self.refused.is_empty() {
+            parts.push(format!("Left below full speed: {}", self.refused.join(", ")));
+        }
+        (!parts.is_empty()).then(|| parts.join(". "))
+    }
+}
+
+/// Give the camera its full speed, going by `fields` of `command/inquiry.cgi?inq=ptzf`.
+/// A setting the camera does not name is left alone.
+pub fn full_speed(cgi: &mut Cgi, fields: &[(String, String)]) -> SpeedSetup {
+    let mut setup = SpeedSetup::default();
+    for (name, full, words) in FULL_SPEED {
+        let Some(now) = cgi::field(fields, name) else { continue };
+        let low = match (now.parse::<f64>(), full.parse::<f64>()) {
+            (Ok(now), Ok(full)) => now < full,
+            _ => !now.eq_ignore_ascii_case(full),
+        };
+        if !low {
+            continue;
+        }
+        match cgi.get(&format!("/command/ptzf.cgi?{name}={full}")) {
+            Ok(_) => setup.raised.push(format!("{words} from {now} to {full}")),
+            Err(why) => setup.refused.push(format!("{words} stays at {now} ({why})")),
+        }
+    }
+    setup
+}
+
 /// Preset numbers and names from `command/inquiry.cgi?inq=presetposition`.
 pub fn preset_names(cgi: &mut Cgi) -> Result<Vec<(u32, String)>, String> {
     let text = cgi.get_text("/command/inquiry.cgi?inq=presetposition")?;
@@ -1266,6 +1322,8 @@ struct Worker {
     /// The camera's own pan or tilt direction is Opposite, so VISCA Plus moves that axis backwards.
     pan_opposite: bool,
     tilt_opposite: bool,
+    /// What was done about the camera's speed settings when it was last connected to, if anything.
+    speed_note: Option<String>,
     ride: Option<Ride>,
     stops_sent: u32,
     still: u32,
@@ -1301,6 +1359,7 @@ impl Worker {
             crowded_since: None,
             pan_opposite: false,
             tilt_opposite: false,
+            speed_note: None,
             ride: None,
             stops_sent: 0,
             still: 0,
@@ -1312,7 +1371,8 @@ impl Worker {
     /// Pan and tilt direction as the camera itself is set. Opposite means VISCA Plus
     /// moves that axis against the angle the position query reports. Driven the wrong way an axis
     /// runs away from its target, so a camera that does not say is not driven at all.
-    fn read_axis_direction(&mut self) -> Result<(), String> {
+    /// The same answer carries the camera's speed settings, which are raised to full speed here.
+    fn read_camera_setup(&mut self) -> Result<(), String> {
         let mut why = String::new();
         for _ in 0..3 {
             match self.cgi.get_text("/command/inquiry.cgi?inq=ptzf") {
@@ -1321,6 +1381,7 @@ impl Worker {
                     if let (Some(pan), Some(tilt)) = (cgi::field(&fields, "PanDirection"), cgi::field(&fields, "TiltDirection")) {
                         self.pan_opposite = pan.eq_ignore_ascii_case("opposite");
                         self.tilt_opposite = tilt.eq_ignore_ascii_case("opposite");
+                        self.speed_note = full_speed(&mut self.cgi, &fields).note();
                         return Ok(());
                     }
                     why = "its answer names no pan or tilt direction".into();
@@ -1388,7 +1449,7 @@ impl Worker {
             if let Some(link) = &mut self.link {
                 link.timeout = Duration::from_millis(400);
             }
-            if let Err(why) = self.read_axis_direction() {
+            if let Err(why) = self.read_camera_setup() {
                 self.link = None;
                 return Err(why);
             }
@@ -1477,7 +1538,10 @@ impl Worker {
             s.detail = if quiet {
                 format!("{} is moving and will answer when it arrives", self.cfg.visca)
             } else {
-                format!("{} answers in {:.1} ms", self.cfg.visca, round_trip_ms)
+                match &self.speed_note {
+                    Some(note) => format!("{} answers in {:.1} ms. {note}", self.cfg.visca, round_trip_ms),
+                    None => format!("{} answers in {:.1} ms", self.cfg.visca, round_trip_ms),
+                }
             };
             if matches!(s.mode, Mode::Drive(_)) && s.told_at.elapsed() > STARVED_AFTER {
                 s.mode = Mode::Stop;
