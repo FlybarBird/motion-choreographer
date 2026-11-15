@@ -152,10 +152,10 @@ Everything that belongs to the whole show and not to one song is in **Show
 settings**: press the button at the right end of the camera bar. It takes the
 place of the panels until **Close settings** or Esc; the header, the transport
 with E-STOP and the camera bar stay on screen. Its pages are listed at the
-left: the show (Cameras, Frame rate and faults, Stage model), the selected
-camera (Rig connection, Lens, Position on the stage, Rig limits, Keep-out
-rules) and the server (Audio output, Timecode inputs). Changing anything
-there needs the edit lease, with the show disarmed.
+left: the show (Cameras, Frame rate and faults, Stage model, Programming),
+the selected camera (Rig connection, Lens, Position on the stage, Rig limits,
+Keep-out rules) and the server (Audio output, Timecode inputs, Control
+panel). Changing anything there needs the edit lease, with the show disarmed.
 
 Cameras are added, named, reordered and removed on its **Cameras** page.
 **Add a camera** copies the selected camera's
@@ -614,6 +614,17 @@ Shift; P1 to P10 choose the camera; the Focus knob moves the playhead; the top
 of the big display shows the show's state and every message in full. The
 [Programming Manual](docs/programming-manual.md#14-programming-from-a-panel)
 goes through every mode.
+
+**Program mode** (U4 and Image) is for programming a song quickly when the
+cameras are framed on their own controller. The soft keys run the timeline
+like a tape: one key plays and pauses, Back and Forward jump five seconds on a
+tap and wind on a hold, and with U4 they move a frame at a time. Pause, frame
+the camera, and press its number: the server reads where the rig stands,
+stores it as a preset (or uses one that camera already has within the range
+set on the **Programming** page of Show settings), and the key flashes. Play
+or wind to where the camera must have arrived and press the number again: the
+move is placed between the two presses. Program works only while the show is
+disarmed.
 
 What keeps it safe:
 
