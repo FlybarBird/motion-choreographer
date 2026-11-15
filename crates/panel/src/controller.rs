@@ -11,7 +11,8 @@ use crate::link::{Cell, Change, Event, Shared, REST_FIRST};
 use crate::map::{Mode, PanelMap, Role, CAMERA_KEYS, SOFT_ENCODERS, SOFT_KEYS};
 use crate::topology::Topology;
 use ptz_core::api::{
-    MediaInfo, MediaKind, PanelState, PutWorking, Refit, SongSummary, Status, StorePreset, TransportRequest, WorkingSong,
+    CapturePreset, Captured, MediaInfo, MediaKind, PanelState, PutWorking, Refit, SongSummary, Status, StorePreset,
+    TransportRequest, WorkingSong,
 };
 use ptz_core::client::{Api, ApiErr};
 use ptz_core::edit::{self, Refusal};
@@ -29,6 +30,18 @@ use std::time::{Duration, Instant};
 pub const ARM_LABEL: &str = "Arm (moves rig to playhead)";
 pub const HOLD: Duration = Duration::from_millis(1000);
 pub const HOLD_RESET: Duration = Duration::from_millis(1500);
+/// A Back or Forward key let go within this time is a tap: a jump. Held longer, it winds.
+pub const TAP: Duration = Duration::from_millis(300);
+/// How far a tap jumps.
+pub const JUMP_SECONDS: f64 = 5.0;
+/// Winding speed against real time, and what it becomes once the key has been down for a while.
+pub const WIND: f64 = 8.0;
+pub const WIND_FAST: f64 = 24.0;
+const WIND_FAST_AFTER: Duration = Duration::from_secs(3);
+/// With Shift a held key steps this many frames a second.
+pub const FRAME_STEPS_A_SECOND: f64 = 10.0;
+const WIND_EVERY: Duration = Duration::from_millis(100);
+const ARMED_PROGRAM: &str = "Disarm to program. Moving the playhead while armed moves the rig";
 const MESSAGE_MIN: Duration = Duration::from_secs(4);
 const PAGE_TIME: Duration = Duration::from_millis(1500);
 const CONFIRM_TIME: Duration = Duration::from_secs(10);
@@ -93,6 +106,11 @@ enum Act {
     DeleteMarker,
     ToggleAxis(Axis),
     Refit(f64),
+    /// Back (-1) or Forward (1): a tap jumps, a hold winds.
+    Wind(i64),
+    /// Program mode's camera key: the first press captures the pose, the second places the move.
+    MarkCamera(usize),
+    CancelMark,
     PlaceMedia(String),
     NextMediaClip,
     Mute,
@@ -218,6 +236,31 @@ struct Holding {
     fired: bool,
 }
 
+/// A Back or Forward key that is down.
+struct Wind {
+    role: Role,
+    dir: i64,
+    /// Shift was down when it was pressed: single frames.
+    by_frame: bool,
+    since: Instant,
+    /// It has been down longer than a tap, and the panel has been heard from since.
+    started: bool,
+    stepped: Instant,
+    /// Where the winding has got to, in frames.
+    at: f64,
+    sent: i64,
+}
+
+/// A camera's first press in Program mode: where it stood and where the playhead was.
+#[derive(Clone)]
+struct Mark {
+    preset: Preset,
+    frame: i64,
+    /// That press stored the preset; cancelling the mark removes it again.
+    made_new: bool,
+    at: Instant,
+}
+
 struct Asking {
     question: String,
     act: Act,
@@ -268,6 +311,9 @@ pub struct Controller {
     message: Option<Message>,
     holding: Option<Holding>,
     asking: Option<Asking>,
+    wind: Option<Wind>,
+    /// Cameras marked in Program mode and waiting for their second press, by camera id.
+    marks: BTreeMap<String, Mark>,
     /// E-Stop is down; true when it was already latched at the press, so the hold may reset it.
     estop_down: Option<(Instant, bool, bool)>,
     estop_waiting: bool,
@@ -440,6 +486,8 @@ impl Controller {
             message: None,
             holding: None,
             asking: None,
+            wind: None,
+            marks: BTreeMap::new(),
             estop_down: None,
             heard: Instant::now(),
             estop_waiting: false,
@@ -590,11 +638,13 @@ impl Controller {
         self.seek_to = None;
         self.holding = None;
         self.asking = None;
+        self.wind = None;
     }
 
     fn ask(&mut self, question: impl Into<String>, act: Act) {
         self.asking = Some(Asking { question: question.into(), act, until: Instant::now() + CONFIRM_TIME });
         self.message = None;
+        self.wind = None;
     }
 
     // ---- events ----
@@ -611,6 +661,7 @@ impl Controller {
                 self.panel_up = false;
                 self.shift = false;
                 self.holding = None;
+                self.wind = None;
                 self.estop_down = None;
             }
             Event::Status(status) => {
@@ -652,6 +703,9 @@ impl Controller {
                 self.holding = None;
                 self.estop_down = None;
                 self.shift = false;
+                if self.wind.take().is_some_and(|w| w.started) {
+                    self.refuse("The panel stopped answering. Winding stopped");
+                }
                 if counting {
                     self.refuse("The panel stopped answering during the hold. Nothing was done");
                 }
@@ -718,6 +772,8 @@ impl Controller {
         if self.project.camera(&self.camera).is_none() {
             self.camera = self.project.first().id.clone();
         }
+        let project = &self.project;
+        self.marks.retain(|camera, _| project.camera(camera).is_some());
     }
 
     fn take_status(&mut self, status: Status) {
@@ -725,6 +781,11 @@ impl Controller {
             self.record_axes = status.record.axes.clone();
         }
         let want = status.song.as_ref().map(|s| (s.id.clone(), s.edit_counter));
+        // A mark is half of an edit: without the lease it cannot be finished from here.
+        if !status.you_hold_lease && !self.marks.is_empty() {
+            self.marks.clear();
+            self.say("The panel no longer holds the edit lease: the marks are dropped. Their presets are kept");
+        }
         self.status = Some(status);
         let have = self.song.as_ref().map(|w| (w.song.id.clone(), w.edit_counter));
         if want != have {
@@ -760,6 +821,7 @@ impl Controller {
         if !same_song {
             self.undo.clear();
             self.redo.clear();
+            self.marks.clear();
             self.clip = None;
             self.media_clip = None;
             self.song = next;
@@ -853,6 +915,7 @@ impl Controller {
         self.estop_down = can_hold.then(|| (Instant::now(), latched, false));
         self.holding = None;
         self.asking = None;
+        self.wind = None;
         if latched && !can_hold {
             self.say("E-Stop is latched. Hold E-Stop to reset it");
         }
@@ -876,7 +939,7 @@ impl Controller {
     }
 
     fn hand_mode(&self) -> bool {
-        matches!(self.mode, Mode::Camera | Mode::Presets | Mode::Record) && self.asking.is_none()
+        matches!(self.mode, Mode::Camera | Mode::Presets | Mode::Record | Mode::Program) && self.asking.is_none()
     }
 
     fn button_down(&mut self, role: Role) {
@@ -884,6 +947,12 @@ impl Controller {
         if !self.server_up && !matches!(face.act, Act::Mode(_)) {
             let why = self.server_error.clone();
             return self.refuse(format!("No server. {why}"));
+        }
+        if let Act::Wind(dir) = face.act {
+            let now = Instant::now();
+            self.wind =
+                Some(Wind { role, dir, by_frame: self.shift, since: now, started: false, stepped: now, at: 0.0, sent: -1 });
+            return;
         }
         match face.hold.clone() {
             Some((need, text)) => {
@@ -903,6 +972,14 @@ impl Controller {
     }
 
     fn button_up(&mut self, role: Role) {
+        if self.wind.as_ref().is_some_and(|w| w.role == role) {
+            if let Some(w) = self.wind.take() {
+                if !w.started {
+                    self.jump_by(w.dir, w.by_frame);
+                }
+            }
+            return;
+        }
         if self.holding.as_ref().is_some_and(|h| h.role == role) {
             if let Some(h) = self.holding.take() {
                 if !h.fired {
@@ -918,6 +995,8 @@ impl Controller {
             Role::Go => self.go_face(),
             Role::Key(n) => self.soft_keys().into_iter().nth(n.checked_sub(1)? as usize)?,
             Role::Mode(mode) => {
+                // Program has no button of its own on the PTZ Pro: Shift and Presets.
+                let mode = if mode == Mode::Presets && self.shift && !self.program_has_a_button() { Mode::Program } else { mode };
                 let f = Face::new("", mode.name(), Act::Mode(mode));
                 if mode == self.mode {
                     f.on(Color::Blue)
@@ -937,13 +1016,27 @@ impl Controller {
         let index = if self.shift { CAMERA_KEYS as usize + n as usize - 1 } else { n as usize - 1 };
         let Some(cam) = self.project.cameras.get(index) else { return Face::dark() };
         let (word, color) = self.camera_state(index);
-        let f = Face::new(&format!("Cam {}", index + 1), &cam.name, Act::Camera(index)).color(color);
+        let act = match self.mode {
+            Mode::Program if self.status.as_ref().is_some_and(|s| s.transport.output != Output::Rehearse) => {
+                Act::Say(ARMED_PROGRAM.into())
+            }
+            Mode::Program => Act::MarkCamera(index),
+            _ => Act::Camera(index),
+        };
+        let f = Face::new(&format!("Cam {}", index + 1), &cam.name, act).color(color);
         let f = Face { line2: word.to_string(), ..f };
-        if cam.id == self.camera {
+        if self.mode == Mode::Program && self.marks.contains_key(&cam.id) {
+            // Marked: it flashes until its second press says where the move ends.
+            f.color(Color::Amber).lit(Lit::Blink)
+        } else if cam.id == self.camera {
             f.lit(Lit::On)
         } else {
             f
         }
+    }
+
+    fn program_has_a_button(&self) -> bool {
+        self.map.hwc(Role::Mode(Mode::Program)).is_some()
     }
 
     fn pages(&self) -> usize {
@@ -1015,8 +1108,40 @@ impl Controller {
             Mode::Timeline => self.timeline_keys(&mut keys),
             Mode::Record => self.record_keys(&mut keys),
             Mode::Media => self.media_keys(&mut keys),
+            Mode::Program => self.program_keys(&mut keys),
         }
         keys
+    }
+
+    /// Program: the timeline as a tape. Back and Forward jump on a tap and wind on a hold, one key
+    /// plays and pauses, and the camera keys mark moves.
+    fn program_keys(&self, keys: &mut [Face]) {
+        let Some(s) = &self.status else { return };
+        let all = |keys: &mut [Face], why: &str| keys.iter_mut().for_each(|key| *key = Face::why(why));
+        if self.song.is_none() {
+            return all(keys, "Create or load a song first");
+        }
+        if s.transport.output != Output::Rehearse {
+            return all(keys, ARMED_PROGRAM);
+        }
+        let step = if self.shift { "1 frame".to_string() } else { format!("{JUMP_SECONDS:.0} s") };
+        let lit = if s.guidance.allows(Action::Seek) { Lit::Dim } else { Lit::Off };
+        keys[0] = Face::new("Back", &step, Act::Wind(-1)).lit(lit);
+        keys[1] = if s.transport.run == Run::Stopped {
+            self.transport_key("", "Play", Action::Play)
+        } else {
+            self.transport_key("", "Pause", Action::Stop).on(Color::Green)
+        };
+        keys[2] = Face::new("Forward", &step, Act::Wind(1)).lit(lit);
+        keys[3] = Face::new("Playhead", "To start", Act::ToStart).lit(lit);
+        keys[4] = if self.marks.is_empty() {
+            Face::why("No camera is marked. Press a camera's number to mark where it stands")
+        } else {
+            Face::new("Mark", "Cancel", Act::CancelMark).on(Color::Amber)
+        };
+        let save = Face::new("Song", "Save", Act::Save);
+        keys[5] = if s.song.as_ref().is_some_and(|song| song.dirty) { save.on(Color::Amber) } else { save.lit(Lit::Off) };
+        keys[6] = self.history_key();
     }
 
     fn history_key(&self) -> Face {
@@ -1276,7 +1401,7 @@ impl Controller {
         }
         match self.mode {
             Mode::Transport => knobs[0] = KnobFace::new("Lock to", self.lock_label(), Knob::LockSource),
-            Mode::Camera | Mode::Presets | Mode::Record => {
+            Mode::Camera | Mode::Presets | Mode::Record | Mode::Program => {
                 let pose =
                     self.status.as_ref().and_then(|s| s.cameras.get(self.camera_index())).map(|c| c.pose).unwrap_or_default();
                 knobs[0] = KnobFace::new("Focus", Axis::Focus.format(pose.focus), Knob::Focus);
@@ -1337,6 +1462,155 @@ impl Controller {
     fn seek(&mut self, frame: i64) {
         self.seek_to = Some(frame.max(0));
         self.flush_seek();
+    }
+
+    fn length(&self) -> i64 {
+        self.song.as_ref().map(|w| w.song.length_frames).unwrap_or(0).max(0)
+    }
+
+    /// A tap on Back or Forward.
+    fn jump_by(&mut self, dir: i64, by_frame: bool) {
+        let step = if by_frame { 1 } else { (JUMP_SECONDS * self.fps()).round() as i64 };
+        self.seek((self.frame() + dir * step).clamp(0, self.length()));
+    }
+
+    /// Carry a held Back or Forward on. It begins only once the panel has been heard from after
+    /// the time of a tap, so a release lost on the way does not become a wind, and it stops with
+    /// the first seek the server refuses.
+    fn wind_on(&mut self, now: Instant) {
+        let (heard, here, length, fps) = (self.heard, self.frame(), self.length(), self.fps());
+        let Some(w) = &mut self.wind else { return };
+        if !w.started {
+            if heard < w.since + TAP {
+                return;
+            }
+            w.started = true;
+            w.stepped = now;
+            w.sent = here;
+            // The first step of a wind is taken at once: a frame, or a tenth of a second of winding.
+            w.at = here as f64 + w.dir as f64 * if w.by_frame { 1.0 } else { WIND * fps * WIND_EVERY.as_secs_f64() };
+        } else {
+            let dt = now.duration_since(w.stepped);
+            if dt < WIND_EVERY {
+                return;
+            }
+            w.stepped = now;
+            let speed = if w.by_frame {
+                FRAME_STEPS_A_SECOND
+            } else if now.duration_since(w.since) >= WIND_FAST_AFTER {
+                WIND_FAST * fps
+            } else {
+                WIND * fps
+            };
+            w.at += w.dir as f64 * speed * dt.as_secs_f64().min(0.25);
+        }
+        w.at = w.at.clamp(0.0, length as f64);
+        let frame = w.at.round() as i64;
+        if frame == w.sent {
+            return;
+        }
+        w.sent = frame;
+        if !self.transport(Action::Seek, TransportRequest { frame: Some(frame), ..TransportRequest::default() }) {
+            self.wind = None;
+        }
+    }
+
+    /// What a wind in progress is doing, for the display.
+    fn winding(&self) -> Option<String> {
+        let w = self.wind.as_ref().filter(|w| w.started)?;
+        let way = if w.dir < 0 { "back" } else { "forward" };
+        Some(if w.by_frame {
+            format!("Stepping {way} frame by frame. Let go to stop")
+        } else {
+            let speed = if w.since.elapsed() >= WIND_FAST_AFTER { WIND_FAST } else { WIND };
+            format!("Winding {way} at {speed:.0} times speed. Let go to stop")
+        })
+    }
+
+    // ---- marks ----
+
+    /// A camera key in Program mode. The first press captures where the rig stands, as a preset it
+    /// has or a new one, and the key flashes. The second places the move: it leaves where the
+    /// playhead was at the first press and has arrived where it is now.
+    fn mark_camera(&mut self, index: usize) {
+        let Some(cam) = self.project.cameras.get(index) else { return };
+        let (camera, label) = (cam.id.clone(), format!("Cam {}", index + 1));
+        self.camera = camera.clone();
+        if self.selected().is_some_and(|c| c.camera != camera) {
+            self.clip = None;
+        }
+        if self.song.is_none() {
+            return self.refuse("Create or load a song first");
+        }
+        let frame = self.frame();
+        let Some(mark) = self.marks.get(&camera).cloned() else {
+            let req = CapturePreset { camera: Some(camera.clone()), name: None };
+            return match self.api.post::<_, Captured>("/presets/capture", &req) {
+                Ok(got) => {
+                    let at = self.timecode(frame);
+                    let name = got.preset.name.clone();
+                    if !self.presets.iter().any(|p| p.id == got.preset.id) {
+                        self.presets.push(got.preset.clone());
+                    }
+                    self.marks.insert(camera, Mark { preset: got.preset, frame, made_new: !got.reused, at: Instant::now() });
+                    let n = index + 1;
+                    self.say(if got.reused {
+                        format!("{label} is within range of {name}: using it. Marked at {at}. Press {n} again where it must have arrived")
+                    } else {
+                        format!("{label} marked at {at} as new {name}. Press {n} again where it must have arrived")
+                    });
+                }
+                Err(e) => self.failed(e),
+            };
+        };
+        let mut placed = None;
+        let done = self.edit(|song, project| {
+            let (song, clip) = edit::insert_marked_move(song, project, &mark.preset, mark.frame, frame)?;
+            placed = Some(clip);
+            Ok(song)
+        });
+        if !done {
+            // Refused, with the reason on the display. The mark stays for another place.
+            return;
+        }
+        self.marks.remove(&camera);
+        self.clip = placed.clone();
+        let name = &mark.preset.name;
+        let text = if frame > mark.frame {
+            let problem = placed
+                .as_deref()
+                .and_then(|id| self.problems_of(id).first().map(|p| p.message()))
+                .map(|p| format!(". PROBLEM {p}. Mark it longer, or fix it in Timeline"))
+                .unwrap_or_default();
+            format!(
+                "{label} moves to {name} from {} to {}, {}{problem}",
+                self.timecode(mark.frame),
+                self.timecode(frame),
+                seconds(frame - mark.frame, self.fps())
+            )
+        } else {
+            format!("{label}: move to {name} placed at {}. It takes its auto time", self.timecode(frame))
+        };
+        self.say(text);
+    }
+
+    /// Drop the newest mark, and the preset with it when that press stored it.
+    fn cancel_mark(&mut self) {
+        let Some(camera) = self.marks.iter().max_by_key(|(_, m)| m.at).map(|(camera, _)| camera.clone()) else {
+            return self.say("No camera is marked");
+        };
+        let Some(mark) = self.marks.remove(&camera) else { return };
+        let label = self.project.camera_index(&camera).map(|i| format!("Cam {}", i + 1)).unwrap_or_default();
+        if !mark.made_new {
+            return self.say(format!("{label} is no longer marked. {} is kept", mark.preset.name));
+        }
+        match self.api.delete::<Vec<Preset>>(&format!("/presets/{}", mark.preset.id)) {
+            Ok(list) => {
+                self.presets = list;
+                self.say(format!("{label} is no longer marked. {} is removed", mark.preset.name));
+            }
+            Err(e) => self.failed(e),
+        }
     }
 
     fn turned(&mut self, index: u8, n: i32) {
@@ -1531,6 +1805,7 @@ impl Controller {
     fn set_mode(&mut self, mode: Mode) {
         self.asking = None;
         self.holding = None;
+        self.wind = None;
         self.song_list = false;
         self.page = 0;
         self.mode = mode;
@@ -1700,6 +1975,9 @@ impl Controller {
                 }
             }
             Act::ToggleAxis(axis) => self.toggle_axis(axis),
+            Act::Wind(dir) => self.jump_by(dir, self.shift),
+            Act::MarkCamera(index) => self.mark_camera(index),
+            Act::CancelMark => self.cancel_mark(),
             Act::StorePreset => {
                 let name = format!("Preset {}", self.camera_presets().len() + 1);
                 let req = StorePreset { name, pose: None, camera: Some(self.camera.clone()) };
@@ -1998,6 +2276,7 @@ impl Controller {
                 }
             }
         }
+        self.wind_on(now);
         let due = self.holding.as_ref().is_some_and(|h| !h.fired && self.heard >= h.since + h.need);
         if due {
             let act = self.holding.as_mut().map(|h| {
@@ -2035,7 +2314,10 @@ impl Controller {
 
     fn sync_hand(&mut self) {
         let enabled = self.hand_mode() && self.server_up && self.panel_up;
-        let counting = self.holding.as_ref().is_some_and(|h| !h.fired) || matches!(self.estop_down, Some((_, true, false)));
+        // A key that is down for a hold or a wind: the panel is watched closely until it is let go.
+        let counting = self.holding.as_ref().is_some_and(|h| !h.fired)
+            || matches!(self.estop_down, Some((_, true, false)))
+            || self.wind.is_some();
         self.shared.watch.store(counting, Ordering::SeqCst);
         let handed_over = {
             let mut hand = self.shared.hand();
@@ -2098,6 +2380,9 @@ impl Controller {
         }
         if let Some(a) = &self.asking {
             return a.question.clone();
+        }
+        if let Some(winding) = self.winding() {
+            return winding;
         }
         self.message.as_ref().map(|m| m.text.clone()).unwrap_or_default()
     }
@@ -2185,6 +2470,9 @@ impl Controller {
         if let Some(a) = &self.asking {
             return paged("Confirm?", &a.question, a.until - CONFIRM_TIME);
         }
+        if let (Some(winding), Some(w)) = (self.winding(), &self.wind) {
+            return paged("Wind", &winding, w.since);
+        }
         if let Some(m) = &self.message {
             return paged(if m.kind == Kind::Refused { "Refused" } else { "Note" }, &m.text, m.since);
         }
@@ -2205,6 +2493,31 @@ impl Controller {
         match self.mode {
             Mode::Show if self.song_list => ("Songs".into(), format!("{} songs. Press one to load it", self.songs.len())),
             Mode::Show | Mode::Transport => (self.mode.name().into(), s.guidance.hint.clone()),
+            Mode::Program if s.transport.output != Output::Rehearse => ("Program".into(), ARMED_PROGRAM.into()),
+            Mode::Program => {
+                let marked: Vec<String> = self
+                    .project
+                    .cameras
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, c)| {
+                        self.marks
+                            .get(&c.id)
+                            .map(|m| format!("Cam {} to {} from {}", i + 1, m.preset.name, self.timecode(m.frame)))
+                    })
+                    .collect();
+                if marked.is_empty() {
+                    (
+                        "Program".into(),
+                        "Set a camera, then press its number. Go to where it must have arrived and press it again".into(),
+                    )
+                } else {
+                    (
+                        format!("Marked {}", marked.len()),
+                        format!("{}. Press the number again where it must have arrived", marked.join(". ")),
+                    )
+                }
+            }
             Mode::Camera | Mode::Presets | Mode::Record => {
                 let index = self.camera_index();
                 let (word, _) = self.camera_state(index);
@@ -2308,7 +2621,8 @@ impl Controller {
             }
         };
         for mode in Mode::ALL {
-            let on = mode == self.mode;
+            // Without a button of its own, Program lights the Presets button it shares.
+            let on = mode == self.mode || (mode == Mode::Presets && self.mode == Mode::Program && !self.program_has_a_button());
             light(&mut cells, Role::Mode(mode), if on { Lit::On } else { Lit::Dim }, if on { Color::Blue } else { Color::White });
         }
         light(&mut cells, Role::Shift, if self.shift { Lit::On } else { Lit::Dim }, Color::White);

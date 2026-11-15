@@ -16,11 +16,14 @@ pub enum Mode {
     Timeline,
     Record,
     Media,
+    /// Marking moves while the timeline plays or is wound. The PTZ Pro has no button left for it:
+    /// there it is Shift and Presets. A map may give it one.
+    Program,
 }
 
 impl Mode {
-    pub const ALL: [Mode; 7] =
-        [Mode::Show, Mode::Transport, Mode::Camera, Mode::Presets, Mode::Timeline, Mode::Record, Mode::Media];
+    pub const ALL: [Mode; 8] =
+        [Mode::Show, Mode::Transport, Mode::Camera, Mode::Presets, Mode::Timeline, Mode::Record, Mode::Media, Mode::Program];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -31,6 +34,7 @@ impl Mode {
             Mode::Timeline => "Timeline",
             Mode::Record => "Record",
             Mode::Media => "Media",
+            Mode::Program => "Program",
         }
     }
 
@@ -43,6 +47,7 @@ impl Mode {
             Mode::Timeline => "mode_timeline",
             Mode::Record => "mode_record",
             Mode::Media => "mode_media",
+            Mode::Program => "mode_program",
         }
     }
 }
@@ -145,6 +150,7 @@ impl Role {
             Role::Go => "Primary action: Rehearse, Play Live, Stop and so on".into(),
             Role::Shift => "Shift".into(),
             Role::Key(n) => format!("Soft key {n}"),
+            Role::Mode(Mode::Program) => "Mode: Program. Without a button: Shift and Presets".into(),
             Role::Mode(m) => format!("Mode: {}", m.name()),
             Role::Cam(n) => format!("Select camera {n}"),
             Role::PageUp => "Previous page of a list".into(),
@@ -184,7 +190,15 @@ impl Role {
 
     /// The show cannot be run from the panel without it.
     pub fn required(self) -> bool {
-        !matches!(self, Role::ZoomRocker | Role::Cam(_) | Role::KeyDisplay(_) | Role::GoDisplay | Role::EstopDisplay)
+        !matches!(
+            self,
+            Role::ZoomRocker
+                | Role::Cam(_)
+                | Role::KeyDisplay(_)
+                | Role::GoDisplay
+                | Role::EstopDisplay
+                | Role::Mode(Mode::Program)
+        )
     }
 
     /// The role that holds this button's display when the button has none of its own.
@@ -228,8 +242,8 @@ impl PanelMap {
         }
         roles.insert(Role::Go, 13);
         roles.insert(Role::Estop, 56);
-        // EXP, WB, Color, Image, U1, U2, U3 are the modes; U4 is Shift.
-        for (i, mode) in Mode::ALL.into_iter().enumerate() {
+        // EXP, WB, Color, Image, U1, U2, U3 are the modes; U4 is Shift. Program is Shift and Presets.
+        for (i, mode) in Mode::ALL.into_iter().filter(|m| *m != Mode::Program).enumerate() {
             roles.insert(Role::Mode(mode), 27 + i as u32);
         }
         roles.insert(Role::Shift, 34);
