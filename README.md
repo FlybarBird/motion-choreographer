@@ -24,13 +24,17 @@ panel hold the edit lease and run the show, without a mouse or a keyboard. See
 Until hardware is configured the server drives a built-in simulator rig, so
 everything can be programmed and rehearsed with nothing plugged in.
 
-Two longer documents go with this one:
+Three documents go with this one:
 
+- **[PTZ Pro: setup and programming](docs/ptz-pro.md)**: put a SKAARHOJ PTZ Pro
+  on the show and program songs from it. Start here if that is the panel you
+  use.
 - **[Setup Guide](docs/setup-guide.md)**: from a new machine to a system that is
   ready to program, including bringing up each real rig and a checklist for
   the first show.
 - **[Programming Manual](docs/programming-manual.md)**: how to build, shape,
-  rehearse and play a show, with a first-song walkthrough and a reference.
+  rehearse and play a show in the app, with a first-song walkthrough and a
+  reference.
 
 ## Run it
 
@@ -579,6 +583,7 @@ from the panel alone.
 **This has been tested against a stand-in panel and SKAARHOJ's published
 protocol and PTZ Pro layout. It has not yet been run on a real PTZ Pro.** Try
 it first with the rigs disarmed, following the check list in the
+[PTZ Pro manual](docs/ptz-pro.md). The connection itself is also in the
 [Setup Guide](docs/setup-guide.md#a-skaarhoj-panel-as-a-station).
 
 Put the panel in Raw Panel mode and give it a fixed address. Then either let

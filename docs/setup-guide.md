@@ -3,8 +3,9 @@
 This guide takes a new installation from nothing to a system that is ready to
 program: software installed, the show server running, the project describing
 your cameras, lenses and venue, sound and timecode connected, and each real rig
-measured and proven safe. Programming itself is covered in the
-[Programming Manual](programming-manual.md).
+measured and proven safe. Programming in the app is the
+[Programming Manual](programming-manual.md). Programming from a SKAARHOJ PTZ Pro,
+including how to connect it, is [PTZ Pro: setup and programming](ptz-pro.md).
 
 Do the parts in order. Parts 1 to 6 need no hardware at all; everything can be
 set up and rehearsed on the built-in simulator, and you can stop there until the
@@ -689,8 +690,9 @@ The sound comes out of the server machine, not the stations.
 
 A SKAARHOJ PTZ Pro can be an operator station. It talks SKAARHOJ's Raw Panel
 protocol to a small program, `ptz-panel`, which holds the edit lease under the
-name **Panel** and asks the server for the same things the app does. What each
-control does is in the
+name **Panel** and asks the server for the same things the app does. Connecting
+it and programming a song from it is
+[PTZ Pro: setup and programming](ptz-pro.md). Every key is also listed in the
 [Programming Manual](programming-manual.md#14-programming-from-a-panel).
 
 > **Not yet run on a real panel.** This was built and tested against a
@@ -754,9 +756,9 @@ It keeps trying for ever: a panel or a server that is not there yet is waited
 for, and one that drops is reconnected to. The terminal says when the panel
 and the server connect and when either is lost. When the panel is connected
 its CAM 9 display reads **E-STOP / Press** in red and the top left of the big
-display shows the song and the timecode. Once the panel takes the lease the app
-names *Panel* as the holder. (The app does not yet show that a panel is
-connected in any other way; the server's status and run log do.)
+display shows the song and the timecode. The **Control panel** page says whether it is connected, still being looked
+for, or what is in the way. Once the panel takes the lease the app names
+*Panel* as the holder.
 
 Stopping `ptz-panel` with Ctrl-C does not stop the show. Hand control stops,
 the lease is given back, and the panel's keys go dark with **Panel / Controller

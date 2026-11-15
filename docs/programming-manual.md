@@ -4,7 +4,9 @@ How to program a show: build songs out of camera moves, shape them, rehearse
 them, and play them live. It assumes the system has been set up as described in
 the [Setup Guide](setup-guide.md): the server is running, the cameras, lenses
 and venue are in the project, and (for a live show) each rig has been through
-bring-up.
+bring-up. If you program from a SKAARHOJ PTZ Pro, use
+[PTZ Pro: setup and programming](ptz-pro.md); chapter 14 is the key-by-key
+list.
 
 Everything in this manual up to [Going live](#12-going-live) can be done on the
 simulator with no hardware connected.
@@ -24,7 +26,7 @@ simulator with no hardware connected.
 | [11. Save, Commit and revisions](#11-save-commit-and-revisions) | Keeping your work, and what can be armed |
 | [12. Going live](#12-going-live) | Arm, Play Live, faults, E-Stop |
 | [13. A show day](#13-a-show-day) | The routine |
-| [14. Programming from a panel](#14-programming-from-a-panel) | The same work on a SKAARHOJ PTZ Pro, with no mouse or keyboard |
+| [14. Programming from a panel](#14-programming-from-a-panel) | The same work on a SKAARHOJ PTZ Pro. Setup and a song from nothing are in the [PTZ Pro manual](ptz-pro.md) |
 | [15. Reference](#15-reference) | Shortcuts, chips, messages, glossary |
 
 ---
@@ -621,9 +623,11 @@ costs more.
 
 A SKAARHOJ PTZ Pro can do the work of chapters 3 to 13: start a song, make
 presets, place and time moves, save and commit, rehearse, record a pass, arm
-and play live. Setting it up is in the
-[Setup Guide](setup-guide.md#a-skaarhoj-panel-as-a-station). The base setup
-(cameras, lenses, the rig, audio, importing media) stays in the app.
+and play live. Connecting the panel, and programming a song on it from
+nothing, is a manual of its own:
+[PTZ Pro: setup and programming](ptz-pro.md). The base setup (cameras, lenses,
+the rig, audio, importing media) stays in the app, and is in the
+[Setup Guide](setup-guide.md#a-skaarhoj-panel-as-a-station).
 
 The panel is a station like any other. It holds the edit lease under the name
 *Panel*, the server applies the same rules to it, and when the server refuses
