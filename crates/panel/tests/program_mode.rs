@@ -255,9 +255,15 @@ fn a_camera_is_marked_where_it_stands_and_its_second_press_places_the_move() {
     b.wait_said_start("Cam 2 marked at 01:00:20:00 as new Preset 1");
     b.wait("both keys to flash", || b.panel.lit(CAM1) == Lit::Blink && b.panel.lit(CAM2) == Lit::Blink);
     b.wait("the display to count the marks", || b.status().panel.is_some_and(|p| p.camera == "cam2"));
+    // The second press with Shift still down from stepping by frames is the same camera's.
     tap(&b, K3, 625);
-    b.press(CAM2);
-    b.wait_said("Cam 2 moves to Preset 1 from 01:00:20:00 to 01:00:25:00, 5.00 s");
+    b.shift(|| {
+        tap(&b, K1, 624);
+        tap(&b, K3, 625);
+        assert_eq!(b.panel.lit(CAM2), Lit::Blink, "the number keys stay the cameras' while Shift is held");
+        b.press(CAM2);
+        b.wait_said("Cam 2 moves to Preset 1 from 01:00:20:00 to 01:00:25:00, 5.00 s");
+    });
     assert_eq!((b.panel.lit(CAM1), b.panel.lit(CAM2)), (Lit::Blink, Lit::On));
     tap(&b, K3, 750);
     b.press(CAM1);

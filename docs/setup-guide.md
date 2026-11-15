@@ -295,7 +295,7 @@ The pages are listed down the left side, in three groups:
 
 | Group | Pages |
 | --- | --- |
-| The show | Cameras, Frame rate and faults, Stage model |
+| The show | Cameras, Frame rate and faults, Stage model, Programming |
 | The selected camera | Rig connection, Lens, Position on the stage, Rig limits, Keep-out rules |
 | The server | Audio output, Timecode inputs, Control panel |
 
@@ -806,6 +806,14 @@ what differs from the PTZ Pro layout:
 PTZ Pro layout is used. A file that cannot be read stops the program with the
 reason, rather than running a panel with the wrong map.
 
+**Program mode's preset range.** In Program mode (U4 and Image) a camera's
+number stores where its rig stands, or uses a preset that camera already has
+when the pose is near enough to one. How near is set in Show settings on the
+**Programming** page: a range for each of pan, tilt, zoom, focus and
+elevation, and a box to switch the looking-up off. It is saved with the show.
+The [Programming Manual](programming-manual.md#program-marking-moves-against-the-song)
+has the whole of Program mode.
+
 **Without a panel.** `ptz-panel fake` is a stand-in PTZ Pro in a terminal. It
 prints what each display shows and takes typed commands (`press 6`,
 `hold 9 1.2`, `joy 1 400`, `turn 5 -3`). Start it, then point the server or
@@ -869,6 +877,13 @@ to see what the server sees.
       it a second and a half: it resets.
 - [ ] Transport mode: tap **Arm**: nothing happens and the display says to
       hold. Hold it one second: the simulator arms. **Disarm**.
+- [ ] Hold U4 and press Image: the soft keys read **Back**, **Play**,
+      **Forward**. A tap on Forward moves the playhead five seconds; holding
+      it winds, and it stops the moment you let go. Pull the panel's cable
+      while holding it: the playhead stops within about half a second.
+- [ ] Still in Program, press P1: its key flashes amber and the app's preset
+      list has a new preset. Tap Forward, press P1 again: a move appears on
+      camera 1's lane in the app. **Undo**.
 - [ ] Push the joystick and pull the panel's network cable: the camera in the
       app's monitor stops within about half a second. Plug it back in: the displays
       return and nothing moves until the stick has been let go and pushed

@@ -636,15 +636,16 @@ something the panel shows the server's reason, word for word.
 | On the PTZ Pro | Does |
 | --- | --- |
 | **EXP, WB, Color, Image, U1, U2, U3** | The mode: Show, Transport, Camera, Presets, Timeline, Record, Media. The lit one is where you are. |
+| **U4 and Image** | The eighth mode, **Program**. Image stays lit while you are in it. |
 | **CAM 1 to CAM 7** | Soft keys. Each one's display says what it does now, in this mode. |
 | **CAM 8** | The main transport button: the same next step as the app's main button (Rehearse, Play to code, Play Live, Stop, Reset E-Stop), in every mode. |
 | **CAM 9** | **E-Stop**, in every mode. |
 | **U4** | Shift. Hold it for the second set of soft keys, and for bigger steps on the knobs. |
-| **P1 to P10** | Select camera 1 to 10. Cameras 11 and 12 are on the second page of Camera mode. |
+| **P1 to P10** | Select camera 1 to 10. Cameras 11 and 12 are on the second page of Camera mode. In Program they mark moves instead. |
 | **UP, DWN** | The previous and next page of a list (songs, cameras, presets, media). |
 | **Focus knob** | The playhead: one frame a click. Turn it fast and it covers more; with Shift a click is one second. |
 | **Menu 1 to Menu 4 knobs** | Four values for the mode, named on the display above each. |
-| **Joystick** | Hand control of the selected camera, in Camera, Presets and Record. Left and right pan, up and down tilt, twist zooms. |
+| **Joystick** | Hand control of the selected camera, in Camera, Presets, Record and Program. Left and right pan, up and down tilt, twist zooms. |
 | **Big display, top left** | The song (with `*` when unsaved), timecode and transport state, then in turn: mode and camera, who holds the lease, saved or committed, problems, lock. |
 | **Big display, top right** | Messages: what was just done, why something was refused, what a hold will do, a question waiting for Confirm. A long message is shown a page at a time, in full. |
 
@@ -742,6 +743,95 @@ Put the playhead where the move should begin (Focus knob), then press the
 preset. UP and DWN page through more than five presets. The joystick and the
 Camera knobs work here too.
 
+### Program: marking moves against the song
+
+Program is for getting a song down quickly when the framings are set on
+another controller: the FR7's own remote, a PTZ controller, the AutoPod+'s
+panel. The PTZ Pro runs the timeline like a tape, and each camera's number
+says *this is where it stands* and then *this is when it must be there*.
+Enter it with **U4 and Image**.
+
+| Key | Tap | Hold |
+| --- | --- | --- |
+| CAM 1 **Back** | Five seconds back | Winds back: 8 times speed, 24 times after three seconds |
+| CAM 2 **Play** or **Pause** | Plays from the playhead; pauses and leaves the playhead where it is | |
+| CAM 3 **Forward** | Five seconds forward | Winds forward |
+| CAM 4 **To start** | The playhead to the start of the song | |
+| CAM 5 **Cancel** | Takes back the newest mark | |
+| CAM 6 **Save** | Saves the song (amber when there are unsaved changes) | |
+| CAM 7 **Undo** | Undo; with U4, **Redo** | |
+
+With **U4** held, a tap on Back or Forward is **one frame** and a hold steps
+**frame by frame**, about ten a second. The keys' displays say *5 s* or
+*1 frame*. A key let go within a third of a second is a tap. The Focus knob
+moves the playhead here too, as everywhere.
+
+Winding stops when you let go, at either end of the song, and if the panel or
+its cable is lost. It is refused while the show is locked to timecode
+(*Unlock to cue*).
+
+**Marking a move** takes two presses of the camera's number, **P1 to P10**:
+
+1. Put the playhead where the camera should **leave** for its next framing,
+   and pause.
+2. Set the framing on the camera's own controller: pan, tilt, zoom, focus and
+   the AutoPod+'s height.
+3. Press the camera's number. The server reads where the rig stands and
+   stores it as *Preset N*, or uses a preset that camera already has when the
+   pose is within range of one (below). The key **flashes amber** and the
+   display says which preset it is and the time of the mark.
+4. Play, wind or step to where the camera must **have arrived**, and press
+   the same number again. The move is placed on that camera's lane: it leaves
+   at the first press and arrives at the second, eased in and out. The key
+   stops flashing and the display gives both times and the length.
+
+The number may be pressed with U4 still held from stepping by frames. Only in
+a show with eleven or twelve cameras does U4 change the key: P1 and P2 are
+then cameras 11 and 12, as everywhere.
+
+Several cameras can be marked at once, each finished at its own time: mark
+three while paused, play, and press each number on its beat. A second press
+at the mark's own time, or before it, places the move at the playhead with
+its auto time, as the Presets mode does.
+
+If the two presses are closer together than the rig can travel, the move is
+still placed and the display says **PROBLEM** with the reason; mark it longer
+(Undo, then again), or fix it in Timeline. If the move cannot be placed at
+all, because another clip of that camera is in the way, it is refused with
+the reason and the key goes on flashing: go somewhere else and press again,
+or **Cancel**.
+
+**Cancel** (CAM 5) takes back the newest mark. A preset that the mark stored
+is removed with it; a preset that was already there is kept. Marks are also
+dropped when another song is loaded and when the panel loses the lease; the
+presets they stored stay.
+
+**A preset within range.** So that twenty presses on nearly the same framing
+do not make twenty presets, the first press looks for a preset of that camera
+within a small range on every axis and uses the nearest. The ranges, and
+whether to look at all, are in Show settings on the **Programming** page: out
+of the box one degree of pan and tilt, 2 % of zoom, 5 % of focus and 10 mm of
+height. When a preset is used again the display says so (*Cam 2 is within
+range of Wide: using it*), and the move goes to the stored preset, not to the
+slightly different place the camera stood.
+
+Program works only while the show is **disarmed**. Armed, moving the playhead
+moves the rig, so every Program key is dark and says *Disarm to program*.
+Disarmed, playing and winding move no real rig: the camera stays where its
+controller left it, which is what the next press reads. A real rig must be
+connected (Show settings, **Rig connection**) for its pose to be read; if it
+is not answering, the press is refused with *The rig's pose is not known*.
+
+On the simulator there is no other controller: set the framing with the
+PTZ Pro's joystick and the Menu 1 to Menu 3 knobs (Focus, Elevation, Top
+speed), which work in Program as they do in Camera. The simulator shows the
+camera where the song has it whenever the playhead moves, so set the framing
+after the playhead is where you want the mark.
+
+> Reading a real rig while another controller moves it has been tested
+> against the FR7 and AutoPod+ protocol stand-ins, not yet with two real
+> controllers on one real FR7.
+
 ### Timeline: shaping what is there
 
 | Key | Does | With Shift |
@@ -762,7 +852,7 @@ Camera knobs work here too.
 
 A move that would break a rule is refused with the reason, as in the app, and
 problems are counted on the status display. Undo is one key away in Presets,
-Timeline, Record and Media, and goes back through the changes made from the
+Program, Timeline, Record and Media, and goes back through the changes made from the
 panel since the song was loaded, up to two hundred of them.
 
 ### Transport
@@ -814,6 +904,10 @@ file's own timecode, or unlocks.
    **Play Live** on the cue. **Stop**, then **Disarm**.
 
 If anything looks wrong: CAM 9.
+
+With the framings set on another controller, steps 2 and 3 become Program
+mode: U4 and Image, then for each move pause, set the camera, press its
+number, go to where it must have arrived, and press its number again.
 
 ### Not on the panel
 

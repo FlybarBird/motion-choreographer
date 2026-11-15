@@ -1013,7 +1013,11 @@ impl Controller {
 
     fn camera_key(&self, n: u8) -> Face {
         // Shift reaches cameras past the last key: 11 and 12 on the first two.
-        let index = if self.shift { CAMERA_KEYS as usize + n as usize - 1 } else { n as usize - 1 };
+        let (plain, shifted) = (n as usize - 1, CAMERA_KEYS as usize + n as usize - 1);
+        // In Program Shift is also held to step by frames, and the number pressed then is still
+        // that camera's, unless the show has a camera for the key to reach with Shift.
+        let stays = self.mode == Mode::Program && shifted >= self.project.cameras.len();
+        let index = if self.shift && !stays { shifted } else { plain };
         let Some(cam) = self.project.cameras.get(index) else { return Face::dark() };
         let (word, color) = self.camera_state(index);
         let act = match self.mode {
