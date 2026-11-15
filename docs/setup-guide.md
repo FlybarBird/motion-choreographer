@@ -304,9 +304,16 @@ disarmed. Otherwise the page says why, and they can only be read.
 
 ### Frame rate
 
-On the **Frame rate and faults** page, choose the **Frame rate**: 23.976, 24, 25, 29.97 drop-frame
-or 30. Set it once, before programming; it must match the timecode the show
-will be locked to. Code arriving at another rate is refused.
+On the **Frame rate and faults** page, choose the **Frame rate**: 23.976, 24, 25, 29.97,
+29.97 drop-frame (shown as 29.97df) or 30. Set it once, before programming; it
+must match the timecode the show will be locked to. Code arriving at another
+rate is refused.
+
+29.97 is non-drop: thirty numbers every second and none skipped, written with
+colons, so an hour of code lasts 3.6 seconds longer than an hour on the clock.
+Timecode itself cannot tell 29.97 non-drop from 30, or 23.976 from 24: the
+project's rate decides. Choose the one the source really runs at, or audio and
+moves drift from the code by a frame every 33 seconds.
 
 ### Cameras
 

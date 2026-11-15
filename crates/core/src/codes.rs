@@ -21,7 +21,7 @@ impl CodeRate {
             FrameRate::F23976 | FrameRate::F24 => CodeRate::F24,
             FrameRate::F25 => CodeRate::F25,
             FrameRate::F2997Df => CodeRate::F30Df,
-            FrameRate::F30 => CodeRate::F30,
+            FrameRate::F2997 | FrameRate::F30 => CodeRate::F30,
         }
     }
 
@@ -219,6 +219,7 @@ mod tests {
         for (rate, wire) in [
             (FrameRate::F25, CodeRate::F25),
             (FrameRate::F2997Df, CodeRate::F30Df),
+            (FrameRate::F2997, CodeRate::F30),
             (FrameRate::F30, CodeRate::F30),
             (FrameRate::F24, CodeRate::F24),
         ] {
@@ -280,6 +281,7 @@ mod tests {
             (FrameRate::F24, CodeRate::F24),
             (FrameRate::F25, CodeRate::F25),
             (FrameRate::F2997Df, CodeRate::F30Df),
+            (FrameRate::F2997, CodeRate::F30),
             (FrameRate::F30, CodeRate::F30),
         ] {
             let tc = Timecode::parse_at("01:00:10:07", rate).unwrap();
@@ -307,6 +309,9 @@ mod tests {
         assert!(CodeRate::F24.matches(FrameRate::F23976));
         assert!(CodeRate::F24.matches(FrameRate::F24));
         assert!(!CodeRate::F30.matches(FrameRate::F2997Df));
+        // 29.97 non-drop is thirty numbers a second on the wire: only the project rate tells it from 30.
+        assert!(CodeRate::F30.matches(FrameRate::F2997));
+        assert!(!CodeRate::F30Df.matches(FrameRate::F2997));
         assert!(CodeRate::F30Df.matches(FrameRate::F2997Df));
         assert!(!CodeRate::F25.matches(FrameRate::F30));
     }

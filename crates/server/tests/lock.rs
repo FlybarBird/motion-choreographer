@@ -283,6 +283,15 @@ fn code_at_another_rate_is_refused_with_the_reason() {
     lock_to(&api, "artnet").unwrap();
     let st = wait_for(&api, |s| s.lock.problem.is_some());
     assert!(st.lock.problem.as_deref().unwrap().contains("carries 30 fps code and the project is 29.97df fps"));
+
+    // 29.97 non-drop counts as 30 does, so the same code is taken: the project's rate says how long a frame is.
+    project.rate = FrameRate::F2997;
+    api.put_project(&project).unwrap();
+    lock_to(&api, "artnet").unwrap();
+    let st = wait_for(&api, |s| s.lock.chase == ChaseState::Locked);
+    assert_eq!(st.lock.problem, None);
+    assert_eq!(st.lock.announced_rate.as_deref(), Some("30"));
+    assert!(st.lock.last_code.as_deref().unwrap().contains(':'), "{:?}", st.lock.last_code);
     drop(desk);
 }
 

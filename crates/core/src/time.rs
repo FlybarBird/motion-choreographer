@@ -11,12 +11,15 @@ pub enum FrameRate {
     F23976,
     F24,
     F25,
+    /// 29.97 counted without dropping: thirty numbers a second, so the code runs slow of the clock.
+    F2997,
     F2997Df,
     F30,
 }
 
 impl FrameRate {
-    pub const ALL: [FrameRate; 5] = [FrameRate::F23976, FrameRate::F24, FrameRate::F25, FrameRate::F2997Df, FrameRate::F30];
+    pub const ALL: [FrameRate; 6] =
+        [FrameRate::F23976, FrameRate::F24, FrameRate::F25, FrameRate::F2997, FrameRate::F2997Df, FrameRate::F30];
 
     /// Real frames per second as a fraction `num / den`.
     pub fn num(self) -> i64 {
@@ -24,14 +27,14 @@ impl FrameRate {
             FrameRate::F23976 => 24000,
             FrameRate::F24 => 24,
             FrameRate::F25 => 25,
-            FrameRate::F2997Df => 30000,
+            FrameRate::F2997 | FrameRate::F2997Df => 30000,
             FrameRate::F30 => 30,
         }
     }
 
     pub fn den(self) -> i64 {
         match self {
-            FrameRate::F23976 | FrameRate::F2997Df => 1001,
+            FrameRate::F23976 | FrameRate::F2997 | FrameRate::F2997Df => 1001,
             _ => 1,
         }
     }
@@ -41,7 +44,7 @@ impl FrameRate {
         match self {
             FrameRate::F23976 | FrameRate::F24 => 24,
             FrameRate::F25 => 25,
-            FrameRate::F2997Df | FrameRate::F30 => 30,
+            FrameRate::F2997 | FrameRate::F2997Df | FrameRate::F30 => 30,
         }
     }
 
@@ -58,6 +61,7 @@ impl FrameRate {
             FrameRate::F23976 => "23.976",
             FrameRate::F24 => "24",
             FrameRate::F25 => "25",
+            FrameRate::F2997 => "29.97",
             FrameRate::F2997Df => "29.97df",
             FrameRate::F30 => "30",
         }
@@ -298,6 +302,25 @@ mod tests {
             }
             assert_eq!(Timecode::from_frames(day, rate), Timecode::from_frames(0, rate));
         }
+    }
+
+    #[test]
+    fn non_drop_29_97_counts_every_number_and_runs_slow_of_the_clock() {
+        let r = FrameRate::F2997;
+        assert_eq!(FrameRate::parse("29.97"), Some(r));
+        assert!(!r.drop_frame());
+        // No number is skipped at the minute, and the label has colons.
+        let last = Timecode::parse_at("00:00:59:29", r).unwrap();
+        assert_eq!(Timecode::from_frames(last.to_frames(r) + 1, r).to_string(), "00:01:00:00");
+        assert_eq!(Timecode::parse_at("01:00:00:00", r).unwrap().to_frames(r), 108_000);
+        assert!(Timecode::parse_at("00:01:00;00", r).is_some_and(|tc| !tc.drop_frame), "the rate decides, not the separator");
+        // The frames are 1001/30000 s long: an hour of the clock is 3.6 s short of an hour of code.
+        let hour = r.seconds_to_frames(3600.0).floor() as i64;
+        assert_eq!(Timecode::from_frames(hour, r).to_string(), "00:59:56:12");
+        assert_eq!(frame_to_sample(30_000, 48_000, r), 48_048_000);
+        // The drop-frame rate has the same frames and other numbers for them.
+        assert_eq!(r.fps(), FrameRate::F2997Df.fps());
+        assert_eq!(Timecode::from_frames(hour, FrameRate::F2997Df).to_string(), "01:00:00;00");
     }
 
     #[test]

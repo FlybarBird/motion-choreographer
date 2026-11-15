@@ -491,6 +491,7 @@ mod tests {
             (FrameRate::F24, CodeRate::F24),
             (FrameRate::F25, CodeRate::F25),
             (FrameRate::F2997Df, CodeRate::F30Df),
+            (FrameRate::F2997, CodeRate::F30),
             (FrameRate::F30, CodeRate::F30),
         ] {
             let sr = 48_000u32;
