@@ -173,6 +173,33 @@ pub struct Status {
     pub lock: LockStatus,
     pub record: RecordStatus,
     pub telemetry: Telemetry,
+    /// The hardware panel controlling the show, while one is reporting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub panel: Option<PanelState>,
+}
+
+/// What a hardware panel controller is doing, so the app can follow it. The
+/// controller sends this about once a second; the server drops it when it stops.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+#[serde(default)]
+pub struct PanelState {
+    /// The station name the controller takes the edit lease under.
+    pub station: String,
+    /// The controller has a connection to the panel itself.
+    pub connected: bool,
+    /// The panel's model id and the name its owner gave it, as the panel reports them.
+    pub model: String,
+    pub name: String,
+    /// The mode the panel is in, as its display names it: Show, Transport, Camera, ...
+    pub mode: String,
+    /// The camera the panel selects and drives.
+    pub camera: String,
+    /// Ids of the motion and media clips selected on the panel.
+    pub clips: Vec<String>,
+    /// Ids of the markers selected on the panel.
+    pub markers: Vec<String>,
+    /// The message on the panel's main display, empty when there is none.
+    pub message: String,
 }
 
 impl Status {

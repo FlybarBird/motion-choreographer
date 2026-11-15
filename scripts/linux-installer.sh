@@ -10,7 +10,7 @@ ARCH="@ARCH@"
 PREFIX="${HOME}/.local"
 SERVER=ask
 ACTION=install
-TOOLS="ptz-server ptz-probe ptz-bringup"
+TOOLS="ptz-server ptz-probe ptz-bringup ptz-panel"
 
 say() { printf '==> %s\n' "$*"; }
 fail() {
@@ -27,6 +27,7 @@ PTZ Programmer $VERSION: installs the desktop app, and the show server if you wa
   sh $(basename "$0") --uninstall [--with-server] [--prefix DIR]
 
   --with-server   install the show server and its tools too, without asking
+                  (ptz-server, ptz-probe, ptz-bringup, ptz-panel)
   --no-server     install the app only: for a station that connects to a server elsewhere
   --prefix DIR    install under DIR instead of ~/.local
   --uninstall     remove the app; with --with-server, the server and tools as well
@@ -35,7 +36,7 @@ The show data (~/PTZProgrammer) and the app's settings are never touched.
 HELP
   else
     cat <<HELP
-PTZ Programmer $VERSION: installs the show server and its tools (ptz-server, ptz-probe, ptz-bringup).
+PTZ Programmer $VERSION: installs the show server and its tools (ptz-server, ptz-probe, ptz-bringup, ptz-panel).
 
   sh $(basename "$0") [--prefix DIR]
   sh $(basename "$0") --uninstall [--prefix DIR]
@@ -180,7 +181,7 @@ if [ "$SERVER" = yes ]; then
     put server "$WORK/server/bin/$tool" "$BIN/$tool"
   done
   mv -f "$SHARE/installed-server.txt.new" "$SHARE/installed-server.txt"
-  say "Installed the show server and tools: $BIN/ptz-server, ptz-probe, ptz-bringup"
+  say "Installed the show server and tools: $BIN/ptz-server, ptz-probe, ptz-bringup, ptz-panel"
   if ! "$BIN/ptz-server" --version >/dev/null 2>&1; then
     missing="$(missing_libraries "$BIN/ptz-server")"
     say "ptz-server does not start on this computer.${missing:+ It needs libraries that are missing: $missing}"
@@ -198,6 +199,7 @@ esac
 printf '\nNext:\n'
 if [ "$SERVER" = yes ]; then
   printf '  ptz-server      start the show server (data in ~/PTZProgrammer, simulator rig to begin with)\n'
+  printf '  ptz-panel       run the show from a SKAARHOJ panel: ptz-panel --panel <panel address>\n'
 fi
 if [ "$KIND" = app ]; then
   printf '  ptz-app         open the app, or choose PTZ Programmer in your applications menu\n'

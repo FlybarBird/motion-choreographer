@@ -19,7 +19,7 @@ rig arrives.
 | [5. The venue: stage model and camera positions](#5-the-venue-stage-model-and-camera-positions) | Monitors that show what each camera will frame |
 | [6. Sound and timecode](#6-sound-and-timecode) | Audio out, LTC out, and what Lock listens to |
 | [7. The real rig](#7-the-real-rig) | Each FR7 and AutoPod+ connected, measured and limited |
-| [8. Operator stations](#8-operator-stations) | A second machine, the edit lease |
+| [8. Operator stations](#8-operator-stations) | A second machine, the edit lease, a hardware panel |
 | [9. Before the first show](#9-before-the-first-show) | The checklist |
 | [10. Looking after it](#10-looking-after-it) | Backups, updates, the run log |
 | [11. When something is wrong](#11-when-something-is-wrong) | Messages and what to do |
@@ -35,6 +35,8 @@ rig arrives.
   Silicon Mac is the installed target; Linux also works when built from source.
 - **An operator station.** It runs the app. It can be the same machine as the
   server, which is the simplest arrangement, or another machine on the network.
+- **Optionally, a SKAARHOJ PTZ Pro panel**, to run the show from hardware
+  controls. See [A SKAARHOJ panel as a station](#a-skaarhoj-panel-as-a-station).
 
 ### For each camera position (one to twelve)
 
@@ -61,6 +63,7 @@ the live loop sends to every camera twenty times a second.
 | Preset names and pictures | server | each FR7 | TCP 80 (or the web port you set) |
 | Elevation | server | each AutoPod+ | TCP 80 |
 | Art-Net timecode, if used | timecode source | server | UDP 6454 |
+| SKAARHOJ panel, if used | server (or the machine running `ptz-panel`) | the panel | TCP 9923 |
 
 ### Sound and timecode (as your show needs)
 
@@ -136,7 +139,7 @@ connects to a server elsewhere.
   macOS will not open one on a double-click. Right-click it and choose
   **Open**, or run `sudo installer -pkg <file> -target /`.
 - The app goes to `/Applications/PTZ Programmer.app`.
-- The server and tools (`ptz-server`, `ptz-probe`, `ptz-bringup`) go to
+- The server and tools (`ptz-server`, `ptz-probe`, `ptz-bringup`, `ptz-panel`) go to
   `/usr/local/ptz-programmer/bin`. New terminal windows find them by name.
 
 **On Linux**, run the installer:
@@ -169,7 +172,7 @@ several minutes. When it finishes you have:
 
 - `~/Applications/PTZ Programmer.app`, the desktop app, with the command-line
   tools inside it;
-- `ptz-server`, `ptz-probe` and `ptz-bringup` linked into `~/.local/bin`.
+- `ptz-server`, `ptz-probe`, `ptz-bringup` and `ptz-panel` linked into `~/.local/bin`.
 
 If the installer says `~/.local/bin` is not on your PATH, run the line it
 prints, then open a new terminal.
@@ -239,6 +242,8 @@ ptz-server
 | `--list-audio` | List the audio devices and exit. |
 | `--selftest-audio` | One second of tone on the left, then the right, and exit. |
 | `--verify-log` | Check the run log and exit. |
+| `--panel <address>` | Run the show from a SKAARHOJ panel at this address as well. See [Part 8](#a-skaarhoj-panel-as-a-station). |
+| `--panel-listen <addr:port>` | The same, for an older panel that dials in: wait for it here. |
 
 The server keeps running when the app is closed, and the show keeps playing.
 To stop it, press Ctrl-C in its terminal. **Disarm first.** Stop the server
@@ -673,6 +678,191 @@ remembered.
 
 The sound comes out of the server machine, not the stations.
 
+### A SKAARHOJ panel as a station
+
+A SKAARHOJ PTZ Pro can be an operator station. It talks SKAARHOJ's Raw Panel
+protocol to a small program, `ptz-panel`, which holds the edit lease under the
+name **Panel** and asks the server for the same things the app does. What each
+control does is in the
+[Programming Manual](programming-manual.md#14-programming-from-a-panel).
+
+> **Not yet run on a real panel.** This was built and tested against a
+> stand-in panel that follows SKAARHOJ's published Raw Panel protocol and the
+> published layout of the PTZ Pro. No real PTZ Pro has been connected to it.
+> Work through [First time on a real panel](#first-time-on-a-real-panel) with
+> every rig disarmed before you rely on it.
+
+**The base setup stays in the app.** Cameras, lenses, the stage model, rig
+addresses and limits, audio and timecode inputs, and importing media are done
+in the app as in Parts 4 to 7. Everything after that can be done on the panel.
+
+**Network.** Put the panel on the show's wired network with a fixed address.
+The program connects to the panel on TCP port 9923. Nothing else should be
+driving the panel at the same time.
+
+**On the panel.** The PTZ Pro has to be in Raw Panel mode. SKAARHOJ's
+documentation describes it as follows; it has not been checked here on a
+panel:
+
+1. Open the panel's own web page and its system manager (version 1.0.6 or
+   later).
+2. On the Settings page, switch on **Raw Panel Mode**. The panel offers to
+   switch off its own Reactor program: accept. Only one of the two can drive
+   the panel.
+3. Leave the port at 9923, or note what you change it to.
+
+**Start it.** Either let the server run the panel:
+
+```sh
+ptz-server --panel 192.168.0.60
+```
+
+or run `ptz-panel` yourself, on the server machine or on any machine that can
+reach both the server and the panel:
+
+```sh
+ptz-panel --panel 192.168.0.60
+ptz-panel --panel 192.168.0.60 --server http://192.168.0.10:8787 --access-key "choose-a-key"
+```
+
+| Option | Use |
+| --- | --- |
+| `--panel <address>` | The panel. Port 9923 unless you add `:port`. |
+| `--listen <addr:port>` | Instead of `--panel`: wait here for an older panel that is set to dial in. With the server: `--panel-listen`. |
+| `--server <url>` | The show server. `http://127.0.0.1:8787` unless given. |
+| `--access-key <key>` | The server's key, or set `PTZ_ACCESS_KEY`. |
+| `--station <name>` | The name the panel holds the lease under. *Panel* unless given. |
+| `--map <file>` | The control map. `panel.json` in the folder you start it in, if there is one. |
+| `--lease-grace <seconds>` | How long a lost panel keeps the lease. 30 unless given. |
+
+It keeps trying for ever: a panel or a server that is not there yet is waited
+for, and one that drops is reconnected to. The terminal says when the panel
+and the server connect and when either is lost. When the panel is connected
+its CAM 9 display reads **E-STOP / Press** in red and the top left of the big
+display shows the song and the timecode. Once the panel takes the lease the app
+names *Panel* as the holder. (The app does not yet show that a panel is
+connected in any other way; the server's status and run log do.)
+
+Stopping `ptz-panel` with Ctrl-C does not stop the show. Hand control stops,
+the lease is given back, and the panel's keys go dark with **Panel / Controller
+stopped** on the big display, so that the panel is not left showing a show
+nobody is behind. If the program is killed outright instead, the server stops
+the hand-driven camera a quarter of a second later, the lease frees itself
+after ten seconds, and the panel keeps its last picture.
+
+A server started with `--panel` that is told to stop sends its stop to every
+rig first, as it always does, and tells the panel afterwards. The panel is
+never waited for longer than a second.
+
+**The control map.** Out of the box the map is the PTZ Pro's layout:
+
+```sh
+ptz-panel map                          # the map, against the published PTZ Pro layout
+ptz-panel map --panel 192.168.0.60     # the map, against what that panel says it has
+```
+
+Each row is a role (`estop`, `go`, `key1`, `joy_pan`, ...), what it does, and
+the control it is bound to. With `--panel` the program asks the panel for its
+controls and lists every role that will not work there: a control the panel
+does not have, a button where a knob is needed, a soft key with no display.
+
+To change a binding, press the control you want:
+
+```sh
+ptz-panel learn --panel 192.168.0.60                # every role in turn
+ptz-panel learn --panel 192.168.0.60 estop joy_tilt # only these
+```
+
+For each role it says what to do on the panel (press it, turn it, push the
+joystick fully to the right). Enter keeps the binding, `-` removes it, `q`
+stops. A joystick axis pushed the other way is marked as inverted. The result
+is written to `panel.json`. You can also write the file by hand; it needs only
+what differs from the PTZ Pro layout:
+
+```json
+{
+  "roles": { "estop": 50, "zoom_rocker": 60, "page_up": null },
+  "invert": ["joy_tilt"]
+}
+```
+
+`ptz-panel` reads `--map`, or `panel.json` in the folder it is started in.
+`ptz-server --panel` reads `panel.json` in the data folder. With no file the
+PTZ Pro layout is used. A file that cannot be read stops the program with the
+reason, rather than running a panel with the wrong map.
+
+**Without a panel.** `ptz-panel fake` is a stand-in PTZ Pro in a terminal. It
+prints what each display shows and takes typed commands (`press 6`,
+`hold 9 1.2`, `joy 1 400`, `turn 5 -3`). Start it, then point the server or
+`ptz-panel` at it:
+
+```sh
+ptz-panel fake                         # terminal 1: listens on 127.0.0.1:9923
+ptz-panel --panel 127.0.0.1            # terminal 2
+```
+
+**What happens when things drop**
+
+- *The panel is lost* (power, cable, switch). Hand control stops: at once when
+  the connection closes, and within about half a second when the link just
+  goes silent. While anything is deflected the panel is asked for an answer
+  every 100 ms, and after 350 ms without one the rig is let go of; against the
+  stand-in panel the camera stood still 0.35 to 0.5 s after the link went
+  silent, and the test fails above 0.6 s. A real panel has not been measured. A song that is playing keeps playing. The panel keeps the lease for
+  30 seconds (`--lease-grace`) and then gives it back. When the panel returns,
+  every display is drawn again, the lease is not taken back by itself, and the
+  joystick must come to rest before it drives again.
+- *The server is lost.* The panel shows **No server** and every key goes dark.
+  E-Stop cannot reach the rig from the panel until the server answers, and the
+  panel says so. A press is kept and sent for ten seconds in case it does.
+- *Another station takes the lease.* The panel shows who holds it and goes back
+  to watching. E-Stop still works.
+
+**E-Stop on the panel is a network command**, like E-STOP in the app. It goes
+from the panel to `ptz-panel`, from there to the server, and from the server to
+the rigs. If any of those links is down it does not arrive. It is not a
+substitute for the AutoPod+'s own stop control or the power.
+
+#### First time on a real panel
+
+Do this with every real rig disarmed. Better still, do it on a scratch data
+folder with no real rig in it (`ptz-server --data /tmp/panel-trial`), so that
+everything below moves only the simulator. Keep the app open beside the panel
+to see what the server sees.
+
+- [ ] `ptz-panel map --panel <address>` connects, names the panel's model, and
+      ends with *The map fits this panel*. If it lists problems, the panel is
+      not laid out as the published PTZ Pro: run `ptz-panel learn`.
+- [ ] `ptz-panel --panel <address>` says *panel connected* and stays connected
+      for ten minutes with nothing touched.
+- [ ] CAM 9 reads **E-STOP / Press** in red. The seven mode buttons light, and
+      pressing each one changes the soft keys.
+- [ ] Every soft-key display is readable, and so is a long message on the big
+      display. Note anything cut off or in the wrong place.
+- [ ] Show mode, **Take** on CAM 1: the app's header names *Panel* as the
+      holder.
+- [ ] The Focus knob moves the playhead one frame a click, in the direction
+      you expect.
+- [ ] Camera mode: joystick right pans right in the app's monitor, up tilts
+      up, a clockwise twist zooms in. Let go: it stops, and does not creep
+      with the stick at rest. A wrong direction is fixed with `"invert"` or
+      `ptz-panel learn`.
+- [ ] Driving is smooth. If the camera stutters with the cable in, or the
+      display says the panel *has not answered a ping*, the real panel answers
+      more slowly than the stand-in: stop here and report it.
+- [ ] Press CAM 9 once: the app shows *E-STOP LATCHED*. Tap it: nothing. Hold
+      it a second and a half: it resets.
+- [ ] Transport mode: tap **Arm**: nothing happens and the display says to
+      hold. Hold it one second: the simulator arms. **Disarm**.
+- [ ] Push the joystick and pull the panel's network cable: the camera in the
+      app's monitor stops within about half a second. Plug it back in: the displays
+      return and nothing moves until the stick has been let go and pushed
+      again.
+- [ ] With the joystick pushed, stop `ptz-panel` with Ctrl-C: the camera stops.
+
+Only then use the panel with a real rig, and the first few times with someone
+at the app's E-STOP.
+
 ---
 
 ## 9. Before the first show
@@ -728,6 +918,7 @@ The server's data folder (`~/PTZProgrammer` unless `--data` says otherwise):
 | `media/<id>/` | Each imported file, its decoded audio, its waveform, and a video's frame pictures |
 | `stage/model.ptzmesh` | The imported stage model |
 | `log/<date>.jsonl` | The run log |
+| `panel.json` | Only if you made one: what differs from the PTZ Pro layout for a SKAARHOJ panel run with `ptz-server --panel` |
 
 Every file is written to a temporary name and then renamed, so a crash or a
 power cut never leaves a half-written song.
@@ -758,7 +949,7 @@ Everything the server does to the show is written to the run log and shown in
 the **Log** tab: each transport action and who asked for it, each refusal and
 its reason, what was armed (song, revision and its SHA-256), the rig's pose and
 error once a second while live, faults, how long an E-Stop took, devices
-connecting and dropping. Each record carries the hash of the one before it:
+connecting and dropping, a hardware panel connecting and going. Each record carries the hash of the one before it:
 
 ```sh
 ptz-server --verify-log
@@ -812,3 +1003,10 @@ folder and the app's settings file stay until you delete them.
 | Arm is refused: *Fix or accept N timeline issues first* | Moves break a limit | Click the issue count in the header to go to the first one |
 | A camera is held, with a reason in red | It strayed from the timeline, would have crossed a limit, or stopped answering | The others carry on. Disarm and Arm again to bring it back, after finding out why. |
 | *E-STOP LATCHED* | E-Stop was pressed | Make sure it is safe, then **Reset E-Stop** |
+| `ptz-panel`: *No panel answers at ...* | Nothing is listening on the panel's address and port | Check the address, the cable, and that the panel is in Raw Panel mode |
+| `ptz-panel`: *... took the connection but said nothing* | Something answers, but not as a Raw Panel | Switch on Raw Panel mode on the panel; make sure nothing else is connected to it |
+| The panel's display: *Panel map: ...* | A role is bound to a control this panel does not have, or of the wrong kind | `ptz-panel map --panel <address>` lists them; `ptz-panel learn` fixes them |
+| The panel: **No server** | `ptz-panel` cannot reach the show server | Start the server, or check `--server` and `--access-key`. E-Stop on the panel does not reach the rig until it answers. |
+| The panel: *Let the joystick come to rest, then drive again* | The joystick was already pushed when it was given the rig, or the panel or the server had been away | Let go, then push again |
+| The panel: *The panel stopped answering during the hold. Nothing was done* | The link to the panel went quiet while a key was being held | Check the panel's cable and switch, then hold again |
+| The panel: *This panel has not answered a ping ...* | The panel does not answer the link check, so driving by hand from it is kept off | Report it: the real panel behaves differently from the published protocol |

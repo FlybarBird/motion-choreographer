@@ -10,7 +10,7 @@ trap 'rm -rf "$WORK" "$ROOT/target/install-test"' EXIT
 # Stand-in release binaries, each printing its own name.
 RELEASE="$ROOT/target/install-test/release"
 mkdir -p "$RELEASE"
-for bin in ptz-app ptz-server ptz-probe ptz-bringup; do
+for bin in ptz-app ptz-server ptz-probe ptz-bringup ptz-panel; do
   printf '#!/bin/sh\necho %s\n' "$bin" >"$RELEASE/$bin"
   chmod +x "$RELEASE/$bin"
 done
@@ -37,7 +37,7 @@ check test -f "$APP/Contents/Info.plist"
 check grep -q '<string>ptz-app</string>' "$APP/Contents/Info.plist"
 VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/Cargo.toml" | head -n 1)"
 check grep -q "<string>$VERSION</string>" "$APP/Contents/Info.plist"
-for bin in ptz-server ptz-probe ptz-bringup; do
+for bin in ptz-server ptz-probe ptz-bringup ptz-panel; do
   check test -L "$WORK/bin/$bin"
   check test "$("$WORK/bin/$bin")" = "$bin"
 done
@@ -82,7 +82,7 @@ touch "$WORK/bin/keep-me"
 PTZ_SKIP_CHECKS=1 PTZ_APP_DEST="$WORK/Applications" PTZ_BIN_DEST="$WORK/bin" \
   bash "$ROOT/scripts/macos-install.sh" --uninstall >"$WORK/uninstall.log"
 check test ! -e "$APP"
-for bin in ptz-server ptz-probe ptz-bringup; do
+for bin in ptz-server ptz-probe ptz-bringup ptz-panel; do
   check test ! -e "$WORK/bin/$bin"
 done
 check test -f "$WORK/bin/keep-me"

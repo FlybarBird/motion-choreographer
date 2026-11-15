@@ -29,6 +29,9 @@ use tokio::sync::broadcast;
 
 pub const NO_LEASE: &str = "Take the edit lease to control the show";
 
+/// A panel controller that has not reported for this long is gone.
+const PANEL_TTL: Duration = Duration::from_secs(3);
+
 /// Which audio output to open.
 #[derive(Clone, Debug, PartialEq)]
 pub enum AudioChoice {
@@ -193,6 +196,8 @@ pub struct Show {
     external: Option<External>,
     /// Why the last lock was refused or let go, until the operator's next action.
     lock_problem: Option<String>,
+    /// What the hardware panel controller last reported, who sent it and when.
+    panel: Option<(PanelState, String, Instant)>,
     started: Instant,
     last_tick: Instant,
     log: RunLog,
@@ -396,6 +401,7 @@ impl Show {
             lock_source: None,
             external: None,
             lock_problem: None,
+            panel: None,
             started: now,
             last_tick: now,
             log,
@@ -517,6 +523,30 @@ impl Show {
             self.poke();
         }
         Ok(())
+    }
+
+    // ---- hardware panel ----
+
+    /// A panel controller says what it is doing. It keeps saying so about once a
+    /// second; `tick` forgets it when it stops.
+    pub fn set_panel(&mut self, client: &str, state: PanelState) -> Res<PanelState> {
+        if state.station.trim().is_empty() {
+            return Err(Fail::bad("Give the panel a station name"));
+        }
+        let was = self.panel.as_ref().map(|(p, _, _)| p);
+        let arrived = was.is_none_or(|p| p.station != state.station || p.connected != state.connected);
+        let changed = was != Some(&state);
+        if arrived {
+            self.log(
+                "panel",
+                json!({ "station": state.station, "connected": state.connected, "model": state.model, "name": state.name }),
+            );
+        }
+        self.panel = Some((state.clone(), client.to_string(), Instant::now()));
+        if changed {
+            self.poke();
+        }
+        Ok(state)
     }
 
     // ---- songs ----
@@ -2179,6 +2209,11 @@ impl Show {
             self.log("lease", json!({ "expired": name }));
             self.poke();
         }
+        if self.panel.as_ref().is_some_and(|(_, _, seen)| now.duration_since(*seen) > PANEL_TTL) {
+            let station = self.panel.take().map(|(p, _, _)| p.station);
+            self.log("panel", json!({ "station": station, "gone": true }));
+            self.poke();
+        }
         for u in &mut self.units {
             if u.jog_deadline.is_some_and(|d| now > d) {
                 // A lost connection halts on the spot; letting go of a control ramps down instead.
@@ -2323,6 +2358,7 @@ impl Show {
                 frames: self.capture.as_ref().map(|c| c.frames() as i64).unwrap_or(0),
             },
             telemetry,
+            panel: self.panel.as_ref().map(|(p, _, _)| p.clone()),
         }
     }
 }

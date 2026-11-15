@@ -24,7 +24,8 @@ simulator with no hardware connected.
 | [11. Save, Commit and revisions](#11-save-commit-and-revisions) | Keeping your work, and what can be armed |
 | [12. Going live](#12-going-live) | Arm, Play Live, faults, E-Stop |
 | [13. A show day](#13-a-show-day) | The routine |
-| [14. Reference](#14-reference) | Shortcuts, chips, messages, glossary |
+| [14. Programming from a panel](#14-programming-from-a-panel) | The same work on a SKAARHOJ PTZ Pro, with no mouse or keyboard |
+| [15. Reference](#15-reference) | Shortcuts, chips, messages, glossary |
 
 ---
 
@@ -614,7 +615,217 @@ costs more.
 
 ---
 
-## 14. Reference
+## 14. Programming from a panel
+
+A SKAARHOJ PTZ Pro can do the work of chapters 3 to 13: start a song, make
+presets, place and time moves, save and commit, rehearse, record a pass, arm
+and play live. Setting it up is in the
+[Setup Guide](setup-guide.md#a-skaarhoj-panel-as-a-station). The base setup
+(cameras, lenses, the rig, audio, importing media) stays in the app.
+
+The panel is a station like any other. It holds the edit lease under the name
+*Panel*, the server applies the same rules to it, and when the server refuses
+something the panel shows the server's reason, word for word.
+
+> This has been tested against a stand-in panel and SKAARHOJ's published
+> protocol, not yet on a real PTZ Pro. The first time, follow the check list
+> in the Setup Guide with the rigs disarmed.
+
+### What is where
+
+| On the PTZ Pro | Does |
+| --- | --- |
+| **EXP, WB, Color, Image, U1, U2, U3** | The mode: Show, Transport, Camera, Presets, Timeline, Record, Media. The lit one is where you are. |
+| **CAM 1 to CAM 7** | Soft keys. Each one's display says what it does now, in this mode. |
+| **CAM 8** | The main transport button: the same next step as the app's main button (Rehearse, Play to code, Play Live, Stop, Reset E-Stop), in every mode. |
+| **CAM 9** | **E-Stop**, in every mode. |
+| **U4** | Shift. Hold it for the second set of soft keys, and for bigger steps on the knobs. |
+| **P1 to P10** | Select camera 1 to 10. Cameras 11 and 12 are on the second page of Camera mode. |
+| **UP, DWN** | The previous and next page of a list (songs, cameras, presets, media). |
+| **Focus knob** | The playhead: one frame a click. Turn it fast and it covers more; with Shift a click is one second. |
+| **Menu 1 to Menu 4 knobs** | Four values for the mode, named on the display above each. |
+| **Joystick** | Hand control of the selected camera, in Camera, Presets and Record. Left and right pan, up and down tilt, twist zooms. |
+| **Big display, top left** | The song (with `*` when unsaved), timecode and transport state, then in turn: mode and camera, who holds the lease, saved or committed, problems, lock. |
+| **Big display, top right** | Messages: what was just done, why something was refused, what a hold will do, a question waiting for Confirm. A long message is shown a page at a time, in full. |
+
+A dim key is available. A bright or coloured key also shows the state of
+something: red for Record and for deleting, amber for something to attend to,
+green for go, blue for what is selected. A dark key can do nothing right now:
+press it and the display says why.
+
+Choosing a mode or a camera never moves anything.
+
+### Holds and questions
+
+Some keys say **Hold** on their display. They move a real rig or take control
+from someone, so a tap does nothing except say what a hold would do:
+
+| Key | Hold for |
+| --- | --- |
+| **Arm** (Transport), and **Arm** when CAM 8 offers it | 1 second |
+| **Play Live** and **Play to code** while armed, on CAM 8 or the Play key | 1 second |
+| **Reset E-Stop**, on CAM 9 or CAM 8 | 1.5 seconds |
+| **Take over** another station's lease | 1 second |
+
+Keep the key down until the display changes. Let go early and nothing
+happens. A hold is counted only if the panel is still answering when its time
+is up: if the link to the panel drops during a hold, nothing is done.
+
+Three things ask first: **Revert**, deleting a preset, and **Sync from rig** on
+a real camera (it moves the camera to each preset). The display shows the
+question, CAM 1 becomes **Confirm** and CAM 7 **Cancel**. No answer in ten
+seconds counts as Cancel.
+
+### E-Stop on the panel
+
+Press **CAM 9** once, in any mode, with or without the lease, with Shift held
+or a question on the display. The stop goes to the server on its own
+connection and does not wait behind anything else the panel is doing. The key
+then blinks **Hold: reset**.
+
+To reset, the panel must hold the lease: hold CAM 9 (or CAM 8) for a second
+and a half. The press that stopped the show never resets it, however long it
+is held: let go and press again.
+
+If the server cannot be reached the key reads **No server**, the display says
+that E-Stop cannot reach the rig from the panel, and a press is still sent,
+again and again for ten seconds, in case the server returns. As everywhere in
+this program, E-Stop is a network command and not a hardware emergency stop
+([E-Stop](#e-stop)).
+
+### Show: the lease, songs, Save and Commit
+
+| Key | Does |
+| --- | --- |
+| CAM 1 | **Take** the lease when it is free; **Release** it; or **Take over** from the station named on the key (hold) |
+| CAM 2 | **New** song: *Song N*, starting on the next ten minutes of timecode after the latest song, and loaded |
+| CAM 3 | **Browse**: the song list on CAM 1 to CAM 6, the loaded one lit, UP and DWN for more, CAM 7 **Back**. Press a song to load it. |
+| CAM 4 | **Save** (amber when there are unsaved changes) |
+| CAM 5 | **Commit** (amber when the saved song is not yet a revision) |
+| CAM 6 | **Save copy**: a copy of the song under a new name |
+| CAM 7 | **Revert** to the last Save (asks first) |
+
+Names are given by number. Rename songs, presets and markers in the app.
+
+### Camera: driving by hand and storing presets
+
+CAM 1 to CAM 6 are the cameras, six to a page, each with its state; press one
+to select it, or use P1 to P10 from any mode. The joystick drives the selected
+camera. The Menu 1 and Menu 2 knobs drive **Focus** and **Elevation**, a short
+nudge for each click. Menu 3 is **Top speed**: 5 % to 100 % of each axis's top
+speed at full deflection; turn it down for fine work. CAM 7 **Store** saves
+where the camera is as *Preset N*.
+
+The rig stops when you let go. It also stops if the panel, its cable or the
+server is lost: see [what happens when things drop](setup-guide.md#a-skaarhoj-panel-as-a-station).
+After that, and whenever the joystick is already pushed over at the moment it
+is given the rig (entering the mode, changing camera), the display says *Let
+the joystick come to rest, then drive again*: let go, then push.
+
+As in the app, hand control is refused while armed, and while playing unless
+Record is on. It drives the simulator only. For a real FR7 the server refuses
+it and the panel shows why; put the camera where you want it with its own
+controller, then press **Store**.
+
+In any mode that does not drive by hand, pushing the joystick does nothing
+and the display says *Press Camera to drive by hand*.
+
+### Presets: placing moves
+
+| Key | Does | With Shift |
+| --- | --- | --- |
+| CAM 1 | **Store** the camera's pose as a new preset | **Sync from rig** (asks first on a real camera) |
+| CAM 2 to CAM 6 | **Place** a move to that preset at the playhead, on the selected camera's lane. It takes its auto time. | **Delete** that preset (asks first) |
+| CAM 7 | **Undo** | **Redo** |
+
+Put the playhead where the move should begin (Focus knob), then press the
+preset. UP and DWN page through more than five presets. The joystick and the
+Camera knobs work here too.
+
+### Timeline: shaping what is there
+
+| Key | Does | With Shift |
+| --- | --- | --- |
+| CAM 1, CAM 2 | **Prev** and **Next** clip on the selected camera's lane. The playhead goes to the clip. | Playhead **To start**, **To end** |
+| CAM 3 | **Ease**: steps through the eases of a preset move | **To keys**: turn the move into keys |
+| CAM 4 | **Auto time**: give the move its auto time again (amber when that would clear a problem) | **Accept as is**, or **Withdraw accept**, for a speed or acceleration problem |
+| CAM 5 | **Duplicate** the clip | Marker **Add** at the playhead |
+| CAM 6 | **Delete** the clip | Marker **Delete** at the playhead |
+| CAM 7 | **Undo** | **Redo** |
+
+| Knob | Does |
+| --- | --- |
+| Menu 1 **Move clip** | Slides the selected clip earlier or later |
+| Menu 2 **Length** | Makes it longer or shorter |
+| Menu 3 **Clip edge** | Jumps the playhead to the next or previous clip edge |
+| Menu 4 **Marker** | Jumps to the next or previous marker; push the knob to add one |
+
+A move that would break a rule is refused with the reason, as in the app, and
+problems are counted on the status display. Undo is one key away in Presets,
+Timeline, Record and Media, and goes back through the changes made from the
+panel since the song was loaded, up to two hundred of them.
+
+### Transport
+
+| Key | Does |
+| --- | --- |
+| CAM 1 | **Rehearse**, **Play to code** or **Play Live** (hold while armed) |
+| CAM 2 | **Stop** |
+| CAM 3 | **Cue** |
+| CAM 4 | **Arm** (hold). Reads **Arming** while the rig travels, then **Armed**. |
+| CAM 5 | **Disarm** |
+| CAM 6 | **Lock to** the source named on the key, chosen with the Menu 1 knob; **Unlock** when locked |
+| CAM 7 | **Record** on and off |
+
+CAM 8 offers the next step in every mode, so a rehearsal is usually just CAM 8
+to play and CAM 8 to stop.
+
+### Record: performing a move
+
+1. Record mode. CAM 1 to CAM 5 are the axes Record writes (Pan, Tilt, Zoom,
+   Focus, Elevation): red is on. Choose them while stopped.
+2. CAM 6 **Record** on. The display names the camera and the axes.
+3. CAM 8 to play, and drive the camera with the joystick.
+4. CAM 8 to stop. The pass lands on the timeline as a keys clip, selected.
+   Stopping turns Record off. **Undo** (CAM 7) removes the pass.
+5. With Shift, CAM 1 **Fewer keys** and CAM 2 **More keys** refit the selected
+   pass; the display says how many keys it had and has now.
+
+### Media
+
+Files are imported in the app. On the panel, CAM 1 to CAM 4 **Place** an
+imported file at the playhead (UP and DWN for more files), CAM 5 selects a
+media clip on the timeline, and CAM 6 mutes or unmutes it. With Shift, CAM 5
+takes the selected clip off the timeline and CAM 6 locks the song to that
+file's own timecode, or unlocks.
+
+### A show from the panel
+
+1. Show: **Take** the lease, **New**.
+2. Camera: P1, drive to the first framing, **Store**. Repeat for each framing
+   and each camera.
+3. Presets: Focus knob to where a move starts, press the preset. Repeat.
+4. Timeline: **Next** through the moves; **Ease**, **Length** and **Move
+   clip** to taste; fix or accept anything the status display counts as a
+   problem.
+5. CAM 8 to rehearse, CAM 8 to stop. Shift and **To start** to go back.
+6. Show: **Save**, **Commit**.
+7. Clear the area. Transport: hold **Arm** and wait for **Armed**. Hold
+   **Play Live** on the cue. **Stop**, then **Disarm**.
+
+If anything looks wrong: CAM 9.
+
+### Not on the panel
+
+Typing names; the graph editor and editing single keys; project, camera, lens,
+rig, limit and audio settings; the stage view; importing media; revisions
+other than the latest; the run log. Do these in the app, which can be open on
+another station at the same time: the panel keeps the lease, and the app
+watches until it takes over.
+
+---
+
+## 15. Reference
 
 ### Keyboard
 

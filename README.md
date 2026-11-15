@@ -17,6 +17,10 @@ Two programs:
 - **`ptz-app`** is the operator's window: timeline, presets, monitors, inspector.
   It is a native app (Rust, `egui`), not a web page.
 
+A third program is optional: **`ptz-panel`** lets a SKAARHOJ PTZ Pro hardware
+panel hold the edit lease and run the show, without a mouse or a keyboard. See
+[Control from a SKAARHOJ panel](#control-from-a-skaarhoj-panel).
+
 Until hardware is configured the server drives a built-in simulator rig, so
 everything can be programmed and rehearsed with nothing plugged in.
 
@@ -58,7 +62,7 @@ make install-mac
 
 Builds for this Mac (Apple Silicon or Intel), assembles `PTZ Programmer.app`
 with the three command-line tools inside it, signs it ad hoc, copies it to
-`~/Applications` and links `ptz-server`, `ptz-probe` and `ptz-bringup` into
+`~/Applications` and links `ptz-server`, `ptz-probe`, `ptz-bringup` and `ptz-panel` into
 `~/.local/bin`. Running it again installs a newer version over the old one; it
 asks you to quit the app and stop the server first. `make uninstall-mac`
 removes the app and the links and leaves the show data alone.
@@ -80,7 +84,7 @@ Builds for the machine it is run on and writes two installers into `dist/`:
 | The show server and tools alone | `PTZ-Server-<version>-macos-<arch>.pkg` | `ptz-server-<version>-linux-<arch>.run` |
 
 The app installer always installs the app. **Show server and tools**
-(`ptz-server`, `ptz-probe`, `ptz-bringup`) is a checkbox in the Mac installer,
+(`ptz-server`, `ptz-probe`, `ptz-bringup`, `ptz-panel`) is a checkbox in the Mac installer,
 ticked to start with, and a question in the Linux one (`--with-server` and
 `--no-server` answer it in advance). Clear it on a station that only connects
 to a server elsewhere; use the server installer on a machine that runs the
@@ -559,6 +563,87 @@ them with the adapter ("AutoPod+ V3.49e at 192.168.60.204:80 answers in 3 ms").
 A unit in standby blocks Arm; the show never switches it on by itself. A
 refused command is reported as a refusal, not as a lost connection.
 
+## Control from a SKAARHOJ panel
+
+A SKAARHOJ PTZ Pro can run the show over SKAARHOJ's Raw Panel protocol. The
+panel becomes an operator station like the app: it holds the edit lease under
+its own name (**Panel** unless you choose another), and everything it does goes
+through the same server rules, so a refusal reads the same on the panel as in
+the app. After the base setup (cameras, lenses, rig, audio: done in the app) a
+show can be programmed, saved, committed, rehearsed, recorded, armed and played
+from the panel alone.
+
+**This has been tested against a stand-in panel and SKAARHOJ's published
+protocol and PTZ Pro layout. It has not yet been run on a real PTZ Pro.** Try
+it first with the rigs disarmed, following the check list in the
+[Setup Guide](docs/setup-guide.md#a-skaarhoj-panel-as-a-station).
+
+Put the panel in Raw Panel mode and give it a fixed address. Then either let
+the server run it:
+
+```sh
+ptz-server --panel 192.168.0.60          # the server connects to the panel on port 9923
+```
+
+or run it as its own program, on the server machine or any other:
+
+```sh
+ptz-panel --panel 192.168.0.60                                              # server on this machine
+ptz-panel --panel 192.168.0.60 --server http://192.168.0.10:8787 --access-key "the-key"
+```
+
+| | |
+| --- | --- |
+| `ptz-panel map` | Prints which control does what. With `--panel <address>` it asks that panel what it has and checks the map against it. |
+| `ptz-panel learn --panel <address>` | Rebinds controls by pressing them, and writes `panel.json`. |
+| `ptz-panel fake` | A stand-in PTZ Pro in the terminal, to try all of this with no panel. |
+| `--station <name>` | The name the panel holds the lease under. |
+| `--listen <addr:port>`, `ptz-server --panel-listen <addr:port>` | Wait for an older panel that dials in, instead of connecting to it. |
+| `--lease-grace <seconds>` | How long a lost panel keeps the lease before giving it back (30). |
+
+The control map is the PTZ Pro's layout unless a `panel.json` says otherwise:
+`ptz-server` reads it from the data folder, `ptz-panel` from `--map` or the
+folder it is started in. The file lists only what differs:
+`{"roles": {"estop": 50, "page_up": null}, "invert": ["joy_tilt"]}`.
+
+On the panel, the seven buttons EXP, WB, Color, Image, U1, U2 and U3 choose the
+mode (Show, Transport, Camera, Presets, Timeline, Record, Media); CAM 1 to
+CAM 7 are soft keys whose displays say what each does now; CAM 8 is the main
+transport button, the same next step the app offers; CAM 9 is E-Stop; U4 is
+Shift; P1 to P10 choose the camera; the Focus knob moves the playhead; the top
+of the big display shows the show's state and every message in full. The
+[Programming Manual](docs/programming-manual.md#14-programming-from-a-panel)
+goes through every mode.
+
+What keeps it safe:
+
+- **E-Stop is one press of CAM 9 in every mode**, with or without the lease. It
+  has its own connection to the server and is never queued behind anything
+  else. It is still a network command, not a hardware emergency stop.
+- **Anything that moves a real rig or takes control away needs a hold**: Arm
+  and Play Live one second, Reset E-Stop a second and a half, taking over
+  another station's lease one second. A tap does nothing and says so. A hold
+  counts only if the panel is still answering when its time is up.
+- **The joystick stops the rig when it is let go, and when the panel is lost.**
+  The server stops a camera a quarter of a second after the last hand-control
+  message. A closed connection is noticed at once. A link that goes silent
+  without closing (a pulled cable) is noticed because the panel is asked for
+  an answer every 100 ms while anything is deflected; after 350 ms without one
+  the rig is let go of. Against the stand-in panel the camera stood still
+  between 0.35 and 0.5 s after the link went silent (30 measurements), and the
+  test fails above 0.6 s. After any such loss the joystick has to come to rest before it drives
+  again, so nothing starts moving by itself when the panel returns.
+- **A lost panel does not stop the show.** A song that is playing keeps
+  playing. The panel keeps the lease for 30 seconds and then gives it back; it
+  never takes it again by itself.
+- As in the app, hand control drives the simulator only. On a real FR7 the
+  server refuses it and the panel says why; position the camera with its own
+  controller and store the preset from the panel.
+
+Not on the panel: typing names (songs, presets and markers get numbered names;
+rename them in the app), editing keys in the graph, project and camera
+settings, and importing media.
+
 ## The run log
 
 Everything the server does to the show is written to `log/<date>.jsonl` in the
@@ -566,7 +651,8 @@ data folder and shown in the **Log** tab: each transport action and who asked
 for it, each refusal with its reason, what was armed (song, revision, its
 SHA-256, any accepted issues, the rig), the rig's pose and error once a second
 while live, faults, how long an E-Stop took to bring the rig to a standstill,
-devices connecting and dropping, preset syncs, lock and chase events.
+devices connecting and dropping, a hardware panel connecting and going, preset
+syncs, lock and chase events.
 
 Each record carries the hash of the one before it. `ptz-server --verify-log`
 walks the chain and names the first record that was changed, or removed from
@@ -598,6 +684,7 @@ run the real server and adapters against the stand-in devices over loopback.
 | `crates/core` | Song model, timecode, motion evaluation and feasibility, edit operations, transport rules, timecode codecs. No I/O. Linked by both programs so they cannot disagree. |
 | `crates/scene` | Reads OBJ and 3DS files, holds the mesh, renders it with a depth buffer on the CPU, and finds what a ray hits. No dependencies. |
 | `crates/server` | `ptz-server`, plus `ptz-probe` and `ptz-bringup`. |
+| `crates/panel` | `ptz-panel`: the Raw Panel protocol, the control map, the controller that turns what is done on a SKAARHOJ panel into the requests the app makes, and a stand-in PTZ Pro for tests. Linked into `ptz-server` for `--panel`. |
 | `crates/app` | `ptz-app`. |
 | `scripts/macos-install.sh` | The Mac installer. |
 
