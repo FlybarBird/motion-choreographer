@@ -12,6 +12,7 @@ mod multiview;
 mod panels;
 mod rig_ui;
 mod session;
+mod setlist_ui;
 mod settings_ui;
 mod stage;
 mod stage_ui;

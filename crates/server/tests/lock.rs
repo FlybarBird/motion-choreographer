@@ -10,7 +10,7 @@ use ptz_core::chase::ChaseState;
 use ptz_core::client::Api;
 use ptz_core::codes::{artnet_build, mtc_full_frame, mtc_quarter_frames, CodeRate};
 use ptz_core::time::{FrameRate, Timecode};
-use ptz_core::transport::{Action, Run, TimeMode};
+use ptz_core::transport::{Action, Output, Run, TimeMode};
 use ptz_server::lock::{Feed, Feeder, Kind, LtcReader, MtcReader};
 use std::net::UdpSocket;
 use std::sync::{Arc, Mutex};
@@ -424,4 +424,63 @@ fn midi_timecode_locks_and_a_full_frame_message_relocates() {
     let st = wait_for(&api, |s| s.transport.run == Run::Playing);
     assert!((500.0..520.0).contains(&st.frame_f), "resumed at {}", st.frame_f);
     sequencer.join().unwrap();
+}
+
+#[test]
+fn code_is_followed_from_song_to_song_and_an_armed_show_steps_through_its_set_list() {
+    let (t, api, first) = server_with_song("lock-follow");
+    let second = api.new_song("Second", Some("01:10:00:00")).unwrap().song.id;
+    let draft = api.new_song("Draft", Some("01:20:00:00")).unwrap().song.id;
+    for id in [&first, &second] {
+        api.save(id).unwrap();
+        api.commit(id).unwrap();
+    }
+    // The set list keeps the songs there are, each once, in the order given.
+    let mut project = api.project().unwrap();
+    project.set_list = vec![first.clone(), "no-such-song".into(), second.clone(), first.clone()];
+    project.follow_code = true;
+    let project = api.put_project(&project).unwrap();
+    assert_eq!(project.set_list, [first.clone(), second.clone()]);
+    assert_eq!(project.set_neighbour(Some(&first), 1), Some(second.as_str()));
+    assert_eq!(project.set_neighbour(Some(&first), -1), None);
+
+    // Locked with Play pressed, code that is inside the second song loads it and plays it.
+    let feeder = lock_scripted(&t, Kind::Ltc);
+    do_act(&api, Action::Play);
+    let t0 = Instant::now();
+    let from = code("01:10:00:10");
+    let tape = play_ltc(feeder.clone(), RATE, from, 75, t0);
+    let st = wait_for(&api, |s| s.song.as_ref().is_some_and(|x| x.id == second) && s.transport.run == Run::Playing);
+    assert_eq!(st.transport.time, TimeMode::LockedExternal);
+    let want = from as f64 + t0.elapsed().as_secs_f64() * FPS - code("01:10:00:00") as f64;
+    assert!((st.frame_f - want).abs() < 3.0, "the playhead is at {} and the code at {want}", st.frame_f);
+    tape.join().unwrap();
+    wait_for(&api, |s| s.transport.run == Run::WaitingForCode);
+    do_act(&api, Action::Stop);
+
+    // Armed and stopped, another song is loaded without disarming: the rig travels to it and the lock is kept.
+    do_act(&api, Action::Arm);
+    wait_for(&api, |s| s.transport.output == Output::Armed);
+    api.load_song(&first).unwrap();
+    let st = api.status().unwrap();
+    assert_eq!(st.song.as_ref().map(|x| x.id.as_str()), Some(first.as_str()));
+    assert_ne!(st.transport.output, Output::Rehearse);
+    assert_eq!((st.transport.time, st.lock.source.as_deref()), (TimeMode::LockedExternal, Some("ltc")));
+    wait_for(&api, |s| s.transport.output == Output::Armed);
+    // Armed with Play pressed, code in the second song loads and plays it, and the show stays armed.
+    do_act(&api, Action::Play);
+    let tape = play_ltc(feeder, RATE, code("01:10:01:00"), 75, Instant::now());
+    let st = wait_for(&api, |s| s.song.as_ref().is_some_and(|x| x.id == second) && s.transport.run == Run::Playing);
+    assert_ne!(st.transport.output, Output::Rehearse);
+    tape.join().unwrap();
+    wait_for(&api, |s| s.transport.run == Run::WaitingForCode && s.transport.output == Output::Armed);
+    do_act(&api, Action::Stop);
+    // A song that could not be armed is not loaded into an armed show.
+    assert_eq!(refused(api.load_song(&draft), 409), "Draft is not committed. Disarm to load it");
+    do_act(&api, Action::Disarm);
+    api.load_song(&draft).unwrap();
+
+    // A deleted song leaves the set list.
+    api.delete_song(&second).unwrap();
+    assert_eq!(api.project().unwrap().set_list, [first]);
 }

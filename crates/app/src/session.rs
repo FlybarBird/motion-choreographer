@@ -488,6 +488,46 @@ impl Session {
         }
     }
 
+    /// Why another song cannot be loaded now. Armed is no reason: the rig travels to the new song.
+    pub fn can_change_song(&self) -> Result<(), String> {
+        if self.lost.is_some() {
+            Err("The server is not reachable".into())
+        } else if !self.status.you_hold_lease {
+            Err(match &self.status.lease {
+                Some(l) => format!("{} holds the edit lease. Take it over to change songs", l.holder),
+                None => "Take the edit lease to change songs".into(),
+            })
+        } else if self.status.transport.run != ptz_core::transport::Run::Stopped {
+            Err("Stop to change songs".into())
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Why this song cannot be loaded now. An armed show takes only a song it could have been armed with.
+    pub fn can_load(&self, song: &ptz_core::api::SongSummary) -> Result<(), String> {
+        self.can_change_song()?;
+        if self.status.transport.output != Output::Rehearse && (song.revision.is_none() || song.dirty) {
+            return Err(format!("{} is not committed. Commit it, or disarm, to load it", song.name));
+        }
+        Ok(())
+    }
+
+    pub fn load_song(&mut self, id: &str) {
+        self.link.send(Cmd::LoadSong(id.to_string()));
+    }
+
+    /// Load the next song of the set list, or with -1 the one before. False when there is none to go to.
+    pub fn step_song(&mut self, by: i64) -> bool {
+        let loaded = self.status.song.as_ref().map(|x| x.id.as_str());
+        let Some(id) = self.project.set_neighbour(loaded, by).map(str::to_string) else { return false };
+        let can = self.songs.iter().find(|x| x.id == id).map(|x| self.can_load(x)).unwrap_or_else(|| self.can_change_song());
+        if can.is_ok() {
+            self.load_song(&id);
+        }
+        can.is_ok()
+    }
+
     fn push(&mut self, song: Song) {
         self.compiled = compile(&song, &self.project);
         self.timeline.prune(&song);

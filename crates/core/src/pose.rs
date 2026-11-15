@@ -544,6 +544,12 @@ pub struct Project {
     /// When a pose captured while programming uses a preset the camera already has.
     pub preset_match: PresetMatch,
     pub stage: Stage,
+    /// The songs of the show in running order, by id. Stepping to the next or the one before,
+    /// and following timecode from song to song, go by it.
+    pub set_list: Vec<String>,
+    /// Locked to LTC, MTC or Art-Net with Play pressed, load whichever song the code is in:
+    /// one of the set list, or of every song while the set list is empty.
+    pub follow_code: bool,
     /// One to twelve, in the order they are numbered for the operator. `validate` refuses
     /// anything else, and the server only ever holds a project that passed it.
     pub cameras: Vec<CameraConfig>,
@@ -562,6 +568,8 @@ impl Default for Project {
             panel: PanelConfig::default(),
             preset_match: PresetMatch::default(),
             stage: Stage::default(),
+            set_list: Vec::new(),
+            follow_code: false,
             cameras: vec![CameraConfig::default()],
         }
     }
@@ -582,6 +590,8 @@ struct ProjectFile {
     panel: PanelConfig,
     preset_match: PresetMatch,
     stage: Stage,
+    set_list: Vec<String>,
+    follow_code: bool,
     /// Absent in a file from before cameras; an empty list is a mistake, kept so it can be refused.
     cameras: Option<Vec<CameraConfig>>,
     axes: Option<AxisTable>,
@@ -611,6 +621,8 @@ impl From<ProjectFile> for Project {
             panel: f.panel,
             preset_match: f.preset_match,
             stage: f.stage,
+            set_list: f.set_list,
+            follow_code: f.follow_code,
             cameras,
         }
     }
@@ -659,6 +671,22 @@ impl Project {
         } else {
             String::new()
         }
+    }
+
+    /// Where a song stands in the set list, counting from 0.
+    pub fn set_position(&self, song: &str) -> Option<usize> {
+        self.set_list.iter().position(|id| id == song)
+    }
+
+    /// The song `by` places on from `song` in the set list: 1 is the next, -1 the one before.
+    /// From a song that is not in the list, the first or the last. None past either end.
+    pub fn set_neighbour(&self, song: Option<&str>, by: i64) -> Option<&str> {
+        let at = match song.and_then(|id| self.set_position(id)) {
+            Some(at) => at as i64 + by,
+            None if by >= 0 => 0,
+            None => self.set_list.len() as i64 - 1,
+        };
+        usize::try_from(at).ok().and_then(|at| self.set_list.get(at)).map(String::as_str)
     }
 
     /// The lowest `camN` no camera uses.

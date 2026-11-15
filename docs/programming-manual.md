@@ -97,6 +97,7 @@ camera keys and Cmd-S or Ctrl-S act. The setup guide goes through every page.
 | Tab | What it is for |
 | --- | --- |
 | Presets | The selected camera's presets. Drag one onto the timeline. |
+| Set list | The show's songs in running order. Click one to load it. |
 | Media | Imported audio and video. Drag one onto the timeline. |
 | Program monitor | What the selected camera frames, through its lens, in the stage model |
 | Stage | The venue from outside, with every camera and its view cone |
@@ -471,6 +472,18 @@ If code jumps, the playhead jumps with it. Code from before the song's first
 frame or after its last holds the playhead at that end. Code at a different
 frame rate from the project is refused, and the bar says which rate arrived.
 
+**Follow timecode** (a tick box on the Set list tab) takes this from song to
+song. Locked to an input with **Play to code** pressed, when the code leaves the
+loaded song and is inside another, the server loads that one and plays it from
+where the code is. It looks through the set list in order, or through every song
+while the set list is empty, so give each song a start timecode of its own that
+no other song's length runs into. Armed, the show stays armed and the rig
+travels to the new song at the positioning speed while the song already plays,
+so leave it a few seconds of code before the first move that matters. An armed
+show only follows into a song that could be armed: one that is not committed, or
+has an issue open, is not loaded, and the lock chip says which song and why.
+Code that is in no song changes nothing.
+
 **Lock to this file** (Inspector, or the file's entry in the Lock menu) ties
 the transport to one clip: Play starts at the clip's first frame and stops at
 its last, and Cue and the ruler work inside it. This is how to program against
@@ -590,6 +603,23 @@ costs more.
 
 ## 13. A show day
 
+### The set list
+
+The **Set list** tab holds the show's songs in running order. Press
+**Arrange** to change it: **Add** puts a song at the end, and **Up**, **Down**
+and **Remove** move it or take it out. Press **Arrange** again when the list is
+right, and each row is only a song to load, with its start timecode and its
+revision. Removing a song from the list does not delete the song, and deleting a
+song takes it out of the list. The list belongs to the show, so it is changed
+with the lease and disarmed, like the other show settings.
+
+Click a song in the list to load it. **Next** and **Previous**, or Page Down
+and Page Up, step through it. Loading needs the show stopped, not disarmed:
+armed, the show stays armed, the chip reads **ARMING** while every camera
+travels to the new song's opening position, and then **ARMED**. A lock to LTC,
+MTC or Art-Net is kept across the change. Only a committed song with no open
+issues is loaded into an armed show; the others say why on their row.
+
 **Before doors**
 
 1. Start the server on the show's data folder. Open the app. Take the lease.
@@ -607,8 +637,10 @@ costs more.
    timecode start the song.
 7. Watch Multiview and the camera bar. A held camera shows in red; the others
    carry on.
-8. Between songs: **Stop**, **Disarm**, **Load** the next, check its revision,
-   **Arm**, wait for **ARMED**.
+8. Between songs: **Stop**, then **Next** on the Set list tab or Page Down, and
+   wait for **ARMED**. Check every song's revision on the Set list tab before
+   doors. With **Follow timecode** on and Play to code pressed, the timecode
+   does this by itself.
 
 **If anything looks wrong:** E-STOP first, questions afterwards.
 
@@ -935,6 +967,7 @@ On a Mac, Cmd; elsewhere, Ctrl. Save is both **Cmd-S** and **Ctrl-S**, on every 
 | --- | --- |
 | Space | The main transport button: Rehearse, Play Live, Play to code, Stop. When armed, Space is Play Live. |
 | Home | Cue to the start |
+| Page Down, Page Up | Load the next song in the set list, or the one before |
 | End | Playhead to the end of the song |
 | Left, Right | Step one frame. With Shift, ten. |
 | `1` to `9`, `0`, `-`, `=` | Select camera 1 to 12 |
@@ -975,7 +1008,9 @@ Hover any disabled button and it says why. The reasons you will meet most:
 | --- | --- |
 | Take the edit lease to control the show | **Take the lease** in the header |
 | Create or load a song first | **New** or **Load** |
-| Stop and disarm to change songs | **Stop**, **Disarm** |
+| Stop and disarm to change songs | **Stop**, **Disarm**. A new song is started in Rehearse. |
+| Stop to change songs | **Stop**. Loading another song does not need Disarm. |
+| ... is not committed. Commit it, or disarm, to load it | An armed show loads only what could be armed |
 | Commit the song first | **Save**, then **Commit** |
 | Fix or accept N timeline issues first | Click the issue count in the header |
 | Stop before arming, Stop before locking | **Stop** |
