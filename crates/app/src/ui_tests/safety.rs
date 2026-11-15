@@ -336,6 +336,7 @@ fn press_every_shortcut(r: &mut Rig) {
     for (modifiers, key) in [
         (Modifiers::COMMAND, Key::D),
         (Modifiers::COMMAND, Key::S),
+        (Modifiers::CTRL, Key::S),
         (Modifiers::COMMAND, Key::Z),
         (Modifiers::COMMAND | Modifiers::SHIFT, Key::Z),
     ] {

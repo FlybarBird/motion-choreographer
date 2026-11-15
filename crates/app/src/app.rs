@@ -549,7 +549,7 @@ impl Shell {
                 .clone()
                 .or_else(|| (!has).then(|| "No song is open".to_string()))
                 .or_else(|| (!dirty).then(|| "Nothing to save".to_string()));
-            if gate(ui, save_why.is_none(), icon::FLOPPY_DISK, "Save", save_why, "Save the draft  ( Cmd-S )") {
+            if gate(ui, save_why.is_none(), icon::FLOPPY_DISK, "Save", save_why, "Save the draft  ( Cmd-S or Ctrl-S )") {
                 if let Some(id) = &song_id {
                     s.link.send(Cmd::Save(id.clone()));
                 }
@@ -816,7 +816,8 @@ impl Shell {
         };
         let with_cmd = |k: Key| chord(k).is_some_and(|m| m.command);
         let alone = |k: Key| chord(k).is_some_and(|m| !m.command);
-        if with_cmd(Key::S) {
+        // Save is both Cmd-S and Ctrl-S, on every machine: on a Mac Cmd is not Ctrl.
+        if chord(Key::S).is_some_and(|m| m.command || m.ctrl) {
             if let Some(song) = &s.song {
                 s.link.send(Cmd::Save(song.id.clone()));
             }

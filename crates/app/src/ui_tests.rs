@@ -162,6 +162,47 @@ fn dragging_a_preset_from_the_browser_drops_a_move_on_the_timeline() {
 }
 
 #[test]
+fn dragging_a_preset_onto_a_move_replaces_where_it_goes() {
+    let project = Project::default();
+    let (song, id) =
+        ptz_core::edit::insert_preset_move(&Song::new("s", "Test Song", "01:00:00:00", 1500), &project, &presets()[1], 200)
+            .unwrap();
+    let mut r = rig(song);
+    let before = r.song().motion_clip(&id).unwrap().clone();
+
+    let from = r.preset_point("awards");
+    let mid = (before.start_frame + before.end_frame()) as f64 / 2.0;
+    r.drag(from, r.lane_point(Lane::Motion(0), mid));
+
+    assert_eq!(r.song().motion.len(), 1, "the move is replaced, not stacked");
+    let after = r.song().motion_clip(&id).unwrap();
+    assert_eq!(after.start_frame, before.start_frame, "the move stays where it was");
+    match &after.body {
+        ClipBody::PresetMove { to, auto_duration, .. } => {
+            assert_eq!(to.name, "Awards Two-Shot");
+            assert!(*auto_duration, "auto time is kept; it may retake from the new travel");
+        }
+        other => panic!("expected a preset move, got {other:?}"),
+    }
+    assert_eq!(r.puts().len(), 1);
+}
+
+#[test]
+fn ctrl_s_and_cmd_s_save_the_song() {
+    let mut r = rig(Song::new("s", "Test Song", "01:00:00:00", 1500));
+    let _ = r.cmds.try_iter().count();
+    r.harness.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::S);
+    r.harness.run_steps(2);
+    let cmds: Vec<Cmd> = r.cmds.try_iter().collect();
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::Save(id) if id == "s")), "Ctrl-S saves: {cmds:?}");
+
+    r.harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
+    r.harness.run_steps(2);
+    let cmds: Vec<Cmd> = r.cmds.try_iter().collect();
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::Save(id) if id == "s")), "Cmd-S saves: {cmds:?}");
+}
+
+#[test]
 fn dragging_the_end_of_a_move_makes_it_longer_with_custom_time() {
     let project = Project::default();
     let (song, id) =

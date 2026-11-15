@@ -4,7 +4,7 @@
 use egui::{pos2, Pos2, Rect};
 use ptz_core::edit::{self, Refusal};
 use ptz_core::pose::{Axis, Preset, Project};
-use ptz_core::song::{ClipBody, Song, Track};
+use ptz_core::song::{ClipBody, MotionClip, Song, Track};
 use std::collections::BTreeSet;
 
 pub const HEADER_W: f32 = 132.0;
@@ -847,9 +847,49 @@ impl Timeline {
         }
     }
 
-    /// Where a dragged preset would land.
-    /// Where a dragged preset would land. Only the pointer's time matters: a
-    /// preset has one lane it can go on, so it lands there from anywhere on the timeline.
+    /// The move a dragged preset is over: the clip under the pointer, if it is
+    /// this camera's, otherwise this camera's move at the drop time. Dropping
+    /// there replaces where that move goes instead of inserting over it.
+    fn clip_under_preset<'a>(layout: &Layout, doc: &'a Doc, preset: &Preset, pos: Pos2, frame: i64) -> Option<&'a MotionClip> {
+        let pointed = match hit(layout, pos) {
+            Hit::ClipBody { id } | Hit::ClipStart { id } | Hit::ClipEnd { id } | Hit::Key { clip: id, .. } => {
+                doc.song.motion_clip(&id).filter(|c| c.camera == preset.camera)
+            }
+            _ => None,
+        };
+        if pointed.is_some() {
+            return pointed;
+        }
+        doc.song.motion.iter().find(|c| c.camera == preset.camera && c.start_frame <= frame && frame < c.end_frame())
+    }
+
+    fn replace_ghost(preset: &Preset, clip: &MotionClip, lane: Lane) -> Ghost {
+        if clip.is_keys() {
+            return Ghost {
+                lane,
+                start: clip.start_frame,
+                duration: clip.duration_frames.max(1),
+                label: preset.name.clone(),
+                refusal: Some("A recorded pass cannot take a preset. Drop beside it".into()),
+            };
+        }
+        let old = match &clip.body {
+            ClipBody::PresetMove { to, .. } => to.name.as_str(),
+            _ => "this move",
+        };
+        Ghost {
+            lane,
+            start: clip.start_frame,
+            duration: clip.duration_frames.max(1),
+            label: format!("Replace {old} with {}", preset.name),
+            refusal: None,
+        }
+    }
+
+    /// Where a dragged preset would land. Only the pointer's time matters for a
+    /// new move: a preset has one lane it can go on, so it lands there from
+    /// anywhere on the timeline. Over an existing move of that camera, it
+    /// replaces where that move goes and keeps its time.
     pub fn preset_ghost(&mut self, layout: &Layout, doc: &Doc, preset: &Preset, pos: Pos2, mods: Mods) -> Option<Ghost> {
         if !layout.body.contains(pos) {
             self.snap_frame = None;
@@ -864,6 +904,10 @@ impl Timeline {
             }
         }
         let lane = doc.project.camera_index(&preset.camera).map(Lane::Motion).unwrap_or(Lane::Missing);
+        if let Some(clip) = Self::clip_under_preset(layout, doc, preset, pos, frame) {
+            self.snap_frame = None;
+            return Some(Self::replace_ghost(preset, clip, lane));
+        }
         Some(match edit::drop_preview(doc.song, doc.project, preset, frame) {
             Ok(p) => {
                 let from = p.from_name.clone().map(|f| format!("{f} to ")).unwrap_or_else(|| "To ".into());
@@ -889,7 +933,19 @@ impl Timeline {
         if let Some(reason) = ghost.refusal {
             return Outcome::Refused(reason);
         }
-        match edit::insert_preset_move(doc.song, doc.project, preset, ghost.start) {
+        let frame = ghost.start;
+        if let Some(clip) = Self::clip_under_preset(layout, doc, preset, pos, frame) {
+            let id = clip.id.clone();
+            return match edit::set_to(doc.song, doc.project, &id, preset) {
+                Ok(song) => {
+                    self.select_only(&id);
+                    self.key_selection.clear();
+                    Outcome::Edit { song, select: Some(vec![id]) }
+                }
+                Err(r) => Outcome::Refused(r.to_string()),
+            };
+        }
+        match edit::insert_preset_move(doc.song, doc.project, preset, frame) {
             Ok((song, id)) => {
                 self.select_only(&id);
                 self.key_selection.clear();
@@ -1199,15 +1255,20 @@ mod tests {
         d.song = d.undo.pop().unwrap();
         assert_eq!(d.song.motion.len(), 3);
 
-        // A drop inside an existing move is refused and changes nothing.
-        let before = d.song.clone();
+        // A drop on an existing move replaces where it goes and keeps its time.
+        let before = d.song.motion_clip(&ids[1]).unwrap().clone();
         let l = d.layout();
         let doc = Doc { song: &d.song, project: &d.project, playhead: 0.0 };
         let g = d.t.preset_ghost(&l, &doc, &p[2], pos2(l.x_of(450.0), y), Mods { shift: true, ..Mods::default() }).unwrap();
-        assert!(g.refusal.as_deref().unwrap().contains("Overlaps"));
+        assert!(g.refusal.is_none(), "{}", g.label);
+        assert!(g.label.contains("Replace") && g.label.contains("Awards Two-Shot"), "{}", g.label);
+        assert_eq!((g.start, g.duration), (before.start_frame, before.duration_frames));
         d.drop_preset(&p[2], pos2(x(&d, 450.0), y));
-        assert_eq!(d.song, before);
-        assert_eq!(d.refusals.len(), 1);
+        let after = d.song.motion_clip(&ids[1]).unwrap();
+        assert_eq!(after.start_frame, before.start_frame, "the move stays where it was");
+        assert!(matches!(&after.body, ClipBody::PresetMove { to, .. } if to.name == "Awards Two-Shot"));
+        assert_eq!(d.song.motion.len(), 3);
+        d.song = d.undo.pop().unwrap();
 
         // Move the second clip later by its body. Linked From keeps the same auto time here.
         let c = d.song.motion_clip(&ids[1]).unwrap().clone();
@@ -1362,5 +1423,24 @@ mod tests {
         assert_eq!(tick_step(4.0, 25.0), (25, 5));
         assert_eq!(tick_step(1.0, 25.0), (125, 25));
         assert_eq!(tick_step(0.05, 25.0), (3000, 750));
+    }
+
+    #[test]
+    fn a_preset_dropped_on_a_keys_clip_is_refused() {
+        let project = Project::default();
+        let mut song = Song::new("s", "S", "01:00:00:00", 1500);
+        let (next, id) = edit::insert_preset_move(&song, &project, &presets()[0], 100).unwrap();
+        song = edit::convert_to_keys(&next, &project, &id).unwrap();
+        let mut d = Driver::new(song, project);
+        let y = motion_y(&d.layout());
+        let l = d.layout();
+        let doc = Doc { song: &d.song, project: &d.project, playhead: 0.0 };
+        let g =
+            d.t.preset_ghost(&l, &doc, &presets()[1], pos2(l.x_of(120.0), y), Mods { shift: true, ..Mods::default() }).unwrap();
+        assert!(g.refusal.as_deref().unwrap().contains("recorded pass"), "{}", g.label);
+        let before = d.song.clone();
+        d.drop_preset(&presets()[1], pos2(l.x_of(120.0), y));
+        assert_eq!(d.song, before);
+        assert_eq!(d.refusals.len(), 1);
     }
 }

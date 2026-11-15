@@ -90,7 +90,7 @@ place. **Show settings** on the camera bar puts it where the panels are;
 **Close settings** or Esc brings the panels back. The header, the transport,
 E-STOP and the camera bar stay on screen and keep working. While it is open
 the keys that edit or move through the song do nothing: only Space, the
-camera keys and Cmd-S act. The setup guide goes through every page.
+camera keys and Cmd-S or Ctrl-S act. The setup guide goes through every page.
 
 | Tab | What it is for |
 | --- | --- |
@@ -143,7 +143,7 @@ ten minutes and touches everything you will use daily.
    Inspector to *Ease out* and rehearse. The move now arrives gently.
 9. **Mark a cue.** Put the playhead where the second move starts and press
    **M**. Double-click the marker to name it.
-10. **Keep it.** Press **Save** (Cmd-S), then **Commit**. The header shows
+10. **Keep it.** Press **Save** (Cmd-S or Ctrl-S), then **Commit**. The header shows
     *revision 1*. This revision is what could now be armed.
 
 Made a mistake at any point? **Cmd-Z** undoes it, **Shift-Cmd-Z** redoes it.
@@ -199,6 +199,7 @@ and Elevation.
 | To | Do this |
 | --- | --- |
 | Add a move | Drag a preset from the Presets tab. It lands on the Camera move lane at the pointer's time. |
+| Change where a move goes | Drag a preset onto that move. Its time stays; the destination changes. |
 | Slide a move | Drag it |
 | Make it longer or shorter | Drag its right edge. It switches from auto time to custom time. |
 | Change when it starts without moving its end | Drag its left edge |
@@ -210,7 +211,8 @@ Edges snap to the playhead, to markers and to other clips. Hold **Shift** while
 dragging to turn snapping off. **Escape** cancels a drag.
 
 If a drop or a drag is refused (no lease, the song is armed, it would overlap
-another move), the ghost turns amber and says why.
+another move, or the preset is dropped on a recorded pass), the ghost turns
+amber and says why.
 
 ### Selecting
 
@@ -479,7 +481,7 @@ timecode source is on site. **Unlock** returns to free-run.
 
 | Command | What it does |
 | --- | --- |
-| **Save** (Cmd-S) | Saves the draft. The *unsaved* chip goes away. |
+| **Save** (Cmd-S or Ctrl-S) | Saves the draft. The *unsaved* chip goes away. |
 | **Revert** | Goes back to the last Save. Everything since is dropped, and this cannot be undone. |
 | **Commit** | Freezes the saved draft as the next revision. Only a committed revision can be armed. |
 | **Save As** | Makes a copy under a new name, with its own revisions, and opens it |
@@ -923,7 +925,7 @@ watches until it takes over.
 
 ### Keyboard
 
-On a Mac, Cmd; elsewhere, Ctrl.
+On a Mac, Cmd; elsewhere, Ctrl. Save is both **Cmd-S** and **Ctrl-S**, on every machine.
 
 | Key | Does |
 | --- | --- |
@@ -937,7 +939,7 @@ On a Mac, Cmd; elsewhere, Ctrl.
 | Delete, Backspace | Delete the selection |
 | Cmd-D | Duplicate the selection after itself |
 | Cmd-Z, Shift-Cmd-Z | Undo, redo |
-| Cmd-S | Save |
+| Cmd-S, Ctrl-S | Save |
 | `\` | Fit the song to the window |
 | F | Graph editor: fit the view |
 | Escape | Cancel a drag, close a dialog, or close Show settings |
