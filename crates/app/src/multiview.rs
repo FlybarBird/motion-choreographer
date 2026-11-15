@@ -80,7 +80,7 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
         let (word, ink) = crate::camera_ui::state(status, output);
         let frame = match word {
             "held" | "fault" | "stopping" => Some(RED),
-            "live" => Some(GREEN),
+            "live" => Some(ink),
             _ if on => Some(ACCENT),
             _ => None,
         };

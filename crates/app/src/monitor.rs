@@ -74,24 +74,22 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
 
     let live = s.status.hardware_live;
     let t = &s.status.transport;
-    // The picture is framed in the state of the machine, as the rule under the transport is.
-    let border = if t.estop {
-        RED
-    } else if live {
-        GREEN
-    } else {
-        CONTROL_LINE
-    };
-    painter.rect_stroke(pic, 0.0, Stroke::new(if live || t.estop { RULE_STRONG } else { RULE }, border), StrokeKind::Outside);
-
     let simulated = !s.cam_status().hardware;
     let held = s.cam_status().held;
+    // The picture is framed in the state of the machine, as the rule under the transport is, and in
+    // red while this camera is held where it stopped.
+    let machine = machine_ink(t, live);
+    let frame = if held { Some(RED) } else { machine };
+    let rule = Stroke::new(if frame.is_some() { RULE_STRONG } else { RULE }, frame.unwrap_or(CONTROL_LINE));
+    painter.rect_stroke(pic, 0.0, rule, StrokeKind::Outside);
+
     let (text, fill_c, ink) = if t.estop {
         ("E-STOP".to_string(), RED, ink_on(RED))
     } else if held {
         ("HELD  this camera stopped where it was".to_string(), RED, ink_on(RED))
     } else if live {
-        (if simulated { "LIVE  simulator".to_string() } else { "LIVE  rig is moving".to_string() }, GREEN, ink_on(GREEN))
+        let fill = machine.unwrap_or(GREEN);
+        (if simulated { "LIVE  simulator".to_string() } else { "LIVE  rig is moving".to_string() }, fill, ink_on(fill))
     } else {
         ("REHEARSE  nothing is sent to the rig".to_string(), plate_fill(), OFF_WHITE)
     };
@@ -115,7 +113,7 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
         Align2::LEFT_BOTTOM,
         &s.timecode_at(s.playhead().floor() as i64),
         plate_fill(),
-        clock_ink(t.estop, live),
+        clock_ink(t, live),
     );
     let camera = s.cam();
     let lens = format!("{}   {:.0} mm", s.project.label(&camera.id), camera.lens.focal_mm(pose.zoom));

@@ -198,27 +198,31 @@ pub fn ink_on(fill: Color32) -> Color32 {
     }
 }
 
-/// The colour of the show's clock wherever it is written: red while E-Stop is latched,
-/// green while output reaches the rig, and plain otherwise.
-pub fn clock_ink(estop: bool, live: bool) -> Color32 {
-    if estop {
-        RED
-    } else if live {
-        GREEN
+/// The state of the machine as one colour, the same wherever it is shown: the rule under the transport,
+/// the clock, the playhead and the frame of a monitor. Red while E-Stop is latched, amber while the rig
+/// travels to the playhead by itself, green while output reaches the rig and follows the timeline.
+/// None in rehearsal, when nothing reaches the rig.
+pub fn machine_ink(t: &ptz_core::transport::TransportState, live: bool) -> Option<Color32> {
+    use ptz_core::transport::Output;
+    if t.estop {
+        Some(RED)
+    } else if t.output == Output::Positioning {
+        Some(AMBER)
+    } else if live || t.output == Output::Armed {
+        Some(GREEN)
     } else {
-        OFF_WHITE
+        None
     }
 }
 
-/// The colour of the playhead, by the same rule as the clock: the accent while nothing is live.
-pub fn playhead_ink(estop: bool, live: bool) -> Color32 {
-    if estop {
-        RED
-    } else if live {
-        GREEN
-    } else {
-        ACCENT
-    }
+/// The colour of the show's clock wherever it is written: the machine's state, and plain ink in rehearsal.
+pub fn clock_ink(t: &ptz_core::transport::TransportState, live: bool) -> Color32 {
+    machine_ink(t, live).unwrap_or(OFF_WHITE)
+}
+
+/// The colour of the playhead: the machine's state, and the accent in rehearsal.
+pub fn playhead_ink(t: &ptz_core::transport::TransportState, live: bool) -> Color32 {
+    machine_ink(t, live).unwrap_or(ACCENT)
 }
 
 // --------------------------------------------------------------- style
@@ -372,6 +376,20 @@ pub fn section(ui: &mut egui::Ui, title: &str) {
     hairline(ui);
     ui.add_space(U);
     ui.label(caps(title).color(MUTED));
+}
+
+/// What a panel says when it has nothing to show: set flush left at the panel's margin, like everything in it.
+pub fn empty<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let said = egui::Frame::new().inner_margin(egui::Margin::same(PAD as i8)).show(ui, |ui| {
+        ui.spacing_mut().item_spacing.y = U;
+        add(ui)
+    });
+    said.inner
+}
+
+/// The name of a field in a form: quieter than the value beside it.
+pub fn field(ui: &mut egui::Ui, text: &str) -> egui::Response {
+    ui.label(RichText::new(text).color(MUTED))
 }
 
 /// Text that only explains.

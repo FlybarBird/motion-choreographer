@@ -34,6 +34,8 @@ pub fn state(status: Option<&CameraStatus>, output: Output) -> (&'static str, eg
         Some(c) if c.halting => ("stopping", RED),
         Some(c) if c.preset_sync.is_some() => ("reading", AMBER),
         Some(c) if c.hardware && c.adapters.iter().any(|a| !a.connected) => ("no answer", AMBER),
+        // Amber while the rig travels to the playhead, green once it follows the timeline: as the transport's rule is.
+        Some(c) if c.hardware && output == Output::Positioning => ("live", AMBER),
         Some(c) if c.hardware && output != Output::Rehearse => ("live", GREEN),
         Some(c) if c.hardware => ("rig", OFF_WHITE),
         _ => ("sim", MUTED),

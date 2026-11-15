@@ -99,7 +99,7 @@ fn preset_menu(ui: &mut Ui, s: &mut Session, preset: &Preset) {
     let id = ui.make_persistent_id(("preset_height", &preset.id, preset.pose.elevation.to_bits()));
     let mut mm = ui.data_mut(|d| d.get_temp::<f64>(id)).unwrap_or(preset.pose.elevation);
     ui.horizontal(|ui| {
-        ui.label("Height");
+        field(ui, "Height");
         ui.add_enabled(can, crate::units::height_box(&mut mm, units).range(limits.min..=limits.max))
             .on_hover_text("The column height this preset goes to. Double-click to type it")
             .on_disabled_hover_text(no_lease);
@@ -201,8 +201,7 @@ pub fn presets(ui: &mut Ui, s: &mut Session) {
     }
     let presets = s.camera_presets();
     if presets.is_empty() {
-        ui.add_space(12.0);
-        ui.vertical_centered(|ui| {
+        empty(ui, |ui| {
             if s.project.cameras.len() > 1 {
                 note(ui, &format!("No presets yet for {}.", s.cam().name));
             } else {
@@ -250,7 +249,7 @@ pub fn presets(ui: &mut Ui, s: &mut Session) {
 // -------------------------------------------------------------- Inspector
 
 fn tc_row(ui: &mut Ui, s: &Session, label: &str, frame: i64) {
-    ui.label(label);
+    field(ui, label);
     ui.label(RichText::new(s.timecode_at(frame)).monospace());
     ui.end_row();
 }
@@ -269,17 +268,17 @@ fn inspect_move(ui: &mut Ui, s: &mut Session, id: &str) {
     let Some(clip) = song.motion_clip(id).cloned() else { return };
     let fps = s.project.rate.fps();
     // A list is as wide as the panel has room for beside its label, up to its usual width.
-    let field = (ui.available_width() - 20.0 * U).clamp(28.0 * U, 190.0);
+    let list = (ui.available_width() - 20.0 * U).clamp(28.0 * U, 190.0);
     ui.label(RichText::new(crate::timeline::move_label(&song, id, &s.project)).font(semibold(BODY)));
     let issues: Vec<Issue> = s.issues_for(id).into_iter().cloned().collect();
     let missing = s.project.camera(&clip.camera).is_none();
     if s.project.cameras.len() > 1 || missing {
         ui.horizontal(|ui| {
-            ui.label("Camera");
+            field(ui, "Camera");
             let shown = s.project.label(&clip.camera);
             egui::ComboBox::from_id_salt("move_camera")
                 .selected_text(shown)
-                .width(field)
+                .width(list)
                 .show_ui(ui, |ui| {
                     for camera in s.project.cameras.clone() {
                         let label = s.project.label(&camera.id);
@@ -333,12 +332,12 @@ fn inspect_move(ui: &mut Ui, s: &mut Session, id: &str) {
         ClipBody::PresetMove { auto_duration, from, to, ease } => {
             section(ui, "Preset move");
             egui::Grid::new("move_grid").num_columns(2).spacing([PAD, GAP]).show(ui, |ui| {
-                ui.label("From");
+                field(ui, "From");
                 let from_text = match from {
                     FromPose::Linked(_) => "Where the camera already is".to_string(),
                     FromPose::Pinned(p) => p.name.clone(),
                 };
-                egui::ComboBox::from_id_salt("from").selected_text(from_text).width(field).show_ui(ui, |ui| {
+                egui::ComboBox::from_id_salt("from").selected_text(from_text).width(list).show_ui(ui, |ui| {
                     if ui.selectable_label(from.is_linked(), "Where the camera already is").clicked() {
                         s.edit(|song, project| edit::set_from(song, project, id, FromPose::linked()));
                     }
@@ -351,8 +350,8 @@ fn inspect_move(ui: &mut Ui, s: &mut Session, id: &str) {
                 });
                 ui.end_row();
 
-                ui.label("To");
-                egui::ComboBox::from_id_salt("to").selected_text(to.name.clone()).width(field).show_ui(ui, |ui| {
+                field(ui, "To");
+                egui::ComboBox::from_id_salt("to").selected_text(to.name.clone()).width(list).show_ui(ui, |ui| {
                     for p in presets.clone() {
                         if ui.selectable_label(to.preset_id == p.id, &p.name).clicked() {
                             s.edit(|song, project| edit::set_to(song, project, id, &p));
@@ -394,7 +393,7 @@ fn inspect_move(ui: &mut Ui, s: &mut Session, id: &str) {
                 tc_row(ui, s, "Start", clip.start_frame);
                 tc_row(ui, s, "End", clip.end_frame());
 
-                ui.label("Duration");
+                field(ui, "Duration");
                 ui.horizontal(|ui| {
                     if ui.selectable_label(*auto_duration, "Auto").on_hover_text("As fast as the rig's limits allow").clicked()
                         && !auto_duration
@@ -423,8 +422,8 @@ fn inspect_move(ui: &mut Ui, s: &mut Session, id: &str) {
                     ui.end_row();
                 }
 
-                ui.label("Ease");
-                egui::ComboBox::from_id_salt("ease").selected_text(ease.label()).width(field).show_ui(ui, |ui| {
+                field(ui, "Ease");
+                egui::ComboBox::from_id_salt("ease").selected_text(ease.label()).width(list).show_ui(ui, |ui| {
                     for e in Ease::ALL {
                         if ui.selectable_label(*ease == e, e.label()).clicked() {
                             s.edit(|song, project| edit::set_ease(song, project, id, e));
@@ -439,7 +438,7 @@ fn inspect_move(ui: &mut Ui, s: &mut Session, id: &str) {
             egui::Grid::new("keys_grid").num_columns(2).spacing([PAD, GAP]).show(ui, |ui| {
                 tc_row(ui, s, "Start", clip.start_frame);
                 tc_row(ui, s, "End", clip.end_frame());
-                ui.label("Duration");
+                field(ui, "Duration");
                 ui.label(format!("{:.2} s", clip.duration_frames as f64 / fps));
                 ui.end_row();
                 for (axis, keys) in curves {
@@ -522,11 +521,11 @@ fn inspect_media(ui: &mut Ui, s: &mut Session, id: &str) {
     egui::Grid::new("media_grid").num_columns(2).spacing([PAD, GAP]).show(ui, |ui| {
         tc_row(ui, s, "Start", clip.start_frame);
         tc_row(ui, s, "End", clip.end_frame());
-        ui.label("Plays");
+        field(ui, "Plays");
         ui.label(format!("{:.2} s of {:.2} s", clip.duration() as f64 / fps, clip.media_frames as f64 / fps));
         ui.end_row();
         if let Some(info) = s.media.iter().find(|m| m.id == clip.media_id) {
-            ui.label("File");
+            field(ui, "File");
             ui.label(format!("{} ch, {} Hz", info.channels, info.sample_rate));
             ui.end_row();
         }
@@ -567,7 +566,7 @@ fn file_timecode(
     section(ui, "File timecode");
     ui.add_enabled_ui(editable.is_ok(), |ui| {
         egui::Grid::new("file_tc_grid").num_columns(2).spacing([PAD, GAP]).show(ui, |ui| {
-            ui.label("Starts at");
+            field(ui, "Starts at");
             ui.horizontal(|ui| {
                 let current = info.start_tc.clone().unwrap_or_default();
                 if let Some(typed) = text_field(ui, &format!("file_tc_{}", info.id), &current, 96.0) {
@@ -584,7 +583,7 @@ fn file_timecode(
                 };
             });
             ui.end_row();
-            ui.label("Read LTC");
+            field(ui, "Read LTC");
             ui.horizontal(|ui| {
                 let picked = info.ltc_channel.map(|c| format!("Channel {}", c + 1)).unwrap_or_else(|| "from channel...".into());
                 egui::ComboBox::from_id_salt(("ltc_channel", &info.id)).selected_text(picked).width(118.0).show_ui(ui, |ui| {
@@ -684,7 +683,7 @@ fn inspect_marker(ui: &mut Ui, s: &mut Session, id: &str) {
     let Some(marker) = song.markers.iter().find(|m| m.id == id).cloned() else { return };
     section(ui, "Marker");
     egui::Grid::new("marker_grid").num_columns(2).spacing([PAD, GAP]).show(ui, |ui| {
-        ui.label("Name");
+        field(ui, "Name");
         if let Some(name) = text_field(ui, &format!("marker_name_{id}"), &marker.name, 180.0) {
             s.edit(|song, project| edit::rename_marker(song, project, id, &name));
         }
@@ -695,19 +694,19 @@ fn inspect_marker(ui: &mut Ui, s: &mut Session, id: &str) {
 
 fn inspect_song(ui: &mut Ui, s: &mut Session) {
     let Some(song) = s.song.clone() else {
-        ui.add_space(12.0);
+        ui.add_space(PAD);
         note(ui, "No song is open.");
         return;
     };
     let fps = s.project.rate.fps();
     section(ui, "Song");
     egui::Grid::new("song_grid").num_columns(2).spacing([PAD, GAP]).show(ui, |ui| {
-        ui.label("Name");
+        field(ui, "Name");
         if let Some(name) = text_field(ui, "insp_song_name", &song.name, 180.0) {
             s.edit(|song, project| edit::set_song_name(song, project, &name));
         }
         ui.end_row();
-        ui.label("Starts at");
+        field(ui, "Starts at");
         if let Some(tc) = text_field(ui, "insp_song_start", &song.start_tc, 110.0) {
             match Timecode::parse_at(&tc, s.project.rate) {
                 Some(_) => {
@@ -717,7 +716,7 @@ fn inspect_song(ui: &mut Ui, s: &mut Session) {
             }
         }
         ui.end_row();
-        ui.label("Length");
+        field(ui, "Length");
         let mut secs = song.length_frames as f64 / fps;
         let floor = (song.content_end() as f64 / fps).max(1.0);
         if ui.add(egui::DragValue::new(&mut secs).speed(0.5).range(floor..=7200.0).suffix(" s").fixed_decimals(1)).changed() {
@@ -909,8 +908,7 @@ pub fn log(ui: &mut Ui, s: &mut Session) {
         );
     });
     if s.log.is_empty() {
-        ui.add_space(PAD);
-        ui.vertical_centered(|ui| note(ui, "Nothing has been logged since the server started."));
+        empty(ui, |ui| note(ui, "Nothing has been logged since the server started."));
         return;
     }
     let row_h = 5.0 * U;

@@ -668,8 +668,7 @@ fn toolbar(ui: &mut Ui, s: &mut Session, clip: Option<&MotionClip>) -> bool {
 
 pub fn show(ui: &mut Ui, s: &mut Session) {
     let Some(song) = s.song.clone() else {
-        ui.add_space(12.0);
-        ui.vertical_centered(|ui| note(ui, "No song is open."));
+        empty(ui, |ui| note(ui, "No song is open."));
         return;
     };
     let playhead = s.playhead();
@@ -985,7 +984,7 @@ fn paint(painter: &Painter, plot: &Plot, song: &Song, clip: Option<&MotionClip>,
 
     let x = plot.x_of(playhead);
     if x >= plot.body.left() - 1.0 && x <= plot.rect.right() + 1.0 {
-        let color = playhead_ink(s.status.transport.estop, s.status.hardware_live);
+        let color = playhead_ink(&s.status.transport, s.status.hardware_live);
         painter.vline(x, plot.ruler.top() + 6.0..=plot.rect.bottom(), Stroke::new(1.5, color));
         let head =
             vec![pos2(x - 5.0, plot.ruler.top() + 2.0), pos2(x + 5.0, plot.ruler.top() + 2.0), pos2(x, plot.ruler.top() + 11.0)];

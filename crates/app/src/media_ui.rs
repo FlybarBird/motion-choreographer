@@ -66,8 +66,7 @@ pub fn media(ui: &mut Ui, s: &mut Session) {
         ui.label(RichText::new("or drop files on the window").color(MUTED).small());
     });
     if s.media.is_empty() {
-        ui.add_space(12.0);
-        ui.vertical_centered(|ui| {
+        empty(ui, |ui| {
             note(ui, "No media has been imported.");
             note(ui, "Drop an audio file here to add it.");
         });
@@ -171,13 +170,11 @@ fn fit(inside: Rect, aspect: f32) -> Rect {
 /// The reference monitor: the frame of the reference video under the playhead.
 pub fn reference(ui: &mut Ui, s: &mut Session) {
     let Some(song) = s.song.clone() else {
-        ui.add_space(12.0);
-        ui.vertical_centered(|ui| note(ui, "No song is open."));
+        empty(ui, |ui| note(ui, "No song is open."));
         return;
     };
     if !song.media.iter().any(|c| c.track == ptz_core::song::Track::Video) {
-        ui.add_space(12.0);
-        ui.vertical_centered(|ui| {
+        empty(ui, |ui| {
             note(ui, "No reference video is on the timeline.");
             note(ui, "Import a QuickTime or MP4 file, then drag it from Media onto the Reference video lane.");
         });

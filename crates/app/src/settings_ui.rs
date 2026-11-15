@@ -19,7 +19,7 @@ fn route_label(route: ChannelRoute) -> &'static str {
 }
 
 fn route_combo(ui: &mut Ui, label: &str, route: &mut ChannelRoute) {
-    ui.label(label);
+    field(ui, label);
     egui::ComboBox::from_id_salt(("route", label)).selected_text(route_label(*route)).width(210.0).show_ui(ui, |ui| {
         for choice in [ChannelRoute::Program, ChannelRoute::Ltc, ChannelRoute::Silent] {
             ui.selectable_value(route, choice, route_label(choice));
@@ -112,25 +112,25 @@ fn keep_out(ui: &mut Ui, camera: &mut CameraConfig, units: Units, editable: bool
     let mut remove = None;
     ui.add_enabled_ui(editable, |ui| {
         for (i, rule) in camera.keep_out.iter_mut().enumerate() {
-            ui.add_space(4.0);
+            ui.add_space(U);
             ui.horizontal(|ui| {
                 if let Some(name) = crate::panels::text_field(ui, &format!("rule_name_{i}"), &rule.name, 150.0) {
                     rule.name = name;
                 }
-                if ui.small_button("Remove").on_hover_text("Delete this rule").clicked() {
+                if ui.button("Remove").on_hover_text("Delete this rule").clicked() {
                     remove = Some(i);
                 }
             });
             ui.horizontal_wrapped(|ui| {
-                ui.label("When");
+                field(ui, "When");
                 axis_combo(ui, ("rule_when_axis", i), &mut rule.when_axis);
-                ui.label("is");
+                field(ui, "is");
                 cmp_combo(ui, ("rule_when", i), &mut rule.when);
                 ui.add(axis_box(&mut rule.when_value, rule.when_axis, units));
             });
             ui.horizontal_wrapped(|ui| {
                 axis_combo(ui, ("rule_then_axis", i), &mut rule.then_axis);
-                ui.label("must be");
+                field(ui, "must be");
                 cmp_combo(ui, ("rule_must", i), &mut rule.must_be);
                 ui.add(axis_box(&mut rule.must_value, rule.then_axis, units));
             });
@@ -138,7 +138,7 @@ fn keep_out(ui: &mut Ui, camera: &mut CameraConfig, units: Units, editable: bool
                 ui.label(RichText::new("A rule ties one axis to another. Pick two different axes.").color(AMBER).small());
             }
         }
-        ui.add_space(4.0);
+        ui.add_space(U);
         if ui
             .button("Add a keep-out rule")
             .on_hover_text("Starts as: when elevation is below 200 mm, tilt must be above -10 degrees")
@@ -165,7 +165,7 @@ fn rig(ui: &mut Ui, s: &mut Session, camera: &mut CameraConfig, units: Units, ed
     let rig = &mut camera.rig;
     ui.add_enabled_ui(editable && parked, |ui| {
         egui::Grid::new("rig_grid").num_columns(2).spacing([4.0 * U, GAP]).show(ui, |ui| {
-            ui.label("Drives");
+            field(ui, "Drives");
             let shown = |kind: RigKind| match kind {
                 RigKind::Simulator => "The simulator",
                 RigKind::Hardware => "FR7 and AutoPod+",
@@ -176,16 +176,16 @@ fn rig(ui: &mut Ui, s: &mut Session, camera: &mut CameraConfig, units: Units, ed
             });
             ui.end_row();
             if rig.kind == RigKind::Hardware {
-                ui.label("FR7 address");
+                field(ui, "FR7 address");
                 if let Some(host) = crate::panels::text_field(ui, "fr7_host", &rig.fr7_host, 170.0) {
                     rig.fr7_host = host.trim().to_string();
                 }
                 ui.end_row();
-                ui.label("FR7 web port");
+                field(ui, "FR7 web port");
                 ui.add(egui::DragValue::new(&mut rig.fr7_http_port).range(1..=65535))
                     .on_hover_text("The camera's web interface, which gives preset names and pictures");
                 ui.end_row();
-                ui.label("FR7 login");
+                field(ui, "FR7 login");
                 ui.horizontal(|ui| {
                     if let Some(user) = crate::panels::text_field(ui, "fr7_user", &rig.fr7_user, 80.0) {
                         rig.fr7_user = user.trim().to_string();
@@ -195,30 +195,30 @@ fn rig(ui: &mut Ui, s: &mut Session, camera: &mut CameraConfig, units: Units, ed
                     }
                 });
                 ui.end_row();
-                ui.label("AutoPod+ address");
+                field(ui, "AutoPod+ address");
                 if let Some(host) = crate::panels::text_field(ui, "autopod_host", &rig.autopod_host, 170.0) {
                     rig.autopod_host = host.trim().to_string();
                 }
                 ui.end_row();
-                ui.label("Counts per degree");
+                field(ui, "Counts per degree");
                 ui.add(egui::DragValue::new(&mut rig.fr7_counts_per_degree).speed(0.1).range(1.0..=100000.0));
                 ui.end_row();
-                ui.label("Counts run backwards");
+                field(ui, "Counts run backwards");
                 ui.horizontal(|ui| {
                     ui.checkbox(&mut rig.fr7_invert_pan, "Pan");
                     ui.checkbox(&mut rig.fr7_invert_tilt, "Tilt");
                 });
                 ui.end_row();
-                ui.label("Plain moves");
+                field(ui, "Plain moves");
                 ui.checkbox(&mut rig.fr7_absolute_moves, "The head runs them itself").on_hover_text(
                     "A preset move is sent as one command and the head ramps by itself, instead of being steered along the curve. Use it if bring-up shows steering strays",
                 );
                 ui.end_row();
-                ui.label("Speed steps");
+                field(ui, "Speed steps");
                 ui.horizontal(|ui| match (rig.fr7_speed_steps.first().copied(), rig.fr7_speed_steps.last().copied()) {
                     (Some(low), Some(top)) => {
                         ui.label(RichText::new(format!("measured: {low:.2} to {top:.1} °/s")).small());
-                        if ui.small_button("Forget").on_hover_text("Go back to Sony's published range, spread evenly").clicked() {
+                        if ui.button("Forget").on_hover_text("Go back to Sony's published range, spread evenly").clicked() {
                             rig.fr7_speed_steps.clear();
                         }
                     }
@@ -227,18 +227,18 @@ fn rig(ui: &mut Ui, s: &mut Session, camera: &mut CameraConfig, units: Units, ed
                     }
                 });
                 ui.end_row();
-                ui.label("Query delay");
+                field(ui, "Query delay");
                 ui.add(egui::DragValue::new(&mut rig.query_delay_ms).speed(0.1).range(0.0..=500.0).suffix(" ms"))
                     .on_hover_text("How old a position is when it arrives. Zero uses the round trip measured as it runs");
                 ui.end_row();
             }
-            ui.label("Arm moves at");
+            field(ui, "Arm moves at");
             let mut percent = rig.positioning_speed * 100.0;
             if ui.add(egui::Slider::new(&mut percent, 5.0..=100.0).suffix("%").fixed_decimals(0)).changed() {
                 rig.positioning_speed = percent / 100.0;
             }
             ui.end_row();
-            ui.label("Tracking fault after");
+            field(ui, "Tracking fault after");
             ui.add(egui::DragValue::new(&mut rig.tracking_window_ms).range(100..=5000).suffix(" ms"))
                 .on_hover_text("How long the rig may be further from the timeline than the tolerance before it is held and disarmed");
             ui.end_row();
@@ -260,7 +260,7 @@ fn rig(ui: &mut Ui, s: &mut Session, camera: &mut CameraConfig, units: Units, ed
         });
 
         if rig.kind == RigKind::Hardware && !rig.autopod_host.is_empty() {
-            ui.add_space(4.0);
+            ui.add_space(U);
             ui.label(RichText::new("AutoPod+ height map: the leg box's raw position at measured heights").color(MUTED).small());
             ui.label(
                 RichText::new(
@@ -285,13 +285,13 @@ fn rig(ui: &mut Ui, s: &mut Session, camera: &mut CameraConfig, units: Units, ed
                     ui.add(height_box(&mut point.mm, units).update_while_editing(false))
                         .on_hover_text("Set height: what you measured with the column at this raw position");
                     let update = ui
-                        .add_enabled(raw.is_some(), egui::Button::new("Update to current").small())
+                        .add_enabled(raw.is_some(), egui::Button::new("Update to current"))
                         .on_hover_text("The column is at this height now: take the raw position it reports for this row")
                         .on_disabled_hover_text(not_answering);
                     if update.clicked() {
                         retake = Some(i);
                     }
-                    if ui.small_button("Remove").clicked() {
+                    if ui.button("Remove").clicked() {
                         remove = Some(i);
                     }
                     ui.end_row();
@@ -315,7 +315,7 @@ fn rig(ui: &mut Ui, s: &mut Session, camera: &mut CameraConfig, units: Units, ed
                 ui.add(height_box(&mut mm, units).range(0.0..=5000.0))
                     .on_hover_text("Set height: what you measure with the column where it is now");
                 let add = ui
-                    .add_enabled(raw.is_some(), egui::Button::new("Add the current height").small())
+                    .add_enabled(raw.is_some(), egui::Button::new("Add the current height"))
                     .on_hover_text("Measure the column now, enter the height, and add it with the raw position the leg box reports")
                     .on_disabled_hover_text(not_answering);
                 if let (true, Some(raw)) = (add.clicked(), raw) {
@@ -402,13 +402,15 @@ pub fn area(ui: &mut Ui, s: &mut Session, page: &mut Page) {
         .exact_size(60.0 * U)
         .frame(Frame::new().fill(PANEL_DARK).inner_margin(Margin::symmetric(0, PAD as i8)))
         .show(ui, |ui| nav(ui, s, page));
-    egui::CentralPanel::default().frame(Frame::new().fill(PANEL).inner_margin(Margin::symmetric(24, 16))).show(ui, |ui| {
-        egui::ScrollArea::vertical().id_salt(("settings_page", *page)).auto_shrink([false, false]).show(ui, |ui| {
-            ui.set_max_width(720.0);
-            body(ui, s, *page);
-            ui.add_space(24.0);
+    egui::CentralPanel::default()
+        .frame(Frame::new().fill(PANEL).inner_margin(Margin::symmetric((6.0 * U) as i8, (4.0 * U) as i8)))
+        .show(ui, |ui| {
+            egui::ScrollArea::vertical().id_salt(("settings_page", *page)).auto_shrink([false, false]).show(ui, |ui| {
+                ui.set_max_width(720.0);
+                body(ui, s, *page);
+                ui.add_space(6.0 * U);
+            });
         });
-    });
 }
 
 /// Why nothing here can be changed just now, from why the song cannot be edited.
@@ -503,7 +505,7 @@ fn body(ui: &mut Ui, s: &mut Session, page: Page) {
             ui.label(RichText::new(icon::LOCK_SIMPLE).font(icon_font(crate::theme::TITLE)).color(AMBER));
             ui.label(RichText::new(read_only(&why)).color(AMBER));
         });
-        ui.add_space(8.0);
+        ui.add_space(GAP);
     }
     ui.label(RichText::new(page.title()).font(semibold(DISPLAY)));
     if page.of_one_camera() {
@@ -546,7 +548,7 @@ fn body(ui: &mut Ui, s: &mut Session, page: Page) {
 fn general(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::Project, editable: bool) {
     ui.add_enabled_ui(editable, |ui| {
         egui::Grid::new("general_grid").num_columns(2).spacing([4.0 * U, GAP]).show(ui, |ui| {
-            ui.label("Frame rate");
+            field(ui, "Frame rate");
             egui::ComboBox::from_id_salt("rate").selected_text(s.project.rate.label()).show_ui(ui, |ui| {
                 for rate in ptz_core::FrameRate::ALL {
                     if ui.selectable_label(s.project.rate == rate, rate.label()).clicked() && rate != s.project.rate {
@@ -558,7 +560,7 @@ fn general(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::Project, 
                 }
             });
             ui.end_row();
-            ui.label("Measurement units");
+            field(ui, "Measurement units");
             egui::ComboBox::from_id_salt("units")
                 .selected_text(project.units.label())
                 .width(260.0)
@@ -570,7 +572,7 @@ fn general(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::Project, 
                 .response
                 .on_hover_text("How heights and distances are shown and typed at every station. The show itself does not change");
             ui.end_row();
-            ui.label("When a camera faults");
+            field(ui, "When a camera faults");
             egui::ComboBox::from_id_salt("on_fault").selected_text(project.on_fault.label()).width(260.0).show_ui(ui, |ui| {
                 for choice in OnFault::ALL {
                     ui.selectable_value(&mut project.on_fault, choice, choice.label());
@@ -579,7 +581,7 @@ fn general(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::Project, 
             ui.end_row();
         });
     });
-    ui.add_space(4.0);
+    ui.add_space(U);
     ui.label(
         RichText::new(
             "Set the frame rate once, before programming. It must match the timecode the show will be locked to; code at another rate is refused.",
@@ -600,12 +602,12 @@ fn programming(ui: &mut Ui, project: &mut ptz_core::pose::Project, editable: boo
         .color(MUTED)
         .small(),
     );
-    ui.add_space(6.0);
+    ui.add_space(GAP);
     let units = project.units;
     let matching = &mut project.preset_match;
     ui.add_enabled_ui(editable, |ui| {
         ui.checkbox(&mut matching.enabled, "Use a preset within range");
-        ui.add_space(4.0);
+        ui.add_space(U);
         ui.add_enabled_ui(matching.enabled, |ui| {
             egui::Grid::new("preset_match_grid").num_columns(2).spacing([4.0 * U, GAP]).show(ui, |ui| {
                 ui.label(RichText::new("").small());
@@ -636,7 +638,7 @@ fn programming(ui: &mut Ui, project: &mut ptz_core::pose::Project, editable: boo
             });
         });
     });
-    ui.add_space(4.0);
+    ui.add_space(U);
     ui.label(
         RichText::new(
             "Wider ranges give fewer presets that are nearly the same; narrower ones keep small differences apart. \
@@ -661,7 +663,7 @@ fn audio_output(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::Proj
             route_combo(ui, "Left", &mut project.routing.left);
             route_combo(ui, "Right", &mut project.routing.right);
             if project.routing.left == ChannelRoute::Ltc || project.routing.right == ChannelRoute::Ltc {
-                ui.label("LTC level");
+                field(ui, "LTC level");
                 ui.add(egui::Slider::new(&mut project.ltc_level, 0.05..=1.0).fixed_decimals(2));
                 ui.end_row();
             }
@@ -708,7 +710,7 @@ fn control_panel(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::Pro
     let from_command_line = s.status.panel_host.as_ref().is_some_and(|h| h.from_command_line);
     ui.add_enabled_ui(editable && !from_command_line, |ui| {
         egui::Grid::new("panel_grid").num_columns(2).spacing([4.0 * U, GAP]).show(ui, |ui| {
-            ui.label("Panel address");
+            field(ui, "Panel address");
             if let Some(address) = crate::panels::text_field(ui, "panel_address", &project.panel.address, 190.0) {
                 let was = std::mem::replace(&mut project.panel.address, address.trim().to_string());
                 if project.panel.address.is_empty() {
@@ -725,7 +727,7 @@ fn control_panel(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::Pro
             ui.end_row();
         });
     });
-    ui.add_space(4.0);
+    ui.add_space(U);
     if from_command_line {
         ui.label(
             RichText::new(
@@ -738,7 +740,7 @@ fn control_panel(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::Pro
     let (state, good) = panel_state(&s.status, s.project.panel.wanted());
     let state = RichText::new(state);
     ui.label(if good { state } else { state.color(AMBER) });
-    ui.add_space(4.0);
+    ui.add_space(U);
     ui.label(
         RichText::new(
             "The address is the panel's own, like 192.168.0.60; port 9923 is used unless another is given. \
@@ -759,7 +761,7 @@ fn timecode_inputs(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::P
     let choices = s.inputs.clone().unwrap_or_default();
     ui.add_enabled_ui(editable, |ui| {
         egui::Grid::new("inputs_grid").num_columns(2).spacing([4.0 * U, GAP]).show(ui, |ui| {
-            ui.label("LTC input");
+            field(ui, "LTC input");
             ui.horizontal(|ui| {
                 device_combo(ui, "ltc_device", &mut project.inputs.ltc_device, "Default input", &choices.audio_inputs);
                 let mut channel = project.inputs.ltc_channel + 1;
@@ -768,10 +770,10 @@ fn timecode_inputs(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::P
                 }
             });
             ui.end_row();
-            ui.label("MTC input");
+            field(ui, "MTC input");
             device_combo(ui, "mtc_port", &mut project.inputs.mtc_port, "First MIDI input", &choices.midi_inputs);
             ui.end_row();
-            ui.label("Art-Net");
+            field(ui, "Art-Net");
             if let Some(bind) = crate::panels::text_field(ui, "artnet_bind", &project.inputs.artnet_bind, 150.0) {
                 match bind.trim().parse::<std::net::SocketAddr>() {
                     Ok(_) => project.inputs.artnet_bind = bind.trim().to_string(),
@@ -781,7 +783,7 @@ fn timecode_inputs(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::P
                 }
             }
             ui.end_row();
-            ui.label("Freewheel");
+            field(ui, "Freewheel");
             ui.add(egui::DragValue::new(&mut project.freewheel_frames).range(0..=250).suffix(" frames"))
                 .on_hover_text("How long the playhead carries on when code drops out, before it stops and holds");
             ui.end_row();
@@ -790,7 +792,7 @@ fn timecode_inputs(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::P
     for problem in [&choices.audio_problem, &choices.midi_problem].into_iter().flatten() {
         ui.label(RichText::new(problem).color(AMBER).small());
     }
-    if ui.small_button("List devices again").clicked() {
+    if ui.button("List devices again").clicked() {
         s.link.send(Cmd::RefreshInputs);
     }
 }
@@ -950,7 +952,7 @@ fn lens(ui: &mut Ui, s: &Session, camera: &mut CameraConfig, units: Units, edita
     let (pose, _) = s.camera_pose(&camera.id);
     ui.add_enabled_ui(editable, |ui| {
         egui::Grid::new("lens_grid").num_columns(2).spacing([4.0 * U, GAP]).show(ui, |ui| {
-            ui.label("Lens");
+            field(ui, "Lens");
             let presets = Lens::presets();
             let known = presets.iter().any(|p| p.name == camera.lens.name);
             let shown = if known { camera.lens.name.clone() } else { lens::CUSTOM.to_string() };
@@ -966,11 +968,11 @@ fn lens(ui: &mut Ui, s: &Session, camera: &mut CameraConfig, units: Units, edita
                 }
             });
             ui.end_row();
-            ui.label("Focal length");
+            field(ui, "Focal length");
             ui.horizontal(|ui| {
                 let (mut wide, mut tele) = (camera.lens.wide_mm, camera.lens.tele_mm);
                 let a = ui.add(egui::DragValue::new(&mut wide).speed(0.5).range(4.0..=tele).suffix(" mm"));
-                ui.label("to");
+                field(ui, "to");
                 let b = ui.add(egui::DragValue::new(&mut tele).speed(0.5).range(wide..=2000.0).suffix(" mm"));
                 if a.changed() || b.changed() {
                     camera.lens = Lens { name: lens::CUSTOM.to_string(), wide_mm: wide, tele_mm: tele, ..camera.lens.clone() };
@@ -979,13 +981,13 @@ fn lens(ui: &mut Ui, s: &Session, camera: &mut CameraConfig, units: Units, edita
             .response
             .on_hover_text("The widest and the longest end. A prime has the same number twice");
             ui.end_row();
-            ui.label("Aperture");
+            field(ui, "Aperture");
             let mut f = camera.lens.f_number;
             if ui.add(egui::DragValue::new(&mut f).speed(0.1).range(0.7..=64.0).prefix("f/")).changed() {
                 camera.lens.f_number = f;
             }
             ui.end_row();
-            ui.label("Sensor");
+            field(ui, "Sensor");
             let sensor = |w: f64| {
                 if (w - lens::FULL_FRAME_WIDTH_MM).abs() < 0.05 {
                     "Full frame".to_string()
@@ -1081,7 +1083,7 @@ fn position(ui: &mut Ui, s: &Session, camera: &mut CameraConfig, units: Units, e
     ui.add_enabled_ui(editable, |ui| {
         let m = &mut camera.mount;
         egui::Grid::new("mount_grid").num_columns(2).spacing([4.0 * U, GAP]).show(ui, |ui| {
-            ui.label("Floor position");
+            field(ui, "Floor position");
             ui.horizontal(|ui| {
                 ui.add(distance_box(&mut m.x, units).range(-1000.0..=1000.0).prefix("x "));
                 ui.add(distance_box(&mut m.y, units).range(-1000.0..=1000.0).prefix("y "));
@@ -1089,11 +1091,11 @@ fn position(ui: &mut Ui, s: &Session, camera: &mut CameraConfig, units: Units, e
                     .on_hover_text("Height of the floor or platform the pedestal stands on");
             });
             ui.end_row();
-            ui.label("Heading");
+            field(ui, "Heading");
             ui.add(egui::DragValue::new(&mut m.heading_deg).speed(0.5).range(-360.0..=360.0).suffix("°"))
                 .on_hover_text("Where pan 0 points, counter-clockwise seen from above. 0 looks along +Y, towards the stage");
             ui.end_row();
-            ui.label("Lens height");
+            field(ui, "Lens height");
             ui.add(height_box(&mut m.base_height_mm, units).range(0.0..=5000.0))
                 .on_hover_text("Height of the lens above the floor with the column fully down");
             ui.end_row();
@@ -1218,25 +1220,25 @@ fn stage_model(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::Proje
     }
     ui.add_enabled_ui(editable, |ui| {
         egui::Grid::new("stage_grid").num_columns(2).spacing([4.0 * U, GAP]).show(ui, |ui| {
-            ui.label("One unit is");
+            field(ui, "One unit is");
             egui::ComboBox::from_id_salt("stage_unit").selected_text(model.unit.label()).width(130.0).show_ui(ui, |ui| {
                 for unit in ptz_core::camera::Unit::ALL {
                     ui.selectable_value(&mut model.unit, unit, unit.label());
                 }
             });
             ui.end_row();
-            ui.label("Up");
+            field(ui, "Up");
             egui::ComboBox::from_id_salt("stage_up").selected_text(model.up.label()).width(130.0).show_ui(ui, |ui| {
                 for up in ptz_core::camera::UpAxis::ALL {
                     ui.selectable_value(&mut model.up, up, up.label());
                 }
             });
             ui.end_row();
-            ui.label("Turned");
+            field(ui, "Turned");
             ui.add(egui::DragValue::new(&mut model.rotation_deg).speed(0.5).range(-360.0..=360.0).suffix("°"))
                 .on_hover_text("About the vertical, counter-clockwise seen from above");
             ui.end_row();
-            ui.label("Moved");
+            field(ui, "Moved");
             ui.horizontal(|ui| {
                 for (k, axis) in ["x ", "y ", "z "].into_iter().enumerate() {
                     ui.add(distance_box(&mut model.offset[k], units).range(-100000.0..=100000.0).prefix(axis));

@@ -682,19 +682,21 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
         m.heading_deg,
         units.distance(m.lens_position(poses[selected].elevation)[2], 2)
     );
-    let text = |at: Pos2, anchor: Align2, text: String, ink: egui::Color32| {
-        plate(&painter, at, anchor, &text, plate_fill(), ink);
-    };
+    let text = |at: Pos2, anchor: Align2, text: String, ink: egui::Color32| plate(&painter, at, anchor, &text, plate_fill(), ink);
     text(rect.left_top() + vec2(GAP, GAP), Align2::LEFT_TOP, stands, camera_color(selected));
     let hint = match (&s.stage_view.measure[..], s.stage_view.tool) {
         ([a, b], Tool::Measure) => format!("Measured {}", measured(*a, *b, units)),
         ([_], Tool::Measure) => "Click the second point".to_string(),
         (_, tool) => format!("{}. Right-drag or Shift-drag slides the view; scroll zooms", tool.hint()),
     };
-    text(rect.left_bottom() + vec2(GAP, -GAP), Align2::LEFT_BOTTOM, hint, OFF_WHITE);
+    let hint = text(rect.left_bottom() + vec2(GAP, -GAP), Align2::LEFT_BOTTOM, hint, OFF_WHITE);
     let ms = s.world.timings.get("stage").copied().unwrap_or(0.0);
     let scale = format!("{} triangles, drawn in {ms:.1} ms   Grid {grid_step:.0} m", s.world.triangles());
-    text(rect.right_bottom() + vec2(-GAP, -GAP), Align2::RIGHT_BOTTOM, scale, MUTED);
+    // The figures about the drawing give way to the hint where the view is too narrow for both.
+    let needs = painter.layout_no_wrap(scale.clone(), small(), MUTED).size().x + 3.0 * GAP;
+    if hint.right() + needs <= rect.right() {
+        text(rect.right_bottom() + vec2(-GAP, -GAP), Align2::RIGHT_BOTTOM, scale, MUTED);
+    }
     if let Some(wait) = crate::monitor::stage_wait(s) {
         text(rect.center_top() + vec2(0.0, GAP), Align2::CENTER_TOP, wait.to_string(), AMBER);
     }

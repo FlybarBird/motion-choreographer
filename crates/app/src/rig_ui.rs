@@ -417,7 +417,8 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
         egui::Frame::new().inner_margin(panel_margin()).show(ui, |ui| {
             if s.project.cameras.len() > 1 {
                 let i = s.cam_index();
-                ui.horizontal(|ui| {
+                // Wrapped, so that the sentence does not make the panel's contents wider than the panel.
+                ui.horizontal_wrapped(|ui| {
                     let (tag, _) = ui.allocate_exact_size(NUMBER_TAG, Sense::hover());
                     number_tag(ui.painter(), tag, i + 1, camera_color(i));
                     ui.label(RichText::new(&s.cam().name).font(semibold(BODY)));

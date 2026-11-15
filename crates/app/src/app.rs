@@ -430,19 +430,13 @@ fn transport_key(ctx: &egui::Context, s: &mut Session) {
     }
 }
 
-/// The colour of the rule under the transport bar: red while E-Stop is latched or a rig has faulted,
-/// amber while the rig travels to the playhead, green while it is armed, and a plain hairline in rehearsal.
-/// The chips beside the buttons say the same in words.
+/// The colour of the rule under the transport bar: the machine's state, red as well while a rig has
+/// faulted, and a plain hairline in rehearsal. The chips beside the buttons say the same in words.
 fn machine_rule(s: &Session) -> egui::Color32 {
-    let t = s.status.transport;
-    if t.estop || s.status.telemetry.fault.is_some() {
+    if s.status.telemetry.fault.is_some() {
         RED
     } else {
-        match t.output {
-            Output::Rehearse => LINE,
-            Output::Positioning => AMBER,
-            Output::Armed => GREEN,
-        }
+        machine_ink(&s.status.transport, s.status.hardware_live).unwrap_or(LINE)
     }
 }
 
@@ -720,8 +714,7 @@ impl Shell {
                     }
                 });
                 if s.status.you_hold_lease {
-                    if ui.small_button("Release").on_hover_text("Give up the edit lease so another station can take it").clicked()
-                    {
+                    if ui.button("Release").on_hover_text("Give up the edit lease so another station can take it").clicked() {
                         s.link.send(Cmd::ReleaseLease);
                     }
                     chip(ui, "You hold the edit lease", OFF_WHITE, false);
@@ -789,7 +782,7 @@ impl Shell {
                     // Everything that runs the machine is the large size.
                     ui.spacing_mut().interact_size.y = CONTROL_LARGE;
                     let frame = s.playhead().floor() as i64;
-                    let ink = clock_ink(t.estop, s.status.hardware_live);
+                    let ink = clock_ink(&t, s.status.hardware_live);
                     // The main button: whatever the server says is the next step.
                     let g = s.status.guidance.clone();
                     let primary = g.primary.filter(|a| *a != Action::Estop && *a != Action::ResetEstop);
@@ -991,10 +984,10 @@ impl Shell {
                     dialog_title(ui, "New song");
                     ui.add_space(U);
                     egui::Grid::new("new_grid").num_columns(2).spacing([PAD, GAP]).show(ui, |ui| {
-                        ui.label("Name");
+                        field(ui, "Name");
                         ui.add(egui::TextEdit::singleline(name).desired_width(220.0));
                         ui.end_row();
-                        ui.label("Starts at");
+                        field(ui, "Starts at");
                         ui.add(egui::TextEdit::singleline(start_tc).desired_width(120.0));
                         ui.end_row();
                     });
@@ -1467,7 +1460,7 @@ pub(crate) fn connect_form(
             ui.add_space(PAD);
             {
                 egui::Grid::new("connect_grid").num_columns(2).spacing([4.0 * U, GAP]).show(ui, |ui| {
-                    ui.label("Show server");
+                    field(ui, "Show server");
                     let r = ui.add_enabled(
                         !busy,
                         egui::TextEdit::singleline(&mut settings.server)
@@ -1492,11 +1485,11 @@ pub(crate) fn connect_form(
                         });
                         ui.end_row();
                     }
-                    ui.label("Station name");
+                    field(ui, "Station name");
                     ui.add_enabled(!busy, egui::TextEdit::singleline(&mut settings.station).desired_width(290.0))
                         .on_hover_text("Shown to other stations when this one holds the edit lease");
                     ui.end_row();
-                    ui.label("Access key");
+                    field(ui, "Access key");
                     ui.add_enabled(
                         !busy,
                         egui::TextEdit::singleline(&mut settings.access_key)

@@ -27,9 +27,7 @@ fn media_track(info: &MediaInfo) -> Track {
 
 pub fn show(ui: &mut Ui, s: &mut Session) {
     let Some(song) = s.song.clone() else {
-        ui.centered_and_justified(|ui| {
-            ui.label(egui::RichText::new("No song is open. Use New or Load in the header.").color(MUTED));
-        });
+        empty(ui, |ui| note(ui, "No song is open. Use New or Load in the header."));
         return;
     };
 
@@ -480,7 +478,7 @@ fn paint_ruler(painter: &Painter, l: &Layout, s: &Session) {
         Align2::LEFT_CENTER,
         s.timecode_at(s.playhead().floor() as i64),
         mono(SMALL),
-        clock_ink(s.status.transport.estop, s.status.hardware_live),
+        clock_ink(&s.status.transport, s.status.hardware_live),
     );
 }
 
@@ -956,7 +954,7 @@ fn paint(painter: &Painter, l: &Layout, song: &Song, s: &Session, playhead: f64)
     // Playhead over everything.
     let x = l.x_of(playhead);
     if x >= l.body.left() - 1.0 && x <= l.rect.right() + 1.0 {
-        let color = playhead_ink(s.status.transport.estop, s.status.hardware_live);
+        let color = playhead_ink(&s.status.transport, s.status.hardware_live);
         painter.vline(x, l.ruler.top() + 8.0..=l.rect.bottom(), Stroke::new(1.5, color));
         let head = vec![pos2(x - 6.0, l.ruler.top() + 2.0), pos2(x + 6.0, l.ruler.top() + 2.0), pos2(x, l.ruler.top() + 13.0)];
         painter.add(egui::Shape::convex_polygon(head, color, Stroke::NONE));
