@@ -477,6 +477,22 @@ fn design_pictures() {
         r.harness.state_mut().show_tab(Tab::Multiview);
         save(&mut r, &dir, &format!("20-twelve-cameras-{tag}"));
 
+        // The set list, as it is in a show and while it is being arranged.
+        let mut r = window(size);
+        r.harness.state_mut().session.project.set_list = vec!["s".into(), "t".into()];
+        r.harness.state_mut().show_tab(Tab::SetList);
+        r.harness.run_steps(3);
+        save(&mut r, &dir, &format!("22-set-list-{tag}"));
+        r.press("Arrange");
+        save(&mut r, &dir, &format!("23-set-list-arranging-{tag}"));
+
+        // A tip, under the pointer on the timeline's Fit button.
+        let mut r = window(size);
+        let fit = safety::rect_of(&r, "Fit").center();
+        r.harness.hover_at(fit);
+        r.harness.run_steps(90);
+        save(&mut r, &dir, &format!("24-tip-{tag}"));
+
         // No song open: what the panels say when they have nothing to show.
         let mut r = rig_sized(size, Project::default(), Vec::new(), Song::new("s", "Opening Number", "01:00:00:00", 1500));
         r.harness.state_mut().session.song = None;

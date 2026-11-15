@@ -6,9 +6,9 @@ use crate::theme::*;
 use egui::{RichText, Ui};
 use ptz_core::api::SongSummary;
 
-/// A small button that says why when it cannot be pressed.
+/// A button that says why when it cannot be pressed.
 fn gated(ui: &mut Ui, label: &str, can: &Result<(), String>, tip: &str) -> bool {
-    let r = ui.add_enabled(can.is_ok(), egui::Button::new(label).small());
+    let r = ui.add_enabled(can.is_ok(), egui::Button::new(label));
     match can {
         Err(why) => r.on_disabled_hover_text(why.clone()).clicked(),
         Ok(()) => r.on_hover_text(tip).clicked(),
@@ -27,9 +27,7 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
     let arrange_id = ui.id().with("arrange_set_list");
     let mut arranging = ui.data(|d| d.get_temp::<bool>(arrange_id)).unwrap_or(false);
 
-    ui.add_space(6.0);
-    ui.horizontal_wrapped(|ui| {
-        ui.add_space(6.0);
+    toolbar(ui, |ui| {
         for (label, by, tip) in [
             ("Previous", -1, "Load the song before this one in the set list  ( Page Up )"),
             ("Next", 1, "Load the next song in the set list  ( Page Down )"),
@@ -46,7 +44,7 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
             }
         }
         if ui
-            .add(egui::Button::selectable(arranging, "Arrange").small())
+            .add(egui::Button::selectable(arranging, "Arrange"))
             .on_hover_text("Add songs to the set list, put them in order, or take them out")
             .clicked()
         {
@@ -61,7 +59,6 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
             ),
         };
     });
-    ui.add_space(4.0);
 
     // Each song with its place in the list. A name the app has no song for yet is not shown.
     let listed: Vec<(usize, SongSummary)> = project
@@ -72,21 +69,19 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
         .collect();
     let last = project.set_list.len().saturating_sub(1);
     let others: Vec<SongSummary> = s.songs.iter().filter(|x| project.set_position(&x.id).is_none()).cloned().collect();
-    egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
+    // The rows start at the panel's margin, like the tools above them.
+    let list = |ui: &mut Ui| {
         if listed.is_empty() {
-            ui.horizontal(|ui| {
-                ui.add_space(8.0);
-                note(
-                    ui,
-                    if arranging {
-                        "The set list is empty. Add the show's songs below, in running order."
-                    } else {
-                        "The set list is empty. Arrange adds the show's songs to it."
-                    },
-                );
-            });
+            note(
+                ui,
+                if arranging {
+                    "The set list is empty. Add the show's songs below, in running order."
+                } else {
+                    "The set list is empty. Arrange adds the show's songs to it."
+                },
+            );
         }
-        egui::Grid::new("set_list").striped(true).spacing([10.0, 6.0]).show(ui, |ui| {
+        egui::Grid::new("set_list").striped(true).spacing([PAD, U]).show(ui, |ui| {
             for (at, song) in listed.iter().map(|(at, song)| (*at, song)) {
                 let open = loaded.as_deref() == Some(song.id.as_str());
                 ui.label(RichText::new(format!("{:>2}", at + 1)).monospace().color(MUTED));
@@ -107,7 +102,8 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
                     });
                 }
                 let can = if open { Err("This song is loaded".to_string()) } else { s.can_load(song) };
-                let name = RichText::new(&song.name).strong().color(if open { GREEN } else { OFF_WHITE });
+                // The loaded song is the row that is switched on; green is kept for output that reaches the rig.
+                let name = RichText::new(&song.name).font(semibold(BODY));
                 let row = ui.add_enabled(open || can.is_ok(), egui::Button::selectable(open, name));
                 let row = match &can {
                     Err(why) if !open => row.on_disabled_hover_text(why.clone()),
@@ -128,26 +124,22 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
             }
         });
         if arranging && !others.is_empty() {
-            ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                ui.add_space(8.0);
-                note(ui, "Not in the set list");
-            });
-            egui::Grid::new("set_list_others").spacing([10.0, 6.0]).show(ui, |ui| {
+            section(ui, "Not in the set list");
+            egui::Grid::new("set_list_others").spacing([PAD, U]).show(ui, |ui| {
                 for song in &others {
-                    ui.horizontal(|ui| {
-                        ui.add_space(8.0);
-                        if gated(ui, "Add", &can_edit, "Add to the end of the set list") {
-                            project.set_list.push(song.id.clone());
-                        }
-                    });
+                    if gated(ui, "Add", &can_edit, "Add to the end of the set list") {
+                        project.set_list.push(song.id.clone());
+                    }
                     ui.label(&song.name);
                     ui.label(RichText::new(&song.start_tc).monospace().color(MUTED));
                     ui.end_row();
                 }
             });
         }
-    });
+    };
+    egui::ScrollArea::both()
+        .auto_shrink([false, false])
+        .show(ui, |ui| egui::Frame::new().inner_margin(panel_margin()).show(ui, list));
 
     // A list that names a song the server no longer has is sent as it stands; the server drops the name.
     s.put_project(project);

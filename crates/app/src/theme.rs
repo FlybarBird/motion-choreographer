@@ -301,7 +301,7 @@ pub fn apply(ctx: &egui::Context) {
         style.spacing.item_spacing = egui::vec2(GAP, GAP);
         style.spacing.button_padding = egui::vec2(GAP + 2.0, U);
         style.spacing.interact_size.y = CONTROL_H;
-        style.spacing.menu_margin = egui::Margin::same(U as i8);
+        style.spacing.menu_margin = egui::Margin::same(GAP as i8);
         style.spacing.window_margin = egui::Margin::same((4.0 * U) as i8);
     });
 }
@@ -400,22 +400,21 @@ pub fn note(ui: &mut egui::Ui, text: &str) -> egui::Response {
 /// The strip of tools at the top of a tab: one row, a margin on either side, a hairline under it.
 /// Controls in it are the small size.
 pub fn toolbar<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
-    let inner = egui::Frame::new()
-        .fill(PANEL)
-        .inner_margin(egui::Margin::symmetric(PAD as i8, U as i8))
-        .show(ui, |ui| {
-            ui.set_min_height(TOOLBAR_H - 2.0 * U);
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().interact_size.y = CONTROL_SMALL;
-                ui.spacing_mut().item_spacing = egui::vec2(U, U);
-                add(ui)
-            })
-            .inner
+    let strip = egui::Frame::new().fill(PANEL).inner_margin(egui::Margin::symmetric(PAD as i8, U as i8)).show(ui, |ui| {
+        ui.set_min_height(TOOLBAR_H - 2.0 * U);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().interact_size.y = CONTROL_SMALL;
+            ui.spacing_mut().item_spacing = egui::vec2(U, U);
+            add(ui)
         })
-        .inner;
-    let rule = ui.min_rect().bottom();
+        .inner
+    });
+    // The rule lies on the row of pixels under the strip.
+    let rule = strip.response.rect.bottom() + RULE / 2.0;
     ui.painter().hline(ui.max_rect().x_range(), rule, Stroke::new(RULE, LINE));
-    inner
+    // What the tab shows begins at the rule, not a gap below it.
+    ui.add_space(RULE - ui.spacing().item_spacing.y);
+    strip.inner
 }
 
 /// The margin round the scrolling contents of a form panel.
