@@ -5,7 +5,7 @@ use crate::panels::note;
 use crate::session::Session;
 use crate::theme::*;
 use crate::timeline_ui::MediaDrag;
-use egui::{vec2, Align2, Color32, FontId, Rect, RichText, Sense, Stroke, StrokeKind, Ui};
+use egui::{vec2, Align2, Color32, Rect, RichText, Sense, Stroke, Ui};
 use ptz_core::api::{MediaInfo, MediaKind};
 
 pub fn duration_label(seconds: f64) -> String {
@@ -21,32 +21,35 @@ pub fn channels_label(channels: u32) -> String {
     }
 }
 
+/// A file in the library: a row with a hairline under it, a tag in the colour its clips have on
+/// the timeline, its name and what it holds.
 fn media_card(ui: &mut Ui, info: &MediaInfo) -> egui::Response {
-    let width = (ui.available_width() - 8.0).max(120.0);
-    let (rect, resp) = ui.allocate_exact_size(vec2(width, 44.0), Sense::hover());
+    let width = ui.available_width().max(120.0);
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, 11.0 * U), Sense::hover());
     let p = ui.painter();
-    p.rect_filled(rect, 5.0, mix(PANEL, OFF_WHITE, 0.06));
-    p.rect_stroke(rect, 5.0, Stroke::new(1.0, mix(PANEL, OFF_WHITE, 0.16)), StrokeKind::Inside);
-    let badge = Rect::from_min_size(rect.left_top() + vec2(6.0, 6.0), vec2(32.0, 32.0));
-    let (tag, color) = if info.kind == MediaKind::Video { ("VID", BLUE) } else { ("AUD", GREEN) };
-    p.rect_filled(badge, 4.0, with_alpha(color, 40));
-    p.text(badge.center(), Align2::CENTER_CENTER, tag, FontId::proportional(10.0), color);
-    let text = p.with_clip_rect(rect.shrink(4.0));
-    text.text(rect.left_top() + vec2(46.0, 6.0), Align2::LEFT_TOP, &info.name, FontId::proportional(12.5), OFF_WHITE);
+    if resp.hovered() {
+        p.rect_filled(rect, 0.0, CONTROL);
+    }
+    p.hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(RULE, LINE));
+    let badge = Rect::from_min_size(rect.left_top() + vec2(PAD, 1.5 * U), vec2(8.0 * U, 8.0 * U));
+    let (tag, color) = if info.kind == MediaKind::Video { ("VID", VIDEO_CLIP) } else { ("AUD", AUDIO_CLIP) };
+    p.rect_filled(badge, RADIUS, mix(PANEL, color, 0.24));
+    p.rect_filled(badge.with_max_x(badge.left() + 3.0), 0.0, color);
+    p.text(badge.center() + vec2(1.5, 0.0), Align2::CENTER_CENTER, tag, semibold(MICRO), OFF_WHITE);
+    let text = p.with_clip_rect(rect.shrink2(vec2(PAD, 0.0)));
+    text.text(rect.left_top() + vec2(PAD + 10.0 * U, 1.5 * U), Align2::LEFT_TOP, &info.name, body(), OFF_WHITE);
     let mut detail = format!("{}   {}   {} Hz", duration_label(info.duration_s), channels_label(info.channels), info.sample_rate);
     if let Some(tc) = &info.start_tc {
         detail.push_str(&format!("   starts {tc}"));
     }
-    text.text(rect.left_top() + vec2(46.0, 25.0), Align2::LEFT_TOP, detail, FontId::proportional(10.5), MUTED);
+    text.text(rect.left_top() + vec2(PAD + 10.0 * U, 6.5 * U), Align2::LEFT_TOP, detail, micro(), MUTED);
     resp
 }
 
 pub fn media(ui: &mut Ui, s: &mut Session) {
-    ui.add_space(6.0);
-    ui.horizontal(|ui| {
-        ui.add_space(6.0);
+    toolbar(ui, |ui| {
         let can = s.can_edit();
-        let import = ui.add_enabled(can.is_ok(), egui::Button::new("Import...").small());
+        let import = ui.add_enabled(can.is_ok(), egui::Button::new("Import..."));
         let import = match &can {
             Err(why) => import.on_disabled_hover_text(why.clone()),
             Ok(()) => import.on_hover_text("Add WAV, AIFF or MP3 audio, or a QuickTime or MP4 video"),
@@ -62,7 +65,6 @@ pub fn media(ui: &mut Ui, s: &mut Session) {
         }
         ui.label(RichText::new("or drop files on the window").color(MUTED).small());
     });
-    ui.add_space(2.0);
     if s.media.is_empty() {
         ui.add_space(12.0);
         ui.vertical_centered(|ui| {
@@ -72,12 +74,11 @@ pub fn media(ui: &mut Ui, s: &mut Session) {
         return;
     }
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-        ui.add_space(2.0);
+        ui.spacing_mut().item_spacing.y = 0.0;
         let library = s.media.clone();
         s.probe_media.clear();
         for info in &library {
             ui.horizontal(|ui| {
-                ui.add_space(6.0);
                 let id = egui::Id::new(("media_drag", &info.id));
                 let inner = ui.dnd_drag_source(id, MediaDrag(info.clone()), |ui| media_card(ui, info));
                 if !ui.ctx().is_being_dragged(id) {
@@ -92,9 +93,9 @@ pub fn media(ui: &mut Ui, s: &mut Session) {
                 });
             });
         }
-        ui.add_space(6.0);
+        ui.add_space(GAP);
         ui.horizontal(|ui| {
-            ui.add_space(8.0);
+            ui.add_space(PAD);
             note(ui, "Drag a file onto the timeline. Drag a clip's edges to trim it.");
         });
     });
@@ -121,27 +122,28 @@ pub fn meters(ui: &mut Ui, s: &Session) {
         (None, None) => "No audio output".into(),
     };
     let label_w = 92.0;
-    let (rect, resp) = ui.allocate_exact_size(vec2(64.0 + 8.0 + label_w, 30.0), Sense::hover());
+    let (rect, resp) = ui.allocate_exact_size(vec2(64.0 + GAP + label_w, CONTROL_LARGE), Sense::hover());
     let p = ui.painter().with_clip_rect(rect);
     for (row, (tag, peak)) in [("L", audio.peak_left), ("R", audio.peak_right)].into_iter().enumerate() {
-        let y = rect.top() + 4.0 + row as f32 * 12.0;
-        p.text(egui::pos2(rect.left(), y + 5.0), Align2::LEFT_CENTER, tag, FontId::monospace(9.5), MUTED);
-        let bar = Rect::from_min_size(egui::pos2(rect.left() + 10.0, y), vec2(54.0, 10.0));
-        p.rect_filled(bar, 2.0, mix(PANEL, BASE, 0.6));
+        let y = rect.top() + U + row as f32 * 3.0 * U;
+        p.text(egui::pos2(rect.left(), y + U), Align2::LEFT_CENTER, tag, mono(MICRO), MUTED);
+        let bar = Rect::from_min_size(egui::pos2(rect.left() + 10.0, y), vec2(54.0, 2.0 * U));
+        p.rect_filled(bar, 0.0, BASE);
         let lit = meter_fraction(peak);
         if lit > 0.0 {
+            // Level is plain ink: it turns amber near the top and red at full scale, and green is left to the rig.
             let color = if peak >= 0.98 {
                 RED
             } else if lit > 0.85 {
                 AMBER
             } else {
-                GREEN
+                OFF_WHITE
             };
-            p.rect_filled(Rect::from_min_size(bar.min, vec2(bar.width() * lit, bar.height())), 2.0, color);
+            p.rect_filled(Rect::from_min_size(bar.min, vec2(bar.width() * lit, bar.height())), 0.0, color);
         }
     }
-    let color = if audio.output.is_some() { OFF_WHITE } else { AMBER };
-    p.text(egui::pos2(rect.left() + 72.0, rect.center().y), Align2::LEFT_CENTER, name, FontId::proportional(11.0), color);
+    let color = if audio.output.is_some() { MUTED } else { AMBER };
+    p.text(egui::pos2(rect.left() + 64.0 + GAP, rect.center().y), Align2::LEFT_CENTER, name, small(), color);
     resp.on_hover_text(hover);
 }
 
@@ -187,12 +189,12 @@ pub fn reference(ui: &mut Ui, s: &mut Session) {
     let frame = s.playhead().floor() as i64;
     let Some((clip, source)) = picture_at(&song, frame) else {
         s.reference_shown = None;
-        p.text(area.center(), Align2::CENTER_CENTER, "No picture at the playhead", FontId::proportional(13.0), MUTED);
+        p.text(area.center(), Align2::CENTER_CENTER, "No picture at the playhead", body(), MUTED);
         return;
     };
     let info = s.media.iter().find(|m| m.id == clip.media_id).cloned();
     if !info.as_ref().is_some_and(|m| m.proxy_frames > 0) {
-        p.text(area.center(), Align2::CENTER_CENTER, "This file has no picture", FontId::proportional(13.0), MUTED);
+        p.text(area.center(), Align2::CENTER_CENTER, "This file has no picture", body(), MUTED);
         return;
     }
     let key = crate::frames::key(&clip.media_id, source, false);
@@ -214,8 +216,8 @@ pub fn reference(ui: &mut Ui, s: &mut Session) {
             let at = fit(area.shrink(2.0), size.x / size.y.max(1.0));
             p.image(texture.id(), at, Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
             let strip = Rect::from_min_max(egui::pos2(at.left(), at.bottom() - 20.0), at.max);
-            p.rect_filled(strip, 0.0, with_alpha(BASE, 170));
-            p.text(strip.left_center() + vec2(6.0, 0.0), Align2::LEFT_CENTER, &clip.name, FontId::proportional(11.0), OFF_WHITE);
+            p.rect_filled(strip, 0.0, plate_fill());
+            p.text(strip.left_center() + vec2(GAP, 0.0), Align2::LEFT_CENTER, &clip.name, small(), OFF_WHITE);
             let rate = s.project.rate;
             let code = info
                 .as_ref()
@@ -223,10 +225,10 @@ pub fn reference(ui: &mut Ui, s: &mut Session) {
                 .and_then(|tc| ptz_core::time::Timecode::parse_at(tc, rate))
                 .map(|start| ptz_core::time::Timecode::from_frames(start.to_frames(rate) + source, rate).to_string())
                 .unwrap_or_else(|| format!("frame {source}"));
-            p.text(strip.right_center() - vec2(6.0, 0.0), Align2::RIGHT_CENTER, code, FontId::monospace(11.0), OFF_WHITE);
+            p.text(strip.right_center() - vec2(GAP, 0.0), Align2::RIGHT_CENTER, code, mono(SMALL), OFF_WHITE);
         }
         None => {
-            p.text(area.center(), Align2::CENTER_CENTER, "Loading the picture", FontId::proportional(13.0), MUTED);
+            p.text(area.center(), Align2::CENTER_CENTER, "Loading the picture", body(), MUTED);
         }
     }
 }

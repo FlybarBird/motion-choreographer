@@ -164,7 +164,7 @@ fn rig(ui: &mut Ui, s: &mut Session, camera: &mut CameraConfig, units: Units, ed
     let raw = s.cam_status().adapters.iter().find(|a| a.name == "AutoPod+").and_then(|a| a.raw_position);
     let rig = &mut camera.rig;
     ui.add_enabled_ui(editable && parked, |ui| {
-        egui::Grid::new("rig_grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+        egui::Grid::new("rig_grid").num_columns(2).spacing([4.0 * U, GAP]).show(ui, |ui| {
             ui.label("Drives");
             let shown = |kind: RigKind| match kind {
                 RigKind::Simulator => "The simulator",
@@ -271,7 +271,7 @@ fn rig(ui: &mut Ui, s: &mut Session, camera: &mut CameraConfig, units: Units, ed
             );
             let not_answering = "The AutoPod+ is not answering, so its raw position is not known";
             let (mut remove, mut retake) = (None, None);
-            egui::Grid::new("height_map").num_columns(4).spacing([10.0, 4.0]).show(ui, |ui| {
+            egui::Grid::new("height_map").num_columns(4).spacing([PAD, U]).show(ui, |ui| {
                 if !rig.autopod_calibration.is_empty() {
                     for head in ["Raw position", "Measured height", "", ""] {
                         ui.label(RichText::new(head).small().color(MUTED));
@@ -399,8 +399,8 @@ pub fn area(ui: &mut Ui, s: &mut Session, page: &mut Page) {
     use egui::{Frame, Margin};
     egui::Panel::left("settings_nav")
         .resizable(false)
-        .exact_size(236.0)
-        .frame(Frame::new().fill(PANEL_DARK).inner_margin(Margin::symmetric(8, 10)))
+        .exact_size(60.0 * U)
+        .frame(Frame::new().fill(PANEL_DARK).inner_margin(Margin::symmetric(0, PAD as i8)))
         .show(ui, |ui| nav(ui, s, page));
     egui::CentralPanel::default().frame(Frame::new().fill(PANEL).inner_margin(Margin::symmetric(24, 16))).show(ui, |ui| {
         egui::ScrollArea::vertical().id_salt(("settings_page", *page)).auto_shrink([false, false]).show(ui, |ui| {
@@ -422,47 +422,72 @@ fn camera_tag(ui: &mut Ui, s: &Session) {
     let at = s.cam_index();
     let name = s.project.cameras.get(at).map(|c| c.name.clone()).unwrap_or_default();
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 6.0;
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(22.0, 18.0), egui::Sense::hover());
-        ui.painter().rect_filled(rect, 4.0, camera_color(at));
-        ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, format!("{}", at + 1), semibold(12.0), BASE);
-        ui.add(egui::Label::new(RichText::new(name).font(semibold(13.0))).truncate());
+        ui.spacing_mut().item_spacing.x = GAP;
+        let (rect, _) = ui.allocate_exact_size(NUMBER_TAG, egui::Sense::hover());
+        number_tag(ui.painter(), rect, at + 1, camera_color(at));
+        ui.add(egui::Label::new(RichText::new(name).font(semibold(BODY))).truncate());
     });
+}
+
+/// A page in the list: a row the width of the list. The page that is open has the accent down its
+/// leading edge and a lighter ground, as the camera in hand has on the timeline.
+fn nav_item(ui: &mut Ui, open: bool, title: &str, height: f32) -> egui::Response {
+    // The row is ruled from the edge of the list; what is pressed begins at the margin, with its name.
+    let (row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), height), egui::Sense::hover());
+    let rect = row.with_min_x(row.left() + PAD);
+    let response = ui.interact(rect, ui.id().with(("settings_page", title)), egui::Sense::click());
+    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, open, title));
+    if ui.is_rect_visible(row) {
+        let p = ui.painter();
+        if open {
+            p.rect_filled(row, 0.0, CONTROL);
+            p.rect_filled(row.with_max_x(row.left() + 3.0), 0.0, ACCENT);
+        } else if response.hovered() {
+            p.rect_filled(row, 0.0, mix(PANEL_DARK, CONTROL, 0.6));
+        }
+        let ink = if open { egui::Color32::WHITE } else { OFF_WHITE };
+        let font = if open { semibold(BODY) } else { crate::theme::body() };
+        p.text(egui::pos2(rect.left(), rect.center().y), egui::Align2::LEFT_CENTER, title, font, ink);
+    }
+    response
 }
 
 fn nav(ui: &mut Ui, s: &Session, page: &mut Page) {
     // In a short window the list is set closer, so that every page is on it without scrolling.
     let tight = ui.available_height() < 600.0;
-    let group = |ui: &mut Ui, title: &str| {
-        ui.add_space(if tight { 4.0 } else { 8.0 });
-        ui.label(RichText::new(title.to_uppercase()).small().color(MUTED));
-        ui.add_space(2.0);
-    };
-    let items = |ui: &mut Ui, page: &mut Page, pages: &[Page]| {
-        ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), |ui| {
-            if tight {
-                let spacing = ui.spacing_mut();
-                spacing.button_padding.y = 3.0;
-                spacing.interact_size.y = 23.0;
-                spacing.item_spacing.y = 5.0;
-            }
-            for p in pages {
-                if ui.selectable_label(*page == *p, p.title()).clicked() {
-                    *page = *p;
-                }
-            }
+    // Everything in the list starts at one margin; a group is headed by a rule and its name in capitals.
+    let inset = |ui: &mut Ui, add: &mut dyn FnMut(&mut Ui)| {
+        ui.horizontal(|ui| {
+            ui.add_space(PAD);
+            add(ui);
         });
     };
+    let group = |ui: &mut Ui, title: &str| {
+        ui.add_space(if tight { 0.0 } else { U });
+        hairline(ui);
+        ui.add_space(if tight { 0.0 } else { U });
+        inset(ui, &mut |ui| {
+            ui.label(caps(title).color(MUTED));
+        });
+    };
+    let items = |ui: &mut Ui, page: &mut Page, pages: &[Page]| {
+        for p in pages {
+            if nav_item(ui, *page == *p, p.title(), if tight { CONTROL_SMALL + 2.0 } else { CONTROL_H + U }).clicked() {
+                *page = *p;
+            }
+        }
+    };
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            ui.label(RichText::new(icon::GEAR_SIX).font(icon_font(17.0)).color(ACCENT));
-            ui.label(RichText::new(TITLE).font(semibold(15.0)));
+        ui.spacing_mut().item_spacing.y = if tight { 2.0 } else { U };
+        inset(ui, &mut |ui| {
+            ui.spacing_mut().item_spacing.x = GAP;
+            ui.label(RichText::new(icon::GEAR_SIX).font(icon_font(crate::theme::TITLE)));
+            ui.label(RichText::new(TITLE).font(semibold(crate::theme::TITLE)));
         });
         group(ui, "The show");
         items(ui, page, &Page::SHOW);
         group(ui, "The selected camera");
-        camera_tag(ui, s);
+        inset(ui, &mut |ui| camera_tag(ui, s));
         items(ui, page, &Page::CAMERA);
         group(ui, "The server");
         items(ui, page, &Page::SERVER);
@@ -474,15 +499,14 @@ fn body(ui: &mut Ui, s: &mut Session, page: Page) {
     let mut project = s.project.clone();
     if let Err(why) = s.can_edit() {
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            ui.label(RichText::new(icon::LOCK_SIMPLE).font(icon_font(14.0)).color(AMBER));
+            ui.spacing_mut().item_spacing.x = GAP;
+            ui.label(RichText::new(icon::LOCK_SIMPLE).font(icon_font(crate::theme::TITLE)).color(AMBER));
             ui.label(RichText::new(read_only(&why)).color(AMBER));
         });
         ui.add_space(8.0);
     }
-    ui.label(RichText::new(page.title()).font(semibold(18.0)));
+    ui.label(RichText::new(page.title()).font(semibold(DISPLAY)));
     if page.of_one_camera() {
-        ui.add_space(2.0);
         camera_tag(ui, s);
         ui.label(
             RichText::new("These are this camera's. Choose another on the camera bar, or with its number key.")
@@ -490,7 +514,8 @@ fn body(ui: &mut Ui, s: &mut Session, page: Page) {
                 .small(),
         );
     }
-    ui.add_space(8.0);
+    hairline(ui);
+    ui.add_space(U);
     match page {
         Page::Cameras => cameras(ui, s, &mut project, editable),
         Page::General => general(ui, s, &mut project, editable),
@@ -520,7 +545,7 @@ fn body(ui: &mut Ui, s: &mut Session, page: Page) {
 /// The frame rate the show is programmed at, the units it is read in, and what the other cameras do when one faults.
 fn general(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::Project, editable: bool) {
     ui.add_enabled_ui(editable, |ui| {
-        egui::Grid::new("general_grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+        egui::Grid::new("general_grid").num_columns(2).spacing([4.0 * U, GAP]).show(ui, |ui| {
             ui.label("Frame rate");
             egui::ComboBox::from_id_salt("rate").selected_text(s.project.rate.label()).show_ui(ui, |ui| {
                 for rate in ptz_core::FrameRate::ALL {
@@ -582,7 +607,7 @@ fn programming(ui: &mut Ui, project: &mut ptz_core::pose::Project, editable: boo
         ui.checkbox(&mut matching.enabled, "Use a preset within range");
         ui.add_space(4.0);
         ui.add_enabled_ui(matching.enabled, |ui| {
-            egui::Grid::new("preset_match_grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+            egui::Grid::new("preset_match_grid").num_columns(2).spacing([4.0 * U, GAP]).show(ui, |ui| {
                 ui.label(RichText::new("").small());
                 ui.label(RichText::new("Within").small().color(MUTED));
                 ui.end_row();
@@ -632,7 +657,7 @@ fn audio_output(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::Proj
     };
     ui.label(RichText::new(device).color(MUTED).small());
     ui.add_enabled_ui(editable, |ui| {
-        egui::Grid::new("routing_grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+        egui::Grid::new("routing_grid").num_columns(2).spacing([4.0 * U, GAP]).show(ui, |ui| {
             route_combo(ui, "Left", &mut project.routing.left);
             route_combo(ui, "Right", &mut project.routing.right);
             if project.routing.left == ChannelRoute::Ltc || project.routing.right == ChannelRoute::Ltc {
@@ -682,7 +707,7 @@ fn control_panel(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::Pro
     );
     let from_command_line = s.status.panel_host.as_ref().is_some_and(|h| h.from_command_line);
     ui.add_enabled_ui(editable && !from_command_line, |ui| {
-        egui::Grid::new("panel_grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+        egui::Grid::new("panel_grid").num_columns(2).spacing([4.0 * U, GAP]).show(ui, |ui| {
             ui.label("Panel address");
             if let Some(address) = crate::panels::text_field(ui, "panel_address", &project.panel.address, 190.0) {
                 let was = std::mem::replace(&mut project.panel.address, address.trim().to_string());
@@ -733,7 +758,7 @@ fn timecode_inputs(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::P
     }
     let choices = s.inputs.clone().unwrap_or_default();
     ui.add_enabled_ui(editable, |ui| {
-        egui::Grid::new("inputs_grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+        egui::Grid::new("inputs_grid").num_columns(2).spacing([4.0 * U, GAP]).show(ui, |ui| {
             ui.label("LTC input");
             ui.horizontal(|ui| {
                 device_combo(ui, "ltc_device", &mut project.inputs.ltc_device, "Default input", &choices.audio_inputs);
@@ -778,7 +803,7 @@ fn limits(ui: &mut Ui, camera: &mut CameraConfig, units: Units, editable: bool) 
             .small(),
     );
     ui.add_enabled_ui(editable, |ui| {
-        egui::Grid::new("limits_grid").num_columns(5).spacing([8.0, 6.0]).show(ui, |ui| {
+        egui::Grid::new("limits_grid").num_columns(5).spacing([PAD, GAP]).show(ui, |ui| {
             for head in ["", "Min", "Max", "Top speed /s", "Accel /s2"] {
                 ui.label(RichText::new(head).small().color(MUTED));
             }
@@ -813,10 +838,11 @@ fn cameras(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::Project, 
         let status = s.status.camera(&camera.id);
         ui.horizontal(|ui| {
             let on = camera.id == selected;
-            let chip = egui::Button::new(RichText::new(format!("{}", i + 1)).strong().color(BASE))
-                .fill(camera_color(i))
-                .stroke(egui::Stroke::new(if on { 2.0 } else { 0.0 }, OFF_WHITE))
-                .min_size(egui::vec2(26.0, 20.0));
+            let chip =
+                egui::Button::new(RichText::new(format!("{}", i + 1)).font(semibold(SMALL)).color(ink_on(camera_color(i))))
+                    .fill(camera_color(i))
+                    .stroke(egui::Stroke::new(if on { RULE_STRONG } else { 0.0 }, egui::Color32::WHITE))
+                    .min_size(egui::vec2(CONTROL_H, CONTROL_H));
             if ui.add(chip).on_hover_text("Select this camera").clicked() {
                 select = Some(camera.id.clone());
             }
@@ -829,7 +855,7 @@ fn cameras(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::Project, 
             });
             let (text, ink) = match status {
                 Some(c) if c.fault.is_some() => ("fault", RED),
-                Some(c) if c.hardware && c.adapters.iter().all(|a| a.connected) => ("rig connected", GREEN),
+                Some(c) if c.hardware && c.adapters.iter().all(|a| a.connected) => ("rig connected", OFF_WHITE),
                 Some(c) if c.hardware => ("rig not answering", AMBER),
                 _ => ("simulator", MUTED),
             };
@@ -923,7 +949,7 @@ fn cameras(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::Project, 
 fn lens(ui: &mut Ui, s: &Session, camera: &mut CameraConfig, units: Units, editable: bool) {
     let (pose, _) = s.camera_pose(&camera.id);
     ui.add_enabled_ui(editable, |ui| {
-        egui::Grid::new("lens_grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+        egui::Grid::new("lens_grid").num_columns(2).spacing([4.0 * U, GAP]).show(ui, |ui| {
             ui.label("Lens");
             let presets = Lens::presets();
             let known = presets.iter().any(|p| p.name == camera.lens.name);
@@ -993,7 +1019,7 @@ fn lens(ui: &mut Ui, s: &Session, camera: &mut CameraConfig, units: Units, edita
         ui.label(RichText::new(value).monospace().small());
         ui.end_row();
     };
-    egui::Grid::new("lens_now").num_columns(2).spacing([12.0, 3.0]).show(ui, |ui| {
+    egui::Grid::new("lens_now").num_columns(2).spacing([4.0 * U, U]).show(ui, |ui| {
         line(ui, "Now", format!("{:.0} mm at zoom {:.0}%", l.focal_mm(pose.zoom), pose.zoom * 100.0));
         line(
             ui,
@@ -1054,7 +1080,7 @@ fn lens(ui: &mut Ui, s: &Session, camera: &mut CameraConfig, units: Units, edita
 fn position(ui: &mut Ui, s: &Session, camera: &mut CameraConfig, units: Units, editable: bool) {
     ui.add_enabled_ui(editable, |ui| {
         let m = &mut camera.mount;
-        egui::Grid::new("mount_grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+        egui::Grid::new("mount_grid").num_columns(2).spacing([4.0 * U, GAP]).show(ui, |ui| {
             ui.label("Floor position");
             ui.horizontal(|ui| {
                 ui.add(distance_box(&mut m.x, units).range(-1000.0..=1000.0).prefix("x "));
@@ -1191,7 +1217,7 @@ fn stage_model(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::Proje
         });
     }
     ui.add_enabled_ui(editable, |ui| {
-        egui::Grid::new("stage_grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+        egui::Grid::new("stage_grid").num_columns(2).spacing([4.0 * U, GAP]).show(ui, |ui| {
             ui.label("One unit is");
             egui::ComboBox::from_id_salt("stage_unit").selected_text(model.unit.label()).width(130.0).show_ui(ui, |ui| {
                 for unit in ptz_core::camera::Unit::ALL {

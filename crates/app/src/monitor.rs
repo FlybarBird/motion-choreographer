@@ -4,33 +4,29 @@
 use crate::session::Session;
 use crate::stage;
 use crate::theme::*;
-use egui::{pos2, vec2, Align2, Color32, FontId, Painter, Pos2, Rect, Sense, Stroke, StrokeKind, Ui};
+use egui::{pos2, vec2, Align2, Color32, Painter, Pos2, Rect, Sense, Stroke, StrokeKind, Ui};
 use ptz_core::api::PoseSource;
 use ptz_core::pose::Axis;
 
 /// The widest a monitor picture is drawn, in pixels; a larger window scales it up.
 pub const WIDEST_PX: f32 = 1280.0;
 
+/// A word on a plate over a picture, drawn as every such plate in the app is.
 pub fn badge(painter: &Painter, at: Pos2, anchor: Align2, text: &str, fill: Color32, ink: Color32) -> Rect {
-    let galley = painter.layout_no_wrap(text.to_string(), FontId::proportional(12.0), ink);
-    let size = galley.size() + vec2(14.0, 6.0);
-    let r = anchor.anchor_size(at, size);
-    painter.rect_filled(r, 4.0, fill);
-    painter.galley(r.min + vec2(7.0, 3.0), galley, ink);
-    r
+    plate(painter, at, anchor, text, fill, ink)
 }
 
 /// Frame guides: thirds and a centre cross.
 pub fn guides(painter: &Painter, rect: Rect) {
     let p = painter.with_clip_rect(rect);
-    let guide = Stroke::new(1.0, with_alpha(OFF_WHITE, 28));
+    let guide = Stroke::new(RULE, with_alpha(OFF_WHITE, 28));
     for t in [1.0 / 3.0, 2.0 / 3.0] {
         p.vline(rect.left() + rect.width() * t, rect.y_range(), guide);
         p.hline(rect.x_range(), rect.top() + rect.height() * t, guide);
     }
     let c = rect.center();
-    p.line_segment([c - vec2(8.0, 0.0), c + vec2(8.0, 0.0)], Stroke::new(1.0, with_alpha(OFF_WHITE, 120)));
-    p.line_segment([c - vec2(0.0, 8.0), c + vec2(0.0, 8.0)], Stroke::new(1.0, with_alpha(OFF_WHITE, 120)));
+    p.line_segment([c - vec2(GAP, 0.0), c + vec2(GAP, 0.0)], Stroke::new(RULE, with_alpha(OFF_WHITE, 120)));
+    p.line_segment([c - vec2(0.0, GAP), c + vec2(0.0, GAP)], Stroke::new(RULE, with_alpha(OFF_WHITE, 120)));
 }
 
 /// The largest 16:9 rectangle that fits in `room`, centred.
@@ -58,10 +54,10 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
     let avail = ui.available_size();
     let (resp, painter) = ui.allocate_painter(avail, Sense::hover());
     let area = resp.rect;
-    painter.rect_filled(area, 0.0, PANEL_DARK);
+    painter.rect_filled(area, 0.0, BASE);
 
-    let readout_h = 26.0;
-    let room = Rect::from_min_max(area.min + vec2(8.0, 8.0), area.max - vec2(8.0, readout_h + 8.0));
+    let readout_h = CONTROL_H;
+    let room = Rect::from_min_max(area.min + vec2(GAP, GAP), area.max - vec2(GAP, readout_h + GAP));
     if room.width() < 40.0 || room.height() < 30.0 {
         return;
     }
@@ -78,70 +74,81 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
 
     let live = s.status.hardware_live;
     let t = &s.status.transport;
+    // The picture is framed in the state of the machine, as the rule under the transport is.
     let border = if t.estop {
         RED
     } else if live {
         GREEN
     } else {
-        LINE
+        CONTROL_LINE
     };
-    painter.rect_stroke(pic, 0.0, Stroke::new(if live || t.estop { 2.0 } else { 1.0 }, border), StrokeKind::Outside);
+    painter.rect_stroke(pic, 0.0, Stroke::new(if live || t.estop { RULE_STRONG } else { RULE }, border), StrokeKind::Outside);
 
     let simulated = !s.cam_status().hardware;
     let held = s.cam_status().held;
     let (text, fill_c, ink) = if t.estop {
-        ("E-STOP".to_string(), RED, OFF_WHITE)
+        ("E-STOP".to_string(), RED, ink_on(RED))
     } else if held {
-        ("HELD  this camera stopped where it was".to_string(), RED, OFF_WHITE)
+        ("HELD  this camera stopped where it was".to_string(), RED, ink_on(RED))
     } else if live {
-        (if simulated { "LIVE  simulator".to_string() } else { "LIVE  rig is moving".to_string() }, GREEN, BASE)
+        (if simulated { "LIVE  simulator".to_string() } else { "LIVE  rig is moving".to_string() }, GREEN, ink_on(GREEN))
     } else {
-        ("REHEARSE  nothing is sent to the rig".to_string(), with_alpha(BASE, 230), OFF_WHITE)
+        ("REHEARSE  nothing is sent to the rig".to_string(), plate_fill(), OFF_WHITE)
     };
-    badge(&painter, pic.left_top() + vec2(8.0, 8.0), Align2::LEFT_TOP, &text, fill_c, ink);
     let what = match source {
         PoseSource::Timeline => "Programmed pose",
         PoseSource::Rig => "Rig pose",
         PoseSource::Record => "Recording: rig on record axes",
     };
-    badge(&painter, pic.right_top() + vec2(-8.0, 8.0), Align2::RIGHT_TOP, what, with_alpha(PANEL_DARK, 220), OFF_WHITE);
+    // In a narrow picture the state is said in its one word, so that it does not run under the plate beside it.
+    let width = |text: &str| painter.layout_no_wrap(text.to_string(), small(), ink).size().x + 2.0 * GAP;
+    let state =
+        if width(&text) + width(what) + 3.0 * GAP > pic.width() { text.split("  ").next().unwrap_or(&text) } else { &text };
+    badge(&painter, pic.left_top() + vec2(GAP, GAP), Align2::LEFT_TOP, state, fill_c, ink);
+    let source = badge(&painter, pic.right_top() + vec2(-GAP, GAP), Align2::RIGHT_TOP, what, plate_fill(), OFF_WHITE);
     if s.status.transport.record {
-        painter.circle_filled(pic.right_top() + vec2(-16.0, 44.0), 6.0, RED);
+        painter.circle_filled(source.right_bottom() + vec2(-GAP, 2.0 * GAP), 6.0, RED);
     }
     badge(
         &painter,
-        pic.left_bottom() + vec2(8.0, -8.0),
+        pic.left_bottom() + vec2(GAP, -GAP),
         Align2::LEFT_BOTTOM,
         &s.timecode_at(s.playhead().floor() as i64),
-        with_alpha(PANEL_DARK, 220),
-        GREEN,
+        plate_fill(),
+        clock_ink(t.estop, live),
     );
     let camera = s.cam();
     let lens = format!("{}   {:.0} mm", s.project.label(&camera.id), camera.lens.focal_mm(pose.zoom));
-    badge(
-        &painter,
-        pic.right_bottom() + vec2(-8.0, -8.0),
-        Align2::RIGHT_BOTTOM,
-        &lens,
-        with_alpha(PANEL_DARK, 220),
-        camera_color(index),
-    );
+    badge(&painter, pic.right_bottom() + vec2(-GAP, -GAP), Align2::RIGHT_BOTTOM, &lens, plate_fill(), camera_color(index));
     if let Some(wait) = stage_wait(s) {
-        badge(&painter, pic.center_bottom() + vec2(0.0, -8.0), Align2::CENTER_BOTTOM, wait, with_alpha(PANEL_DARK, 220), AMBER);
+        badge(&painter, pic.center_bottom() + vec2(0.0, -GAP), Align2::CENTER_BOTTOM, wait, plate_fill(), AMBER);
     }
 
-    // Pose readout under the picture.
-    let y = pic.bottom() + 6.0 + readout_h / 2.0;
-    let step = (pic.width() / 5.0).min(150.0);
-    for (i, axis) in Axis::ALL.iter().enumerate() {
-        let x = pic.left() + step * i as f32;
-        painter.circle_filled(pos2(x + 4.0, y), 3.5, axis_color(*axis));
-        painter.text(
-            pos2(x + 12.0, y),
-            Align2::LEFT_CENTER,
-            format!("{} {}", axis.label(), axis.format_in(pose.get(*axis), s.project.units)),
-            FontId::proportional(11.5),
-            OFF_WHITE,
-        );
+    // Pose readout under the picture: each axis as its colour, its name, and its value in figures.
+    // Where the picture is too narrow for the names they are cut to their first letters.
+    let y = pic.bottom() + U + readout_h / 2.0;
+    let swatch = 2.0 * U;
+    let values =
+        Axis::ALL.map(|axis| painter.layout_no_wrap(axis.format_in(pose.get(axis), s.project.units), mono(SMALL), OFF_WHITE));
+    let named = |short: bool| {
+        Axis::ALL.map(|axis| {
+            let name = if short { &axis.label()[..1] } else { axis.label() };
+            painter.layout_no_wrap(name.to_string(), small(), MUTED)
+        })
+    };
+    let needs = |names: &[std::sync::Arc<egui::Galley>; 5]| {
+        names.iter().zip(&values).map(|(n, v)| swatch + U + n.size().x + U + v.size().x).sum::<f32>() + 4.0 * GAP
+    };
+    let names = Some(named(false)).filter(|n| needs(n) <= pic.width()).unwrap_or_else(|| named(true));
+    let gap = ((pic.width() - needs(&names)) / 4.0 + GAP).clamp(U, 6.0 * U);
+    let mut x = pic.left();
+    for ((axis, name), value) in Axis::ALL.iter().zip(names).zip(values) {
+        painter.rect_filled(Rect::from_min_size(pos2(x, y - swatch / 2.0), vec2(swatch, swatch)), 0.0, axis_color(*axis));
+        x += swatch + U;
+        let (name_w, value_w) = (name.size().x, value.size().x);
+        painter.galley(pos2(x, y - name.size().y / 2.0), name, MUTED);
+        x += name_w + U;
+        painter.galley(pos2(x, y - value.size().y / 2.0), value, OFF_WHITE);
+        x += value_w + gap;
     }
 }

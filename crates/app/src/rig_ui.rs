@@ -7,7 +7,7 @@ use crate::link::Cmd;
 use crate::panels::{note, section};
 use crate::session::Session;
 use crate::theme::*;
-use egui::{pos2, vec2, Align2, FontId, Key, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Ui};
+use egui::{pos2, vec2, Align2, Key, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Ui};
 use ptz_core::api::{Jog, StorePreset};
 use ptz_core::pose::Axis;
 use ptz_core::transport::{Output, Run};
@@ -248,48 +248,49 @@ fn paint_surface(ui: &Ui, s: &Session, surface: &Surface, stick: Jog, focused: b
     let p = ui.painter();
     let ink = |axis: Axis| if dim || !driven(s, axis) { MUTED } else { axis_color(axis) };
     let pad = surface.pad;
+    // The pad is a well with a cross in it; it is ruled in the accent while it has the keyboard.
     p.rect(
         pad,
-        8.0,
-        PANEL_DARK,
-        Stroke::new(if focused { 1.5 } else { 1.0 }, if focused { BLUE } else { LINE }),
+        RADIUS,
+        BASE,
+        Stroke::new(if focused { RULE_STRONG } else { RULE }, if focused { ACCENT } else { CONTROL_LINE }),
         StrokeKind::Inside,
     );
     let c = pad.center();
-    p.hline(pad.shrink(8.0).x_range(), c.y, Stroke::new(1.0, LINE));
-    p.vline(c.x, pad.shrink(8.0).y_range(), Stroke::new(1.0, LINE));
-    p.text(pad.right_center() + vec2(-8.0, -9.0), Align2::RIGHT_CENTER, "Pan", FontId::proportional(10.5), ink(Axis::Pan));
-    p.text(pad.center_top() + vec2(6.0, 8.0), Align2::LEFT_TOP, "Tilt", FontId::proportional(10.5), ink(Axis::Tilt));
+    p.hline(pad.shrink(GAP).x_range(), c.y, Stroke::new(RULE, LINE));
+    p.vline(c.x, pad.shrink(GAP).y_range(), Stroke::new(RULE, LINE));
+    p.text(pad.right_center() + vec2(-GAP, -GAP), Align2::RIGHT_CENTER, "Pan", micro(), ink(Axis::Pan));
+    p.text(pad.center_top() + vec2(U + 2.0, GAP), Align2::LEFT_TOP, "Tilt", micro(), ink(Axis::Tilt));
     let half = pad.width() / 2.0 - 8.0;
     let unshape = |v: f64| if v == 0.0 { 0.0 } else { (v.abs() * (1.0 - DEADZONE) + DEADZONE) * v.signum() };
     let knob = c + vec2(unshape(stick.pan) as f32 * half, -unshape(stick.tilt) as f32 * half);
     let live = stick.pan != 0.0 || stick.tilt != 0.0;
     if live {
-        p.line_segment([c, knob], Stroke::new(2.0, BLUE));
+        p.line_segment([c, knob], Stroke::new(RULE_STRONG, ACCENT));
     }
-    p.circle(knob, 9.0, if live { BLUE } else { PANEL }, Stroke::new(1.5, if dim { MUTED } else { OFF_WHITE }));
+    p.circle(knob, 9.0, if live { ACCENT } else { CONTROL }, Stroke::new(1.5, if dim { MUTED } else { OFF_WHITE }));
 
     for (axis, r) in surface.sliders {
         let v = stick.get(axis);
-        p.text(r.left_top() + vec2(0.0, -4.0), Align2::LEFT_BOTTOM, axis.label(), FontId::proportional(11.5), ink(axis));
+        p.text(r.left_top() + vec2(0.0, -U), Align2::LEFT_BOTTOM, axis.label(), small(), ink(axis));
         p.text(
-            r.right_top() + vec2(0.0, -4.0),
+            r.right_top() + vec2(0.0, -U),
             Align2::RIGHT_BOTTOM,
             axis.format_in(s.cam_status().rig_pose.get(axis), s.project.units),
-            FontId::monospace(11.0),
+            mono(SMALL),
             if dim { MUTED } else { OFF_WHITE },
         );
-        let track = Rect::from_center_size(r.center(), vec2(r.width(), 6.0));
-        p.rect(track, 3.0, PANEL_DARK, Stroke::new(1.0, LINE), StrokeKind::Inside);
-        p.vline(r.center().x, r.y_range(), Stroke::new(1.0, LINE));
+        let track = Rect::from_center_size(r.center(), vec2(r.width(), U));
+        p.rect(track, 0.0, BASE, Stroke::new(RULE, CONTROL_LINE), StrokeKind::Inside);
+        p.vline(r.center().x, r.y_range(), Stroke::new(RULE, CONTROL_LINE));
         let x = r.center().x + unshape(v) as f32 * (r.width() / 2.0 - 6.0);
         if v != 0.0 {
-            p.line_segment([pos2(r.center().x, r.center().y), pos2(x, r.center().y)], Stroke::new(3.0, BLUE));
+            p.line_segment([pos2(r.center().x, r.center().y), pos2(x, r.center().y)], Stroke::new(3.0, ACCENT));
         }
         p.circle(
             pos2(x, r.center().y),
             7.0,
-            if v != 0.0 { BLUE } else { PANEL },
+            if v != 0.0 { ACCENT } else { CONTROL },
             Stroke::new(1.5, if dim { MUTED } else { OFF_WHITE }),
         );
     }
@@ -361,7 +362,7 @@ fn controller(ui: &mut Ui, s: &mut Session) {
             ui.label(RichText::new("The rig was stopped. Let go, then press again to move it.").color(AMBER).small());
         }
         None if focused => {
-            ui.label(RichText::new("Keys: arrows pan and tilt,  [ ]  zoom,  , .  elevation").color(BLUE).small());
+            ui.label(RichText::new("Keys: arrows pan and tilt,  [ ]  zoom,  , .  elevation").color(ACCENT).small());
         }
         None => {
             ui.label(RichText::new("Drag the pad or a slider. Click here to use the keys.").color(MUTED).small());
@@ -387,7 +388,7 @@ fn live_state(ui: &mut Ui, s: &Session) {
     section(ui, "Tracking");
     let tol = s.cam().rig.tolerance;
     let error = s.cam_status().error;
-    egui::Grid::new("rig_tracking").num_columns(3).spacing([12.0, 5.0]).show(ui, |ui| {
+    egui::Grid::new("rig_tracking").num_columns(3).spacing([PAD, U]).show(ui, |ui| {
         for axis in Axis::ALL {
             let error = error.get(axis);
             let share = (error.abs() / tol.get(axis).max(1e-9)) as f32;
@@ -403,11 +404,9 @@ fn live_state(ui: &mut Ui, s: &Session) {
                 "Rig minus timeline. A fault is raised beyond {}",
                 axis.format_in(tol.get(axis), s.project.units)
             ));
-            let (bar, _) = ui.allocate_exact_size(vec2(90.0, 6.0), Sense::hover());
-            let p = ui.painter();
-            p.rect_filled(bar, 3.0, PANEL_DARK);
+            let (bar, p) = level_bar(ui, 96.0);
             let fill = Rect::from_min_size(bar.min, vec2(bar.width() * share.min(1.0), bar.height()));
-            p.rect_filled(fill, 3.0, ink);
+            p.rect_filled(fill, 0.0, ink);
             ui.end_row();
         }
     });
@@ -415,12 +414,13 @@ fn live_state(ui: &mut Ui, s: &Session) {
 
 pub fn show(ui: &mut Ui, s: &mut Session) {
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-        egui::Frame::new().inner_margin(egui::Margin::symmetric(10, 8)).show(ui, |ui| {
+        egui::Frame::new().inner_margin(panel_margin()).show(ui, |ui| {
             if s.project.cameras.len() > 1 {
                 let i = s.cam_index();
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(format!(" {} ", i + 1)).strong().color(BASE).background_color(camera_color(i)));
-                    ui.label(RichText::new(&s.cam().name).strong());
+                    let (tag, _) = ui.allocate_exact_size(NUMBER_TAG, Sense::hover());
+                    number_tag(ui.painter(), tag, i + 1, camera_color(i));
+                    ui.label(RichText::new(&s.cam().name).font(semibold(BODY)));
                     ui.label(
                         RichText::new("The controller, the readout and the stored pose are this camera's.").color(MUTED).small(),
                     );
@@ -431,16 +431,22 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
             }
             for a in &s.cam_status().adapters {
                 ui.horizontal(|ui| {
+                    // An adapter that answers is a plain dot: green is for output that reaches the rig.
                     let (dot, word) = match (a.connected, a.calibrated) {
                         (false, _) => (RED, "not answering".to_string()),
                         (true, Some(false)) => (AMBER, "not calibrated".to_string()),
                         (true, _) => match a.round_trip_ms {
-                            Some(ms) => (GREEN, format!("answers in {ms:.1} ms")),
-                            None => (GREEN, "connected".to_string()),
+                            Some(ms) => (OFF_WHITE, format!("answers in {ms:.1} ms")),
+                            None => (OFF_WHITE, "connected".to_string()),
                         },
                     };
-                    ui.label(RichText::new("●").color(dot));
-                    ui.label(RichText::new(&a.name).strong());
+                    let (mark, _) = ui.allocate_exact_size(vec2(2.0 * U, 2.0 * U), Sense::hover());
+                    if a.connected {
+                        ui.painter().circle_filled(mark.center(), U, dot);
+                    } else {
+                        ui.painter().circle_stroke(mark.center(), U - 1.0, Stroke::new(1.5, dot));
+                    }
+                    ui.label(RichText::new(&a.name).font(semibold(BODY)));
                     ui.label(RichText::new(word).color(MUTED));
                 })
                 .response
@@ -467,8 +473,9 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
             ui.horizontal_wrapped(|ui| {
                 for axis in Axis::ALL {
                     let on = s.record_axes_shown().contains(&axis);
-                    let text = RichText::new(axis.label()).small().color(if on { OFF_WHITE } else { MUTED });
-                    let button = egui::Button::new(text).small().fill(if on { with_alpha(RED, 170) } else { PANEL_DARK });
+                    // An axis Record will write is a red plate, as the Record button is while it is on.
+                    let text = RichText::new(axis.label()).color(if on { ink_on(RED) } else { MUTED });
+                    let button = egui::Button::new(text).fill(if on { RED } else { CONTROL });
                     if ui.add(button).on_hover_text(format!("Record {} when Record is on", axis.label())).clicked() {
                         s.toggle_record_axis(axis);
                     }
@@ -484,17 +491,17 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
             }
 
             section(ui, "Position");
-            egui::Grid::new("rig_pose").num_columns(3).spacing([12.0, 5.0]).show(ui, |ui| {
+            egui::Grid::new("rig_pose").num_columns(3).spacing([PAD, U]).show(ui, |ui| {
                 for axis in Axis::ALL {
                     let lim = s.cam().axes.get(axis);
                     let value = s.cam_status().rig_pose.get(axis);
                     ui.label(RichText::new(axis.label()).color(axis_color(axis)));
                     ui.label(RichText::new(axis.format_in(value, s.project.units)).monospace());
-                    let (bar, _) = ui.allocate_exact_size(vec2(90.0, 6.0), Sense::hover());
-                    let p = ui.painter();
-                    p.rect_filled(bar, 3.0, PANEL_DARK);
+                    let (bar, p) = level_bar(ui, 96.0);
                     let t = ((value - lim.min) / (lim.max - lim.min).max(1e-9)).clamp(0.0, 1.0) as f32;
-                    p.circle_filled(pos2(bar.left() + 3.0 + t * (bar.width() - 6.0), bar.center().y), 3.5, axis_color(axis));
+                    // Where the axis stands in its range: a mark on the bar, in the axis's colour.
+                    let at = bar.left() + 1.0 + t * (bar.width() - 2.0);
+                    p.vline(at, bar.top() - 2.0..=bar.bottom() + 2.0, Stroke::new(3.0, axis_color(axis)));
                     ui.end_row();
                 }
             });

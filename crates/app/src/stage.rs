@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Behind everything.
-pub const SKY: [u8; 3] = [9, 10, 12];
+pub const SKY: [u8; 3] = [15, 15, 15];
 /// Models above this many triangles are made ready on another thread, so the window does not stall.
 const BUILD_INLINE_BELOW: usize = 150_000;
 /// A frustum is drawn this far when its centre ray meets nothing.
@@ -40,6 +40,7 @@ fn person(mesh: &mut Mesh, x: f32, y: f32, color: [u8; 3]) {
 
 /// The simple stage the program draws when no venue has been imported: an auditorium floor, a raised
 /// deck with a lectern and two award marks, people standing at them, and a back wall with a screen.
+/// It is drawn in greys, like a model: the colours in a monitor are the app's own marks and badges.
 pub fn builtin() -> Mesh {
     let mut m = Mesh::default();
     let top = |m: &mut Mesh, min: [f32; 2], max: [f32; 2], z: f32, color: [u8; 3]| {
@@ -48,34 +49,34 @@ pub fn builtin() -> Mesh {
     // Auditorium floor in two tones, so distance reads without a texture.
     for i in 0..14 {
         let y = -5.0 + i as f32;
-        let color = if i % 2 == 0 { [34, 37, 58] } else { [28, 31, 50] };
+        let color = if i % 2 == 0 { [44, 44, 44] } else { [36, 36, 36] };
         top(&mut m, [-14.0, y], [14.0, y + 1.0], 0.0, color);
     }
     // The deck, its riser, and the wall behind it.
-    m.push_cuboid([-10.0, DECK_FRONT, 0.0], [10.0, BACK_WALL, DECK_HEIGHT], [78, 70, 80]);
-    m.push_cuboid([-10.0, BACK_WALL, 0.0], [10.0, BACK_WALL + 0.2, 7.0], [40, 50, 104]);
-    m.push_cuboid([-4.0, BACK_WALL - 0.06, 2.6], [4.0, BACK_WALL, 6.2], [52, 96, 150]);
+    m.push_cuboid([-10.0, DECK_FRONT, 0.0], [10.0, BACK_WALL, DECK_HEIGHT], [92, 92, 92]);
+    m.push_cuboid([-10.0, BACK_WALL, 0.0], [10.0, BACK_WALL + 0.2, 7.0], [62, 62, 62]);
+    m.push_cuboid([-4.0, BACK_WALL - 0.06, 2.6], [4.0, BACK_WALL, 6.2], [128, 128, 128]);
     for i in -4..=4 {
         let x = i as f32 * 2.5;
-        m.push_cuboid([x - 0.03, BACK_WALL - 0.03, DECK_HEIGHT], [x + 0.03, BACK_WALL, 7.0], [58, 70, 130]);
+        m.push_cuboid([x - 0.03, BACK_WALL - 0.03, DECK_HEIGHT], [x + 0.03, BACK_WALL, 7.0], [84, 84, 84]);
     }
     // Awards: two marks and two people.
     for dx in [-0.55, 0.55] {
         let x = AWARDS[0] + dx;
-        top(&mut m, [x - 0.3, AWARDS[1] - 0.3], [x + 0.3, AWARDS[1] + 0.3], DECK_HEIGHT + 0.01, [70, 200, 40]);
-        person(&mut m, x, AWARDS[1], [150, 156, 184]);
+        top(&mut m, [x - 0.3, AWARDS[1] - 0.3], [x + 0.3, AWARDS[1] + 0.3], DECK_HEIGHT + 0.01, [210, 210, 210]);
+        person(&mut m, x, AWARDS[1], [168, 172, 180]);
     }
     // The lectern, with a presenter behind it.
     person(&mut m, LECTERN[0], LECTERN[1] + 0.45, [186, 164, 150]);
     m.push_cuboid(
         [LECTERN[0] - 0.38, LECTERN[1] - 0.04, DECK_HEIGHT],
         [LECTERN[0] + 0.38, LECTERN[1] + 0.3, DECK_HEIGHT + 1.15],
-        [48, 92, 150],
+        [112, 112, 112],
     );
     m.push_cuboid(
         [LECTERN[0] - 0.42, LECTERN[1] - 0.08, DECK_HEIGHT + 1.15],
         [LECTERN[0] + 0.42, LECTERN[1] + 0.34, DECK_HEIGHT + 1.2],
-        [120, 160, 210],
+        [168, 168, 168],
     );
     m
 }

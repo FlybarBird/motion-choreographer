@@ -69,13 +69,52 @@ fn detail(s: &Session, index: usize) -> String {
     lines.join("\n")
 }
 
+/// A camera on the bar: its number on its colour, its name, and a mark of its state. The one in hand
+/// has the accent rule under it, like the tab in front. The mark is a ring for the simulator and a
+/// dot for a rig, so that the two are not told apart by colour alone.
+fn camera_chip(ui: &mut Ui, index: usize, name: &str, on: bool, word: &str, ink: egui::Color32) -> egui::Response {
+    let label = format!("{} {name}", index + 1);
+    let font = if on { semibold(BODY) } else { body() };
+    let galley = ui.painter().layout_no_wrap(name.to_string(), font, OFF_WHITE);
+    let mark = 2.0 * U;
+    let width = U + NUMBER_TAG.x + GAP + galley.size().x + GAP + mark + GAP;
+    let (rect, response) = ui.allocate_exact_size(vec2(width, CONTROL_H), egui::Sense::click());
+    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, on, &label));
+    if ui.is_rect_visible(rect) {
+        let p = ui.painter();
+        let fill = if on {
+            CONTROL
+        } else if response.hovered() {
+            CONTROL_HOVER
+        } else {
+            egui::Color32::TRANSPARENT
+        };
+        p.rect(rect, RADIUS, fill, Stroke::new(RULE, if on { CONTROL_LINE } else { LINE }), egui::StrokeKind::Inside);
+        let tag = egui::Rect::from_center_size(egui::pos2(rect.left() + U + NUMBER_TAG.x / 2.0, rect.center().y), NUMBER_TAG);
+        number_tag(p, tag, index + 1, camera_color(index));
+        let ink_name = if on { egui::Color32::WHITE } else { OFF_WHITE };
+        p.galley(egui::pos2(tag.right() + GAP, rect.center().y - galley.size().y / 2.0), galley, ink_name);
+        let at = egui::pos2(rect.right() - GAP - mark / 2.0, rect.center().y);
+        if word == "sim" {
+            p.circle_stroke(at, mark / 2.0 - 1.0, Stroke::new(RULE + 0.5, ink));
+        } else {
+            p.circle_filled(at, mark / 2.0, ink);
+        }
+        if on {
+            p.hline(rect.x_range(), rect.bottom() - RULE, Stroke::new(RULE_STRONG, ACCENT));
+        }
+    }
+    response
+}
+
 pub fn bar(ui: &mut Ui, s: &mut Session) {
     let selected = s.cam_index();
     let output = s.status.transport.output;
     let mut choose = None;
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 5.0;
-        ui.label(RichText::new("Cameras").color(MUTED).small());
+        ui.spacing_mut().item_spacing.x = U;
+        ui.label(caps("Cameras").color(MUTED));
+        ui.add_space(U);
         // Show settings keeps the right end; the cameras scroll in what is left.
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let open = s.settings.is_some();
@@ -90,7 +129,7 @@ pub fn bar(ui: &mut Ui, s: &mut Session) {
                     "Cameras, rigs, lenses, the stage, audio output and timecode inputs",
                 )
             };
-            if icon_button(ui, true, glyph, words, look, vec2(0.0, 24.0)).on_hover_text(tip).clicked() {
+            if icon_button(ui, true, glyph, words, look, vec2(0.0, CONTROL_H)).on_hover_text(tip).clicked() {
                 s.settings = if open { None } else { Some(crate::settings_ui::Page::default()) };
             }
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -98,31 +137,19 @@ pub fn bar(ui: &mut Ui, s: &mut Session) {
                     for (i, camera) in s.project.cameras.iter().enumerate() {
                         let on = i == selected;
                         let (word, ink) = state(s.status.camera(&camera.id), output);
-                        let color = camera_color(i);
-                        let text = RichText::new(format!("{} {}", i + 1, camera.name)).size(12.5).color(if on {
-                            BASE
-                        } else {
-                            OFF_WHITE
-                        });
-                        let button = egui::Button::new(text)
-                            .fill(if on { color } else { mix(PANEL, color, 0.16) })
-                            .stroke(Stroke::new(if on { 1.5 } else { 1.0 }, if on { OFF_WHITE } else { mix(LINE, color, 0.5) }))
-                            .min_size(vec2(0.0, 24.0));
-                        let r = ui.add(button).on_hover_text(detail(s, i));
+                        let r = camera_chip(ui, i, &camera.name, on, word, ink).on_hover_text(detail(s, i));
                         if r.clicked() {
                             choose = Some(camera.id.clone());
                         }
-                        // The state sits under the chip's right corner, out of the name's way.
-                        let dot = r.rect.right_top() + vec2(-5.0, 5.0);
-                        ui.painter().circle_filled(dot, 3.5, ink);
-                        ui.painter().circle_stroke(dot, 3.5, Stroke::new(1.0, if on { BASE } else { PANEL }));
+                        // A state that needs the operator is said in a word beside the camera.
                         if matches!(word, "held" | "fault" | "stopping" | "no answer" | "reading") {
-                            ui.label(RichText::new(word).color(ink).small().strong());
+                            ui.label(RichText::new(word).color(ink).font(semibold(SMALL)));
+                            ui.add_space(U);
                         }
                     }
                     if s.status.transport.record {
                         if let Some(i) = s.project.camera_index(&s.status.record.camera) {
-                            ui.add_space(6.0);
+                            ui.add_space(GAP);
                             ui.label(RichText::new(format!("Record writes camera {}", i + 1)).color(RED).small());
                         }
                     }

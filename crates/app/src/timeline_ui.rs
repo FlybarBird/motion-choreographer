@@ -3,7 +3,7 @@
 use crate::session::Session;
 use crate::theme::*;
 use crate::timeline::{self, ClipBox, ClipKind, Doc, Ghost, Hit, Lane, Layout, Mods, Outcome, Stamp, HEADER_W};
-use egui::{pos2, vec2, Align2, Color32, CornerRadius, FontId, Painter, Pos2, Rect, Sense, Stroke, StrokeKind, Ui};
+use egui::{pos2, vec2, Align2, Color32, CornerRadius, Painter, Pos2, Rect, Sense, Stroke, StrokeKind, Ui};
 use ptz_core::api::{MediaInfo, PeakLevel};
 use ptz_core::pose::{Axis, Preset};
 use ptz_core::song::{ClipBody, MediaClip, Song, Track};
@@ -232,9 +232,9 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
                 let r = c.rect.translate(vec2(attempt.delta as f32 * base.px_per_frame, 0.0));
                 painter.with_clip_rect(base.body).rect(
                     r,
-                    CornerRadius::same(4),
+                    CornerRadius::same(RADIUS),
                     with_alpha(AMBER, 40),
-                    Stroke::new(1.5, AMBER),
+                    Stroke::new(RULE_STRONG, AMBER),
                     StrokeKind::Inside,
                 );
             }
@@ -254,7 +254,7 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
         }
     }
     if let Some(mr) = s.timeline.marquee() {
-        painter.rect(mr, CornerRadius::ZERO, with_alpha(BLUE, 40), Stroke::new(1.0, BLUE), StrokeKind::Inside);
+        painter.rect(mr, CornerRadius::ZERO, with_alpha(ACCENT, 40), Stroke::new(RULE, ACCENT), StrokeKind::Inside);
     }
 
     // Issue text under the pointer.
@@ -274,32 +274,26 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
 }
 
 fn toolbar(ui: &mut Ui, s: &mut Session, song: &Song) {
-    ui.horizontal(|ui| {
-        ui.add_space(6.0);
+    crate::theme::toolbar(ui, |ui| {
         let fps = s.project.rate.fps();
-        if ui.small_button("Fit").on_hover_text("Fit the song to the window  ( \\ )").clicked() {
+        if ui.button("Fit").on_hover_text("Fit the song to the window  ( \\ )").clicked() {
             s.fit_requested = true;
         }
-        if ui.small_button("-").on_hover_text("Zoom out").clicked() {
+        if ui.button("-").on_hover_text("Zoom out").clicked() {
             s.timeline.view.zoom_around(1.0 / 1.5, 300.0);
         }
-        if ui.small_button("+").on_hover_text("Zoom in").clicked() {
+        if ui.button("+").on_hover_text("Zoom in").clicked() {
             s.timeline.view.zoom_around(1.5, 300.0);
         }
         ui.separator();
-        if ui.small_button("Add marker").on_hover_text("Add a marker at the playhead  ( M )").clicked() {
+        if ui.button("Add marker").on_hover_text("Add a marker at the playhead  ( M )").clicked() {
             add_marker(s);
         }
         let n = s.timeline.selection.len();
-        if ui.add_enabled(n > 0, egui::Button::new("Delete").small()).on_hover_text("Delete the selection  ( Delete )").clicked()
-        {
+        if ui.add_enabled(n > 0, egui::Button::new("Delete")).on_hover_text("Delete the selection  ( Delete )").clicked() {
             delete_selection(s);
         }
-        if ui
-            .add_enabled(n > 0, egui::Button::new("Duplicate").small())
-            .on_hover_text("Copy after the selection  ( Cmd-D )")
-            .clicked()
-        {
+        if ui.add_enabled(n > 0, egui::Button::new("Duplicate")).on_hover_text("Copy after the selection  ( Cmd-D )").clicked() {
             duplicate_selection(s);
         }
         ui.separator();
@@ -314,10 +308,10 @@ fn toolbar(ui: &mut Ui, s: &mut Session, song: &Song) {
             .small(),
         );
         if song.motion.is_empty() && song.media.is_empty() {
-            ui.label(egui::RichText::new("Drag a preset from the Presets tab onto the timeline to start.").color(BLUE).small());
+            // The next thing to do with an empty song, so it is said in the accent.
+            ui.label(egui::RichText::new("Drag a preset from the Presets tab onto the timeline to start.").color(ACCENT).small());
         }
     });
-    ui.add_space(2.0);
 }
 
 /// Centre of the record-enable dot on one of a camera's axis lanes.
@@ -420,25 +414,25 @@ fn context_menu(resp: &egui::Response, s: &mut Session, song: &Song, layout: &La
 }
 
 fn hint_box(painter: &Painter, at: Pos2, text: &str, color: Color32, bounds: Rect) {
-    let galley = painter.layout(text.to_string(), FontId::proportional(12.0), OFF_WHITE, 340.0);
-    let size = galley.size() + vec2(14.0, 10.0);
+    let galley = painter.layout(text.to_string(), small(), OFF_WHITE, 340.0);
+    let size = galley.size() + vec2(2.0 * GAP, 2.0 * U);
     let mut min = at;
     min.x = min.x.min(bounds.right() - size.x - 4.0).max(bounds.left() + 4.0);
     min.y = min.y.min(bounds.bottom() - size.y - 4.0).max(bounds.top() + 4.0);
     let r = Rect::from_min_size(min, size);
-    painter.rect(r, CornerRadius::same(5), PANEL_DARK, Stroke::new(1.0, color), StrokeKind::Inside);
-    painter.galley(r.min + vec2(7.0, 5.0), galley, OFF_WHITE);
+    painter.rect(r, CornerRadius::same(RADIUS), PANEL_DARK, Stroke::new(RULE, color), StrokeKind::Inside);
+    painter.galley(r.min + vec2(GAP, U), galley, OFF_WHITE);
 }
 
 fn paint_ghost(painter: &Painter, l: &Layout, g: &Ghost, pointer: Option<Pos2>, bounds: Rect) {
     let Some(lane) = l.lane_rect(g.lane) else { return };
-    let color = if g.refusal.is_some() { AMBER } else { BLUE };
+    let color = if g.refusal.is_some() { AMBER } else { ACCENT };
     let r = Rect::from_min_max(
         pos2(l.x_of(g.start as f64), lane.top() + 3.0),
         pos2(l.x_of((g.start + g.duration) as f64), lane.bottom() - 3.0),
     );
     let p = painter.with_clip_rect(l.body);
-    p.rect(r, CornerRadius::same(4), with_alpha(color, 70), Stroke::new(1.5, color), StrokeKind::Inside);
+    p.rect(r, CornerRadius::same(RADIUS), with_alpha(color, 70), Stroke::new(RULE_STRONG, color), StrokeKind::Inside);
     let text = match &g.refusal {
         Some(why) => format!("{}\n{why}", g.label),
         None => g.label.clone(),
@@ -473,37 +467,41 @@ fn paint_ruler(painter: &Painter, l: &Layout, s: &Session) {
     while f <= last {
         let x = l.x_of(f as f64);
         if f % major == 0 {
-            p.vline(x, l.ruler.bottom() - 10.0..=l.ruler.bottom(), Stroke::new(1.0, MUTED));
-            p.text(pos2(x + 4.0, l.ruler.top() + 4.0), Align2::LEFT_TOP, s.timecode_at(f), FontId::monospace(10.5), MUTED);
+            p.vline(x, l.ruler.bottom() - 2.0 * U..=l.ruler.bottom(), Stroke::new(RULE, MUTED));
+            p.text(pos2(x + U, l.ruler.top() + U), Align2::LEFT_TOP, s.timecode_at(f), mono(MICRO), MUTED);
         } else {
-            p.vline(x, l.ruler.bottom() - 5.0..=l.ruler.bottom(), Stroke::new(1.0, LINE));
+            p.vline(x, l.ruler.bottom() - U..=l.ruler.bottom(), Stroke::new(RULE, CONTROL_LINE));
         }
         f += minor;
     }
-    painter.hline(l.rect.left()..=l.rect.right(), l.ruler.bottom(), Stroke::new(1.0, LINE));
+    painter.hline(l.rect.left()..=l.rect.right(), l.ruler.bottom(), Stroke::new(RULE, LINE));
     painter.text(
-        pos2(l.rect.left() + 10.0, l.ruler.center().y),
+        pos2(l.rect.left() + GAP, l.ruler.center().y),
         Align2::LEFT_CENTER,
         s.timecode_at(s.playhead().floor() as i64),
-        FontId::monospace(12.0),
-        GREEN,
+        mono(SMALL),
+        clock_ink(s.status.transport.estop, s.status.hardware_live),
     );
 }
 
-fn clip_fill(kind: ClipKind, selected: bool) -> Color32 {
-    let base = match kind {
-        ClipKind::Move => BLUE,
+/// The colour that says what a clip is: on its leading edge, and behind it as a tint.
+fn clip_ink(kind: ClipKind) -> Color32 {
+    match kind {
+        ClipKind::Move | ClipKind::AxisPart => MOVE_CLIP,
         ClipKind::Keys => KEYS_CLIP,
         ClipKind::Audio => AUDIO_CLIP,
         ClipKind::Video => VIDEO_CLIP,
-        ClipKind::AxisPart => BLUE,
-    };
-    if selected {
-        mix(base, OFF_WHITE, 0.18)
-    } else {
-        mix(base, PANEL, 0.28)
     }
 }
+
+/// A clip is a dark plate with a little of its kind's colour in it, and more of it when selected.
+/// The full colours are left to the states that are drawn over it.
+fn clip_fill(kind: ClipKind, selected: bool) -> Color32 {
+    mix(PANEL, clip_ink(kind), if selected { 0.42 } else { 0.24 })
+}
+
+/// The width of the strip down a clip's leading edge.
+const CLIP_EDGE: f32 = 3.0;
 
 /// The waveform level that suits the zoom: the coarsest with at least one bucket per pixel.
 pub fn peak_level_for(sample_rate: u32, fps: f64, px_per_frame: f32) -> u32 {
@@ -638,8 +636,8 @@ fn paint_clip(painter: &Painter, l: &Layout, c: &ClipBox, song: &Song, s: &Sessi
     if c.kind == ClipKind::AxisPart {
         let Lane::Axis(_, axis) = c.lane else { return };
         let color = axis_color(axis);
-        let bar = c.rect.shrink2(vec2(0.0, 4.0));
-        p.rect_filled(bar, 3.0, with_alpha(color, if selected { 70 } else { 38 }));
+        let bar = c.rect.shrink2(vec2(0.0, U));
+        p.rect_filled(bar, RADIUS, with_alpha(color, if selected { 70 } else { 36 }));
         let Some(clip) = song.motion_clip(&c.id) else { return };
         // The axis curve inside the clip, scaled to the lane.
         let ev = ptz_core::eval::Evaluator::new(song, &clip.camera);
@@ -659,20 +657,20 @@ fn paint_clip(painter: &Painter, l: &Layout, c: &ClipBox, song: &Song, s: &Sessi
             .collect();
         p.line(pts, Stroke::new(1.5, color));
         if warn && issues.iter().any(|i| issue_axis(i) == Some(axis)) {
-            p.rect_stroke(bar, 3.0, Stroke::new(1.0, AMBER), StrokeKind::Inside);
+            p.rect_stroke(bar, RADIUS, Stroke::new(RULE, AMBER), StrokeKind::Inside);
         }
         return;
     }
 
     let fill = clip_fill(c.kind, selected);
-    p.rect_filled(c.rect, 4.0, fill);
+    p.rect_filled(c.rect, RADIUS, fill);
     match c.kind {
         ClipKind::Audio | ClipKind::Video => {
             if let Some(m) = song.media_clip(&c.id) {
                 let wave = if c.kind == ClipKind::Video {
                     let strip = filmstrip_rect(c.rect);
                     let pictures = p.with_clip_rect(visible.intersect(strip));
-                    pictures.rect_filled(strip, 0.0, mix(BASE, PANEL, 0.3));
+                    pictures.rect_filled(strip, 0.0, BASE);
                     let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
                     for tile in filmstrip_tiles(strip, visible, m, l.px_per_frame) {
                         if let Some(texture) = s.frames.ready(&crate::frames::key(&m.media_id, tile.frame, true)) {
@@ -696,14 +694,14 @@ fn paint_clip(painter: &Painter, l: &Layout, c: &ClipBox, song: &Song, s: &Sessi
                 if c.kind == ClipKind::Video {
                     // A plate under the name, so it reads over any picture.
                     let text_w = label.chars().count() as f32 * 6.2 + 10.0;
-                    let plate = Rect::from_min_size(c.rect.left_top() + vec2(2.0, 2.0), vec2(text_w, 15.0));
-                    p.with_clip_rect(visible).rect_filled(plate, 3.0, with_alpha(BASE, 190));
+                    let plate = Rect::from_min_size(c.rect.left_top() + vec2(CLIP_EDGE + 1.0, 2.0), vec2(text_w, 4.0 * U));
+                    p.with_clip_rect(visible).rect_filled(plate, RADIUS, plate_fill());
                 }
                 p.with_clip_rect(visible.shrink(2.0)).text(
-                    c.rect.left_top() + vec2(6.0, 3.0),
+                    c.rect.left_top() + vec2(CLIP_EDGE + U, U),
                     Align2::LEFT_TOP,
                     label,
-                    FontId::proportional(11.0),
+                    small(),
                     OFF_WHITE,
                 );
             }
@@ -741,7 +739,7 @@ fn paint_clip(painter: &Painter, l: &Layout, c: &ClipBox, song: &Song, s: &Sessi
                                 )
                             })
                             .collect();
-                        p.with_clip_rect(visible).line(pts, Stroke::new(1.0, with_alpha(OFF_WHITE, 70)));
+                        p.with_clip_rect(visible).line(pts, Stroke::new(RULE, with_alpha(clip_ink(c.kind), 150)));
                     }
                 }
                 if let ClipBody::Keys { curves } = &clip.body {
@@ -768,26 +766,30 @@ fn paint_clip(painter: &Painter, l: &Layout, c: &ClipBox, song: &Song, s: &Sessi
                     }
                 }
                 p.with_clip_rect(visible.shrink(2.0)).text(
-                    pos2(c.rect.left().max(l.body.left()) + 6.0, c.rect.top() + 4.0),
+                    pos2(c.rect.left().max(l.body.left()) + CLIP_EDGE + U, c.rect.top() + U),
                     Align2::LEFT_TOP,
                     text,
-                    FontId::proportional(11.5),
+                    small(),
                     OFF_WHITE,
                 );
             }
         }
         ClipKind::AxisPart => {}
     }
+    // What it is, down its leading edge.
+    let edge = Rect::from_min_size(c.rect.min, vec2(CLIP_EDGE.min(c.rect.width()), c.rect.height()));
+    p.rect_filled(edge, 0.0, clip_ink(c.kind));
+    // An issue is an amber rule round the clip; the selection is a white one.
     let stroke = if warn {
-        Stroke::new(if selected { 2.0 } else { 1.5 }, AMBER)
+        Stroke::new(if selected { RULE_STRONG } else { 1.5 }, AMBER)
     } else if selected {
-        Stroke::new(1.5, OFF_WHITE)
+        Stroke::new(1.5, Color32::WHITE)
     } else {
-        Stroke::new(1.0, with_alpha(Color32::BLACK, 90))
+        Stroke::NONE
     };
-    p.rect_stroke(c.rect, 4.0, stroke, StrokeKind::Inside);
+    p.rect_stroke(c.rect, RADIUS, stroke, StrokeKind::Inside);
     if selected && warn {
-        p.rect_stroke(c.rect.expand(1.0), 5.0, Stroke::new(1.0, OFF_WHITE), StrokeKind::Outside);
+        p.rect_stroke(c.rect.expand(1.0), RADIUS, Stroke::new(RULE, Color32::WHITE), StrokeKind::Outside);
     }
 }
 
@@ -822,14 +824,14 @@ fn paint(painter: &Painter, l: &Layout, song: &Song, s: &Session, playhead: f64)
             _ => LANE_ALT,
         };
         painter.rect_filled(lane.rect, 0.0, fill);
-        painter.hline(l.rect.left()..=l.rect.right(), lane.rect.bottom(), Stroke::new(1.0, with_alpha(LINE, 120)));
+        painter.hline(l.rect.left()..=l.rect.right(), lane.rect.bottom(), Stroke::new(RULE, LINE));
     }
     // Past the end of the song.
     let end_x = l.x_of(song.length_frames as f64);
     if end_x < l.body.right() {
         let beyond = Rect::from_min_max(pos2(end_x.max(l.body.left()), l.body.top()), l.body.right_bottom());
-        painter.rect_filled(beyond, 0.0, with_alpha(Color32::BLACK, 70));
-        painter.vline(end_x.max(l.body.left()), l.body.top()..=l.body.bottom(), Stroke::new(1.0, LINE));
+        painter.rect_filled(beyond, 0.0, with_alpha(Color32::BLACK, 90));
+        painter.vline(end_x.max(l.body.left()), l.body.top()..=l.body.bottom(), Stroke::new(RULE, CONTROL_LINE));
     }
 
     // Ruler grid lines through the lanes.
@@ -838,13 +840,13 @@ fn paint(painter: &Painter, l: &Layout, song: &Song, s: &Session, playhead: f64)
     let last = l.frame_at(l.body.right()).ceil() as i64;
     let pb = painter.with_clip_rect(l.body);
     while f <= last.min(song.length_frames) {
-        pb.vline(l.x_of(f as f64), l.body.top()..=l.body.bottom(), Stroke::new(1.0, with_alpha(LINE, 70)));
+        pb.vline(l.x_of(f as f64), l.body.top()..=l.body.bottom(), Stroke::new(RULE, with_alpha(LINE, 130)));
         f += major;
     }
 
     // Marker lines under the clips.
     for m in &l.markers {
-        pb.vline(m.x, l.body.top()..=l.body.bottom(), Stroke::new(1.0, with_alpha(AMBER, 60)));
+        pb.vline(m.x, l.body.top()..=l.body.bottom(), Stroke::new(RULE, with_alpha(OFF_WHITE, 50)));
     }
 
     for c in &l.clips {
@@ -858,18 +860,19 @@ fn paint(painter: &Painter, l: &Layout, song: &Song, s: &Session, playhead: f64)
         }
         let selected = s.timeline.key_selection.contains(&(k.clip.clone(), k.axis, k.index));
         let fill = if selected { OFF_WHITE } else { axis_color(k.axis) };
-        diamond(&pb, k.pos, 5.0, fill, Stroke::new(1.0, if selected { BLUE } else { PANEL_DARK }));
+        diamond(&pb, k.pos, 5.0, fill, Stroke::new(RULE, if selected { ACCENT } else { PANEL_DARK }));
     }
 
     // Marker flags.
     if let Some(lane) = l.lane_rect(Lane::Markers) {
         for (m, mk) in l.markers.iter().zip(&song.markers) {
             let selected = s.timeline.selection.contains(&m.id);
-            let color = if selected { OFF_WHITE } else { AMBER };
+            // A marker is a place, not a warning: plain ink, and white when selected.
+            let color = if selected { Color32::WHITE } else { mix(MUTED, OFF_WHITE, 0.5) };
             let flag = vec![pos2(m.x, lane.top() + 3.0), pos2(m.x + 8.0, lane.top() + 7.0), pos2(m.x, lane.top() + 11.0)];
             pb.add(egui::Shape::convex_polygon(flag, color, Stroke::NONE));
             pb.vline(m.x, lane.top() + 3.0..=lane.bottom(), Stroke::new(1.5, color));
-            pb.text(pos2(m.x + 11.0, lane.center().y), Align2::LEFT_CENTER, &mk.name, FontId::proportional(10.5), color);
+            pb.text(pos2(m.x + 3.0 * U, lane.center().y), Align2::LEFT_CENTER, &mk.name, small(), color);
         }
     }
 
@@ -883,9 +886,10 @@ fn paint(painter: &Painter, l: &Layout, song: &Song, s: &Session, playhead: f64)
                 let many = s.project.cameras.len() > 1;
                 let active = camera == s.cam_index();
                 if many && active {
+                    // The camera in hand: a lighter ground and the accent down its leading edge.
                     let r = Rect::from_min_max(lane.rect.left_top(), pos2(l.body.left(), lane.rect.bottom()));
-                    painter.rect_filled(r, 0.0, with_alpha(BLUE, 46));
-                    painter.rect_filled(Rect::from_min_size(r.left_top(), vec2(3.0, r.height())), 0.0, camera_color(camera));
+                    painter.rect_filled(r, 0.0, CONTROL);
+                    painter.rect_filled(Rect::from_min_size(r.left_top(), vec2(CLIP_EDGE, r.height())), 0.0, ACCENT);
                 }
                 let c = l.twirl(camera).map(|t| t.center()).unwrap_or(pos2(l.rect.left() + 13.0, y));
                 let pts = if s.timeline.view.is_open(camera) {
@@ -896,40 +900,21 @@ fn paint(painter: &Painter, l: &Layout, song: &Song, s: &Session, playhead: f64)
                 painter.add(egui::Shape::convex_polygon(pts, OFF_WHITE, Stroke::NONE));
                 if many {
                     // The camera's number in its colour, then its name.
-                    let chip = Rect::from_center_size(pos2(l.rect.left() + 35.0, y), vec2(18.0, 16.0));
-                    painter.rect_filled(chip, 3.0, camera_color(camera));
-                    painter.text(
-                        chip.center(),
-                        Align2::CENTER_CENTER,
-                        format!("{}", camera + 1),
-                        FontId::proportional(11.0),
-                        BASE,
-                    );
+                    let chip = Rect::from_center_size(pos2(l.rect.left() + 36.0, y), NUMBER_TAG);
+                    number_tag(painter, chip, camera + 1, camera_color(camera));
                     let name = s.project.cameras.get(camera).map(|c| c.name.as_str()).unwrap_or("");
-                    let text = painter.layout_no_wrap(name.to_string(), FontId::proportional(12.0), OFF_WHITE);
+                    let text = painter.layout_no_wrap(name.to_string(), small(), OFF_WHITE);
                     let clip = Rect::from_min_max(
-                        pos2(chip.right() + 5.0, lane.rect.top()),
+                        pos2(chip.right() + GAP, lane.rect.top()),
                         pos2(l.body.left() - 4.0, lane.rect.bottom()),
                     );
                     painter.with_clip_rect(clip).galley(pos2(clip.left(), y - text.size().y / 2.0), text, OFF_WHITE);
                 } else {
-                    painter.text(
-                        pos2(l.rect.left() + 26.0, y),
-                        Align2::LEFT_CENTER,
-                        lane.lane.label(),
-                        FontId::proportional(12.0),
-                        OFF_WHITE,
-                    );
+                    painter.text(pos2(l.rect.left() + 26.0, y), Align2::LEFT_CENTER, lane.lane.label(), small(), OFF_WHITE);
                 }
             }
             Lane::Missing => {
-                painter.text(
-                    pos2(l.rect.left() + 10.0, y),
-                    Align2::LEFT_CENTER,
-                    lane.lane.label(),
-                    FontId::proportional(12.0),
-                    AMBER,
-                );
+                painter.text(pos2(l.rect.left() + PAD, y), Align2::LEFT_CENTER, lane.lane.label(), small(), AMBER);
             }
             Lane::Axis(camera, axis) => {
                 let mine = camera == s.cam_index();
@@ -939,11 +924,11 @@ fn paint(painter: &Painter, l: &Layout, song: &Song, s: &Session, playhead: f64)
                         pos2(l.rect.left() + 22.0, lane.rect.top() + 3.0),
                         pos2(l.body.left() - 28.0, lane.rect.bottom() - 3.0),
                     );
-                    painter.rect_filled(r, 4.0, with_alpha(BLUE, 70));
+                    painter.rect_filled(r, RADIUS, with_alpha(ACCENT, 90));
                 }
                 painter.circle_filled(pos2(l.rect.left() + 32.0, y), 3.5, axis_color(axis));
                 let ink = if chosen { OFF_WHITE } else { MUTED };
-                painter.text(pos2(l.rect.left() + 42.0, y), Align2::LEFT_CENTER, axis.label(), FontId::proportional(11.5), ink);
+                painter.text(pos2(l.rect.left() + 44.0, y), Align2::LEFT_CENTER, axis.label(), small(), ink);
                 // Record-enable: a ring when off, filled when Record will write this axis, lit during a pass.
                 let records = s.project.camera_index(s.record_camera_shown()) == Some(camera);
                 if let Some(c) = record_dot(l, camera, axis) {
@@ -959,25 +944,19 @@ fn paint(painter: &Painter, l: &Layout, song: &Song, s: &Session, playhead: f64)
                 }
             }
             other => {
-                painter.text(
-                    pos2(l.rect.left() + 10.0, y),
-                    Align2::LEFT_CENTER,
-                    other.label(),
-                    FontId::proportional(12.0),
-                    OFF_WHITE,
-                );
+                painter.text(pos2(l.rect.left() + PAD, y), Align2::LEFT_CENTER, other.label(), small(), OFF_WHITE);
             }
         }
-        painter.hline(header.left()..=header.right(), lane.rect.bottom(), Stroke::new(1.0, with_alpha(LINE, 120)));
+        painter.hline(header.left()..=header.right(), lane.rect.bottom(), Stroke::new(RULE, LINE));
     }
-    painter.vline(l.body.left(), l.rect.top()..=l.rect.bottom(), Stroke::new(1.0, LINE));
+    painter.vline(l.body.left(), l.rect.top()..=l.rect.bottom(), Stroke::new(RULE, LINE));
 
     paint_ruler(painter, l, s);
 
     // Playhead over everything.
     let x = l.x_of(playhead);
     if x >= l.body.left() - 1.0 && x <= l.rect.right() + 1.0 {
-        let color = if s.status.hardware_live { GREEN } else { mix(GREEN, OFF_WHITE, 0.15) };
+        let color = playhead_ink(s.status.transport.estop, s.status.hardware_live);
         painter.vline(x, l.ruler.top() + 8.0..=l.rect.bottom(), Stroke::new(1.5, color));
         let head = vec![pos2(x - 6.0, l.ruler.top() + 2.0), pos2(x + 6.0, l.ruler.top() + 2.0), pos2(x, l.ruler.top() + 13.0)];
         painter.add(egui::Shape::convex_polygon(head, color, Stroke::NONE));

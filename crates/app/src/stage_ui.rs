@@ -4,7 +4,7 @@
 use crate::session::Session;
 use crate::stage::{self, Key};
 use crate::theme::*;
-use egui::{vec2, Align2, FontId, PointerButton, Pos2, Rect, Sense, Stroke, Ui};
+use egui::{vec2, Align2, PointerButton, Pos2, Rect, Sense, Stroke, Ui};
 use ptz_core::camera::Mount;
 use ptz_core::pose::{Pose, Units};
 use ptz_scene::mesh::Mesh;
@@ -262,11 +262,11 @@ fn grid_lines(min: [f32; 3], max: [f32; 3]) -> (Vec<Line>, f32) {
     let mut lines = Vec::new();
     let color = |v: f32| {
         if v == 0.0 {
-            ([120, 134, 180, 210], 1)
+            ([150, 150, 150, 210], 1)
         } else if (v / major).round() * major == v {
-            ([86, 96, 140, 170], 1)
+            ([104, 104, 104, 170], 1)
         } else {
-            ([56, 62, 92, 120], 1)
+            ([68, 68, 68, 120], 1)
         }
     };
     let count = |a: f32, b: f32| ((b - a) / step).round() as i32;
@@ -377,9 +377,7 @@ fn may_place(s: &mut Session) -> bool {
 }
 
 fn toolbar(ui: &mut Ui, s: &mut Session) {
-    ui.add_space(4.0);
-    ui.horizontal_wrapped(|ui| {
-        ui.add_space(6.0);
+    crate::theme::toolbar(ui, |ui| {
         for tool in Tool::ALL {
             if ui.selectable_label(s.stage_view.tool == tool, tool.label()).on_hover_text(tool.hint()).clicked() {
                 s.stage_view.tool = tool;
@@ -421,7 +419,6 @@ fn toolbar(ui: &mut Ui, s: &mut Session) {
             undo(s);
         }
     });
-    ui.add_space(2.0);
 }
 
 /// Pointer and keyboard: look around, and use the tool in hand.
@@ -601,7 +598,7 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
     toolbar(ui, s);
     let (resp, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
     let rect = resp.rect;
-    painter.rect_filled(rect, 0.0, PANEL_DARK);
+    painter.rect_filled(rect, 0.0, BASE);
     if rect.width() < 60.0 || rect.height() < 40.0 {
         s.stage_view.probe = None;
         return;
@@ -661,14 +658,14 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
             let on = i == selected;
             let text = format!("{} {}", i + 1, camera.name);
             let ink = if on { BASE } else { camera_color(i) };
-            let fill = if on { camera_color(i) } else { with_alpha(PANEL_DARK, 215) };
+            let fill = if on { camera_color(i) } else { plate_fill() };
             labels[i] = crate::monitor::badge(&clipped, at + vec2(0.0, -4.0), Align2::CENTER_BOTTOM, &text, fill, ink);
         }
     }
     s.stage_view.labels = labels;
     for p in &s.stage_view.measure {
         if let Some(at) = probe.screen(*p) {
-            clipped.circle(at, 4.0, OFF_WHITE, Stroke::new(1.0, BASE));
+            clipped.circle(at, 4.0, OFF_WHITE, Stroke::new(RULE, BASE));
         }
     }
 
@@ -686,24 +683,20 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
         units.distance(m.lens_position(poses[selected].elevation)[2], 2)
     );
     let text = |at: Pos2, anchor: Align2, text: String, ink: egui::Color32| {
-        let font = FontId::proportional(11.5);
-        let galley = painter.layout_no_wrap(text, font, ink);
-        let r = anchor.anchor_size(at, galley.size() + vec2(10.0, 6.0));
-        painter.rect_filled(r, 4.0, with_alpha(PANEL_DARK, 215));
-        painter.galley(r.min + vec2(5.0, 3.0), galley, ink);
+        plate(&painter, at, anchor, &text, plate_fill(), ink);
     };
-    text(rect.left_top() + vec2(8.0, 8.0), Align2::LEFT_TOP, stands, camera_color(selected));
+    text(rect.left_top() + vec2(GAP, GAP), Align2::LEFT_TOP, stands, camera_color(selected));
     let hint = match (&s.stage_view.measure[..], s.stage_view.tool) {
         ([a, b], Tool::Measure) => format!("Measured {}", measured(*a, *b, units)),
         ([_], Tool::Measure) => "Click the second point".to_string(),
         (_, tool) => format!("{}. Right-drag or Shift-drag slides the view; scroll zooms", tool.hint()),
     };
-    text(rect.left_bottom() + vec2(8.0, -8.0), Align2::LEFT_BOTTOM, hint, OFF_WHITE);
+    text(rect.left_bottom() + vec2(GAP, -GAP), Align2::LEFT_BOTTOM, hint, OFF_WHITE);
     let ms = s.world.timings.get("stage").copied().unwrap_or(0.0);
     let scale = format!("{} triangles, drawn in {ms:.1} ms   Grid {grid_step:.0} m", s.world.triangles());
-    text(rect.right_bottom() + vec2(-8.0, -8.0), Align2::RIGHT_BOTTOM, scale, MUTED);
+    text(rect.right_bottom() + vec2(-GAP, -GAP), Align2::RIGHT_BOTTOM, scale, MUTED);
     if let Some(wait) = crate::monitor::stage_wait(s) {
-        text(rect.center_top() + vec2(0.0, 8.0), Align2::CENTER_TOP, wait.to_string(), AMBER);
+        text(rect.center_top() + vec2(0.0, GAP), Align2::CENTER_TOP, wait.to_string(), AMBER);
     }
 }
 

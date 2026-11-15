@@ -27,8 +27,8 @@ pub fn lock_menu(ui: &mut Ui, s: &mut Session) {
     let reason = g.reason(Action::Lock).map(str::to_string);
     let mut pick: Option<String> = None;
     let resp = ui.add_enabled_ui(enabled, |ui| {
-        ui.menu_button(RichText::new("Lock").size(13.5), |ui| {
-            ui.label(RichText::new("Follow timecode from").color(MUTED).small());
+        ui.menu_button("Lock", |ui| {
+            ui.label(caps("Follow timecode from").color(MUTED));
             for (id, label) in [("ltc", "LTC input"), ("mtc", "MTC input"), ("artnet", "Art-Net timecode")] {
                 if ui.button(label).clicked() {
                     pick = Some(id.to_string());
@@ -36,7 +36,7 @@ pub fn lock_menu(ui: &mut Ui, s: &mut Session) {
                 }
             }
             ui.separator();
-            ui.label(RichText::new("A file on the timeline").color(MUTED).small());
+            ui.label(caps("A file on the timeline").color(MUTED));
             let clips: Vec<(String, String, bool)> = s
                 .song
                 .as_ref()

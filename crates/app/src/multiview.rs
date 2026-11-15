@@ -21,7 +21,7 @@ pub fn grid(cameras: usize) -> (usize, usize) {
 /// The picture rectangle of each tile inside `area`, in camera order.
 pub fn tiles(area: Rect, cameras: usize) -> Vec<Rect> {
     let (columns, rows) = grid(cameras);
-    let gap = 6.0;
+    let gap = GAP;
     let cell = vec2(
         (area.width() - gap * (columns as f32 - 1.0)) / columns as f32,
         (area.height() - gap * (rows as f32 - 1.0)) / rows as f32,
@@ -37,8 +37,8 @@ pub fn tiles(area: Rect, cameras: usize) -> Vec<Rect> {
 
 pub fn show(ui: &mut Ui, s: &mut Session) {
     let (resp, painter) = ui.allocate_painter(ui.available_size(), Sense::hover());
-    let area = resp.rect.shrink(8.0);
-    painter.rect_filled(resp.rect, 0.0, PANEL_DARK);
+    let area = resp.rect.shrink(GAP);
+    painter.rect_filled(resp.rect, 0.0, BASE);
     s.probe_tiles.clear();
     let count = s.project.cameras.len();
     if area.width() < 60.0 || area.height() < 40.0 || count == 0 {
@@ -75,26 +75,29 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
         let color = camera_color(i);
         stage::paint_picture(&painter, *rect, textures[i]);
         let on = i == selected;
+        // A tile is framed in its camera's state, as the Program monitor is: red when it is held or has
+        // faulted, green while output reaches it. The camera in hand is framed in the accent otherwise.
+        let (word, ink) = crate::camera_ui::state(status, output);
+        let frame = match word {
+            "held" | "fault" | "stopping" => Some(RED),
+            "live" => Some(GREEN),
+            _ if on => Some(ACCENT),
+            _ => None,
+        };
         painter.rect_stroke(
             *rect,
             0.0,
-            Stroke::new(if on { 2.0 } else { 1.0 }, if on { color } else { LINE }),
+            Stroke::new(if frame.is_some() { RULE_STRONG } else { RULE }, frame.unwrap_or(CONTROL_LINE)),
             StrokeKind::Outside,
         );
         if rect.width() > 110.0 {
             let label = format!("{} {}", i + 1, camera.name);
-            badge(&painter, rect.left_top() + vec2(6.0, 6.0), Align2::LEFT_TOP, &label, with_alpha(PANEL_DARK, 220), color);
-            let (word, ink) = crate::camera_ui::state(status, output);
-            badge(&painter, rect.right_top() + vec2(-6.0, 6.0), Align2::RIGHT_TOP, word, with_alpha(PANEL_DARK, 220), ink);
+            // The camera in hand has its name on its own colour, as it has in the Stage view.
+            let (fill, name_ink) = if on { (color, ink_on(color)) } else { (plate_fill(), color) };
+            badge(&painter, rect.left_top() + vec2(U, U), Align2::LEFT_TOP, &label, fill, name_ink);
+            badge(&painter, rect.right_top() + vec2(-U, U), Align2::RIGHT_TOP, word, plate_fill(), ink);
             let focal = format!("{:.0} mm", camera.lens.focal_mm(poses[i].zoom));
-            badge(
-                &painter,
-                rect.right_bottom() + vec2(-6.0, -6.0),
-                Align2::RIGHT_BOTTOM,
-                &focal,
-                with_alpha(PANEL_DARK, 220),
-                OFF_WHITE,
-            );
+            badge(&painter, rect.right_bottom() + vec2(-U, -U), Align2::RIGHT_BOTTOM, &focal, plate_fill(), OFF_WHITE);
         }
         let r = ui.interact(*rect, ui.id().with(("multiview_tile", i)), Sense::click()).on_hover_text(format!(
             "Select camera {}: {}",
@@ -107,7 +110,7 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
         s.probe_tiles.push((camera.id.clone(), *rect));
     }
     if let Some(wait) = crate::monitor::stage_wait(s) {
-        badge(&painter, area.center_bottom(), Align2::CENTER_BOTTOM, wait, with_alpha(PANEL_DARK, 220), AMBER);
+        badge(&painter, area.center_bottom(), Align2::CENTER_BOTTOM, wait, plate_fill(), AMBER);
     }
     if let Some(id) = choose {
         s.select_camera(&id);

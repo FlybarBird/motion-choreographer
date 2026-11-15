@@ -113,7 +113,7 @@ fn e_stop_keeps_its_place_beside_the_longest_fault_and_lock_texts() {
 
         // What the operator needs to read is still in the bar, whole and inside the window.
         let bar =
-            egui::Rect::from_min_max(pos2(0.0, rect_of(&r, "E-STOP").top() - 10.0), pos2(window.x, rect_of(&r, "Cameras").top()));
+            egui::Rect::from_min_max(pos2(0.0, rect_of(&r, "E-STOP").top() - 10.0), pos2(window.x, rect_of(&r, "CAMERAS").top()));
         let shown = worded(&r);
         for needed in [LONG_FAULT, LONG_PROBLEM, "REC", &format!("LOCKED TO {LONG_CLIP}")] {
             let at = shown
@@ -156,7 +156,7 @@ pub(super) fn shot(r: &Rig, name: &str) {
 /// E-STOP as it is painted: the whole of its place is its own red, with nothing drawn across it.
 fn assert_painted_whole(r: &Rig, state: &str) {
     let button = rect_of(r, "E-STOP");
-    assert_eq!(button.size(), vec2(108.0, 34.0), "{state}: E-STOP is its full size");
+    assert_eq!(button.size(), crate::app::ESTOP_SIZE, "{state}: E-STOP is its full size");
     let picture = r.picture();
     let red = picture.share_of(button, crate::theme::RED);
     assert!(red > 0.8, "{state}: {:.0}% of E-STOP at {button:?} is its red", red * 100.0);

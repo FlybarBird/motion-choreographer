@@ -6,7 +6,7 @@ use crate::panels::note;
 use crate::session::Session;
 use crate::theme::*;
 use crate::timeline::{self, KeyRef, Mods, View, HEADER_W};
-use egui::{pos2, vec2, Align2, Color32, CornerRadius, FontId, Painter, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Ui};
+use egui::{pos2, vec2, Align2, Color32, CornerRadius, Painter, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Ui};
 use ptz_core::compile::{speed_profile, SLACK};
 use ptz_core::edit::{self, EasyEase, Refusal};
 use ptz_core::eval::Evaluator;
@@ -558,17 +558,42 @@ pub fn frame_selection(s: &mut Session, song: &Song, clip: Option<&MotionClip>, 
     s.graph.fit_values(song, &s.project, frames, &keys);
 }
 
+/// A curve's switch: a square of its colour, filled while the curve is shown, and its name. The axis
+/// the value ruler measures has the accent rule under it.
+fn axis_toggle(ui: &mut Ui, axis: Axis, on: bool, active: bool) -> egui::Response {
+    let galley = ui.painter().layout_no_wrap(axis.label().to_string(), small(), OFF_WHITE);
+    let swatch = 2.0 * U;
+    let size = vec2(GAP + swatch + U + galley.size().x + GAP, CONTROL_SMALL);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, on, axis.label()));
+    if ui.is_rect_visible(rect) {
+        let p = ui.painter();
+        let color = axis_color(axis);
+        if response.hovered() {
+            p.rect_filled(rect, RADIUS, CONTROL_HOVER);
+        }
+        let mark = Rect::from_center_size(pos2(rect.left() + GAP + swatch / 2.0, rect.center().y), vec2(swatch, swatch));
+        if on {
+            p.rect_filled(mark, 0.0, color);
+        } else {
+            p.rect_stroke(mark, 0.0, Stroke::new(RULE, MUTED), StrokeKind::Inside);
+        }
+        let at = pos2(mark.right() + U, rect.center().y - galley.size().y / 2.0);
+        p.galley(at, galley, if on { OFF_WHITE } else { MUTED });
+        if active && on {
+            p.hline(rect.x_range(), rect.bottom() - RULE, Stroke::new(RULE_STRONG, ACCENT));
+        }
+    }
+    response
+}
+
 fn toolbar(ui: &mut Ui, s: &mut Session, clip: Option<&MotionClip>) -> bool {
     let mut frame_it = false;
-    ui.horizontal(|ui| {
-        ui.add_space(6.0);
+    crate::theme::toolbar(ui, |ui| {
         for axis in Axis::ALL {
             let on = s.graph.visible[axis.index()];
             let active = s.graph.active == axis;
-            let color = axis_color(axis);
-            let text = RichText::new(axis.label()).small().color(if on { color } else { MUTED });
-            let button = egui::Button::new(text).small().stroke(Stroke::new(1.0, if active && on { color } else { LINE }));
-            let r = ui.add(button).on_hover_text(format!(
+            let r = axis_toggle(ui, axis, on, active).on_hover_text(format!(
                 "Show or hide the {} curve. Click a curve to make it the one the value ruler measures",
                 axis.label()
             ));
@@ -581,7 +606,7 @@ fn toolbar(ui: &mut Ui, s: &mut Session, clip: Option<&MotionClip>) -> bool {
         }
         ui.separator();
         if ui
-            .add(egui::Button::selectable(s.graph.speed, RichText::new("Speed").small()))
+            .add(egui::Button::selectable(s.graph.speed, "Speed"))
             .on_hover_text("Show how fast each axis moves, against the fastest it can go")
             .clicked()
         {
@@ -589,7 +614,7 @@ fn toolbar(ui: &mut Ui, s: &mut Session, clip: Option<&MotionClip>) -> bool {
             s.graph.cancel();
         }
         if ui
-            .add(egui::Button::new(RichText::new("Frame").small()).small())
+            .add(egui::Button::new("Frame"))
             .on_hover_text("Fit the view to the selected keys, or the whole clip  ( F )")
             .clicked()
         {
@@ -599,7 +624,7 @@ fn toolbar(ui: &mut Ui, s: &mut Session, clip: Option<&MotionClip>) -> bool {
         ui.separator();
         if clip.is_preset_move() {
             if ui
-                .add(egui::Button::new(RichText::new("Convert to keys").small()).small())
+                .add(egui::Button::new("Convert to keys"))
                 .on_hover_text("Turn this preset move into keys you can edit here")
                 .clicked()
             {
@@ -620,11 +645,7 @@ fn toolbar(ui: &mut Ui, s: &mut Session, clip: Option<&MotionClip>) -> bool {
                 Interp::Linear => "Straight line to the next key",
                 Interp::Bezier => "Curve to the next key, shaped by the handles",
             };
-            if ui
-                .add_enabled(any, egui::Button::selectable(on, RichText::new(interp.label()).small()))
-                .on_hover_text(tip)
-                .clicked()
-            {
+            if ui.add_enabled(any, egui::Button::selectable(on, interp.label())).on_hover_text(tip).clicked() {
                 edit_selected(s, &id, |song, project, axis, index| edit::set_key_interp(song, project, &id, axis, index, interp));
             }
         }
@@ -634,7 +655,7 @@ fn toolbar(ui: &mut Ui, s: &mut Session, clip: Option<&MotionClip>) -> bool {
             ("Ease In", EasyEase::In, "Ease into the selected keys"),
             ("Ease Out", EasyEase::Out, "Ease out of the selected keys"),
         ] {
-            if ui.add_enabled(any, egui::Button::new(RichText::new(label).small()).small()).on_hover_text(tip).clicked() {
+            if ui.add_enabled(any, egui::Button::new(label)).on_hover_text(tip).clicked() {
                 edit_selected(s, &id, |song, project, axis, index| edit::easy_ease(song, project, &id, axis, index, mode));
             }
         }
@@ -642,7 +663,6 @@ fn toolbar(ui: &mut Ui, s: &mut Session, clip: Option<&MotionClip>) -> bool {
             ui.label(RichText::new("Click a key to shape it. Double-click a curve to add one.").small().color(MUTED));
         }
     });
-    ui.add_space(2.0);
     frame_it
 }
 
@@ -798,10 +818,10 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
     let shown_clip = clip_id.as_deref().and_then(|id| shown.motion_clip(id));
     paint(&painter, &plot, shown, shown_clip, s, playhead);
     if let (Some(why), Some(p)) = (&blocked, pointer) {
-        painter.text(p + vec2(14.0, 18.0), Align2::LEFT_TOP, why, FontId::proportional(12.0), AMBER);
+        painter.text(p + vec2(14.0, 18.0), Align2::LEFT_TOP, why, small(), AMBER);
     }
     if let Some(area) = s.graph.marquee() {
-        painter.rect(area, CornerRadius::ZERO, with_alpha(BLUE, 40), Stroke::new(1.0, BLUE), StrokeKind::Inside);
+        painter.rect(area, CornerRadius::ZERO, with_alpha(ACCENT, 40), Stroke::new(RULE, ACCENT), StrokeKind::Inside);
     }
     if s.is_playing() || s.graph.is_dragging() {
         ui.ctx().request_repaint();
@@ -843,12 +863,12 @@ fn paint(painter: &Painter, plot: &Plot, song: &Song, clip: Option<&MotionClip>,
                 pb.rect_filled(
                     Rect::from_min_max(pos2(a, plot.body.top()), pos2(b, plot.body.bottom())),
                     0.0,
-                    with_alpha(Color32::BLACK, 60),
+                    with_alpha(Color32::BLACK, 90),
                 );
             }
         }
-        pb.vline(x0, plot.body.y_range(), Stroke::new(1.0, LINE));
-        pb.vline(x1, plot.body.y_range(), Stroke::new(1.0, LINE));
+        pb.vline(x0, plot.body.y_range(), Stroke::new(RULE, CONTROL_LINE));
+        pb.vline(x1, plot.body.y_range(), Stroke::new(RULE, CONTROL_LINE));
     }
 
     // Time grid and ruler, on the timeline's ticks.
@@ -859,16 +879,16 @@ fn paint(painter: &Painter, plot: &Plot, song: &Song, clip: Option<&MotionClip>,
     let last = plot.frame_at(plot.body.right()).ceil() as i64;
     while f <= last {
         let x = plot.x_of(f as f64);
-        pb.vline(x, plot.body.y_range(), Stroke::new(1.0, with_alpha(LINE, 70)));
-        pr.text(pos2(x + 4.0, plot.ruler.top() + 4.0), Align2::LEFT_TOP, s.timecode_at(f), FontId::monospace(10.0), MUTED);
+        pb.vline(x, plot.body.y_range(), Stroke::new(RULE, with_alpha(LINE, 130)));
+        pr.text(pos2(x + U, plot.ruler.top() + U), Align2::LEFT_TOP, s.timecode_at(f), mono(MICRO), MUTED);
         f += major;
     }
-    painter.hline(plot.rect.x_range(), plot.ruler.bottom(), Stroke::new(1.0, LINE));
+    painter.hline(plot.rect.x_range(), plot.ruler.bottom(), Stroke::new(RULE, LINE));
 
     // Value gutter.
     let gutter = Rect::from_min_max(pos2(plot.rect.left(), plot.ruler.bottom()), pos2(plot.body.left(), plot.rect.bottom()));
     painter.rect_filled(gutter, 0.0, PANEL);
-    painter.vline(plot.body.left(), plot.rect.y_range(), Stroke::new(1.0, LINE));
+    painter.vline(plot.body.left(), plot.rect.y_range(), Stroke::new(RULE, LINE));
     let pg = painter.with_clip_rect(gutter);
     let active = g.active;
     let ink = axis_color(active);
@@ -884,21 +904,15 @@ fn paint(painter: &Painter, plot: &Plot, song: &Song, clip: Option<&MotionClip>,
         let mut v = (lo / step).ceil() * step;
         while v <= hi {
             let y = plot.y_of(active, v);
-            pb.hline(plot.body.x_range(), y, Stroke::new(1.0, with_alpha(LINE, 70)));
-            pg.text(
-                pos2(gutter.right() - 8.0, y),
-                Align2::RIGHT_CENTER,
-                active.format_in(v, units),
-                FontId::monospace(10.5),
-                ink,
-            );
+            pb.hline(plot.body.x_range(), y, Stroke::new(RULE, with_alpha(LINE, 130)));
+            pg.text(pos2(gutter.right() - GAP, y), Align2::RIGHT_CENTER, active.format_in(v, units), mono(MICRO), ink);
             v += step;
         }
         painter.text(
-            pos2(plot.rect.left() + 10.0, plot.ruler.center().y),
+            pos2(plot.rect.left() + GAP, plot.ruler.center().y),
             Align2::LEFT_CENTER,
             format!("{} ({})", active.label(), active.unit_in(units)),
-            FontId::proportional(11.5),
+            small(),
             ink,
         );
 
@@ -949,13 +963,13 @@ fn paint(painter: &Painter, plot: &Plot, song: &Song, clip: Option<&MotionClip>,
                         for out in [false, true] {
                             if let Some(h) = shown_handle(keys, index, out) {
                                 let end = plot.handle_pos(c, *axis, key, h);
-                                pb.line_segment([at, end], Stroke::new(1.0, OFF_WHITE));
+                                pb.line_segment([at, end], Stroke::new(RULE, OFF_WHITE));
                                 pb.circle(end, 3.5, PANEL_DARK, Stroke::new(1.5, OFF_WHITE));
                             }
                         }
                     }
                     let fill = if selected { OFF_WHITE } else { color };
-                    diamond(&pb, at, 5.0, fill, Stroke::new(1.0, if selected { color } else { PANEL_DARK }));
+                    diamond(&pb, at, 5.0, fill, Stroke::new(RULE, if selected { color } else { PANEL_DARK }));
                 }
             }
         } else if clip.is_none() {
@@ -963,7 +977,7 @@ fn paint(painter: &Painter, plot: &Plot, song: &Song, clip: Option<&MotionClip>,
                 plot.body.center_top() + vec2(0.0, 10.0),
                 Align2::CENTER_TOP,
                 "Select a clip on the timeline to edit its keys here.",
-                FontId::proportional(12.0),
+                small(),
                 MUTED,
             );
         }
@@ -971,7 +985,7 @@ fn paint(painter: &Painter, plot: &Plot, song: &Song, clip: Option<&MotionClip>,
 
     let x = plot.x_of(playhead);
     if x >= plot.body.left() - 1.0 && x <= plot.rect.right() + 1.0 {
-        let color = if s.status.hardware_live { GREEN } else { mix(GREEN, OFF_WHITE, 0.15) };
+        let color = playhead_ink(s.status.transport.estop, s.status.hardware_live);
         painter.vline(x, plot.ruler.top() + 6.0..=plot.rect.bottom(), Stroke::new(1.5, color));
         let head =
             vec![pos2(x - 5.0, plot.ruler.top() + 2.0), pos2(x + 5.0, plot.ruler.top() + 2.0), pos2(x, plot.ruler.top() + 11.0)];
@@ -988,8 +1002,8 @@ fn paint_speed(painter: &Painter, plot: &Plot, s: &Session, gutter: &Painter) {
     let base_y = plot.speed_y(0.0);
     for (fraction, label) in [(0.0, "still"), (0.5, "half speed")] {
         let y = plot.speed_y(fraction);
-        pb.hline(plot.body.x_range(), y, Stroke::new(1.0, with_alpha(LINE, 90)));
-        gutter.text(pos2(plot.body.left() - 8.0, y), Align2::RIGHT_CENTER, label, FontId::proportional(10.5), MUTED);
+        pb.hline(plot.body.x_range(), y, Stroke::new(RULE, with_alpha(LINE, 130)));
+        gutter.text(pos2(plot.body.left() - GAP, y), Align2::RIGHT_CENTER, label, micro(), MUTED);
     }
     let active = g.active;
     let limits = s.project.axes_of(&g.camera);
@@ -1000,17 +1014,17 @@ fn paint_speed(painter: &Painter, plot: &Plot, s: &Session, gutter: &Painter) {
         _ => format!("{:.0}", lim.max_speed),
     };
     gutter.text(
-        pos2(plot.body.left() - 8.0, limit_y),
+        pos2(plot.body.left() - GAP, limit_y),
         Align2::RIGHT_CENTER,
         format!("max {top} {}/s", active.unit_in(units)),
-        FontId::proportional(10.5),
+        micro(),
         AMBER,
     );
     painter.text(
-        pos2(plot.rect.left() + 10.0, plot.ruler.center().y),
+        pos2(plot.rect.left() + GAP, plot.ruler.center().y),
         Align2::LEFT_CENTER,
         format!("{} speed", active.label()),
-        FontId::proportional(11.5),
+        small(),
         axis_color(active),
     );
 
@@ -1048,7 +1062,7 @@ fn paint_speed(painter: &Painter, plot: &Plot, s: &Session, gutter: &Painter) {
         }
     }
     pb.hline(plot.body.x_range(), limit_y, Stroke::new(1.5, AMBER));
-    pb.hline(plot.body.x_range(), base_y, Stroke::new(1.0, LINE));
+    pb.hline(plot.body.x_range(), base_y, Stroke::new(RULE, CONTROL_LINE));
 
     worst.reverse();
     let mut y = plot.body.top() + 8.0;
@@ -1057,7 +1071,7 @@ fn paint_speed(painter: &Painter, plot: &Plot, s: &Session, gutter: &Painter) {
             pos2(plot.body.right() - 10.0, y),
             Align2::RIGHT_TOP,
             "Every axis shown stays within its speed limit.",
-            FontId::proportional(11.5),
+            small(),
             MUTED,
         );
     }
@@ -1066,7 +1080,7 @@ fn paint_speed(painter: &Painter, plot: &Plot, s: &Session, gutter: &Painter) {
             pos2(plot.body.right() - 10.0, y),
             Align2::RIGHT_TOP,
             format!("{} reaches {:.0}% of its limit at {}", axis.label(), times * 100.0, s.timecode_at(frame)),
-            FontId::proportional(11.5),
+            small(),
             AMBER,
         );
         y += 16.0;

@@ -172,7 +172,7 @@ impl Prompt {
 
     /// The one way a dialog is put on the screen.
     fn show(self, ctx: &egui::Context, add: impl FnOnce(&mut Ui)) {
-        egui::Modal::new(egui::Id::new(("prompt", self as u8))).show(ctx, add);
+        egui::Modal::new(egui::Id::new(("prompt", self as u8))).frame(dialog_frame()).backdrop_color(BACKDROP).show(ctx, add);
     }
 }
 
@@ -226,6 +226,8 @@ impl Shell {
 
 struct Viewer<'a> {
     session: &'a mut Session,
+    /// The tab in front of each group, which the tab strip marks.
+    front: Vec<Tab>,
 }
 
 impl egui_dock::TabViewer for Viewer<'_> {
@@ -236,7 +238,7 @@ impl egui_dock::TabViewer for Viewer<'_> {
     }
 
     fn title(&mut self, tab: &mut Tab) -> egui::WidgetText {
-        tab.title().into()
+        tab_title(tab.title())
     }
 
     fn ui(&mut self, ui: &mut Ui, tab: &mut Tab) {
@@ -267,6 +269,12 @@ impl egui_dock::TabViewer for Viewer<'_> {
     fn allowed_in_windows(&self, _tab: &mut Tab) -> bool {
         false
     }
+
+    fn on_tab_button(&mut self, tab: &mut Tab, response: &egui::Response) {
+        if self.front.contains(tab) {
+            tab_in_front(response);
+        }
+    }
 }
 
 /// A transport button: enabled when the server says so, with the server's reason when not.
@@ -274,7 +282,7 @@ fn action_button(ui: &mut Ui, s: &mut Session, action: Action, glyph: &str, labe
     let g = &s.status.guidance;
     let enabled = s.offers(action);
     // Space is the transport's one key. Its buttons take a click, and never have the keyboard.
-    let resp = click_only_button(ui, enabled, glyph, label, look, vec2(min_w, 30.0));
+    let resp = click_only_button(ui, enabled, glyph, label, look, vec2(min_w, CONTROL_LARGE));
     let reason = if s.lost.is_some() { Some("The server is not reachable") } else { g.reason(action) };
     let resp = match reason {
         Some(r) if !enabled => resp.on_disabled_hover_text(r),
@@ -287,10 +295,12 @@ fn action_button(ui: &mut Ui, s: &mut Session, action: Action, glyph: &str, labe
     false
 }
 
-/// E-STOP is this size in every state and at every window size.
-const ESTOP_SIZE: egui::Vec2 = vec2(108.0, 34.0);
+/// E-STOP is this size in every state and at every window size: wider and taller than any other control.
+pub(crate) const ESTOP_SIZE: egui::Vec2 = vec2(30.0 * U, 9.0 * U);
+/// The yellow ground it stands on shows this far round it.
+const ESTOP_GROUND: egui::Vec2 = vec2(ESTOP_SIZE.x + 2.0 * U, ESTOP_SIZE.y + 2.0 * U);
 /// A row of buttons in the transport bar is as high as its tallest control.
-const BUTTON_ROW: f32 = ESTOP_SIZE.y;
+const BUTTON_ROW: f32 = ESTOP_GROUND.y;
 /// The hint is left out where there is not even room for the mark that says it was cut short.
 const HINT_LEAST: f32 = 16.0;
 
@@ -368,7 +378,7 @@ fn e_stop_has_keyboard_id() -> egui::Id {
 /// for it in the transport bar. Whatever else is open it is drawn whole, in its own colour, and it takes
 /// the click: a dialog stops clicks only on what lies beneath it, and nothing is laid out above this.
 fn e_stop(ui: &mut Ui, s: &mut Session) {
-    let (place, _) = ui.allocate_exact_size(ESTOP_SIZE, egui::Sense::hover());
+    let (place, _) = ui.allocate_exact_size(ESTOP_GROUND, egui::Sense::hover());
     let id = egui::Id::new("e_stop");
     let ctx = ui.ctx().clone();
     // The first time a layer is laid out egui only measures it. That pass is done over at once, so that
@@ -384,7 +394,8 @@ fn e_stop(ui: &mut Ui, s: &mut Session) {
         .show(&ctx, |ui| {
             // Unlike the rest of the transport bar it can be reached with Tab and pressed with Space or
             // Enter: there is no shortcut key for it, but no way of stopping is taken away either.
-            let button = icon_button(ui, true, icon::WARNING_OCTAGON, "E-STOP", Look::Solid(RED), ESTOP_SIZE);
+            let (ground, _) = ui.allocate_exact_size(ESTOP_GROUND, egui::Sense::hover());
+            let button = stop_button(ui, icon::WARNING_OCTAGON, "E-STOP", ground, ESTOP_SIZE);
             let has_keyboard = button.has_focus();
             ui.data_mut(|d| d.insert_temp(e_stop_has_keyboard_id(), has_keyboard));
             button.on_hover_text("Stop all motion now. Works from any station, with or without the lease").clicked()
@@ -419,6 +430,22 @@ fn transport_key(ctx: &egui::Context, s: &mut Session) {
     }
 }
 
+/// The colour of the rule under the transport bar: red while E-Stop is latched or a rig has faulted,
+/// amber while the rig travels to the playhead, green while it is armed, and a plain hairline in rehearsal.
+/// The chips beside the buttons say the same in words.
+fn machine_rule(s: &Session) -> egui::Color32 {
+    let t = s.status.transport;
+    if t.estop || s.status.telemetry.fault.is_some() {
+        RED
+    } else {
+        match t.output {
+            Output::Rehearse => LINE,
+            Output::Positioning => AMBER,
+            Output::Armed => GREEN,
+        }
+    }
+}
+
 /// The icon that stands for a transport action wherever it is offered.
 fn action_glyph(action: Action) -> &'static str {
     match action {
@@ -447,32 +474,30 @@ impl Shell {
         self.shortcuts(ui);
         self.dropped_files(ui);
 
-        egui::Panel::top("song_header")
+        // Three bars, each a strip across the window with a hairline under it: the song, the machine, the cameras.
+        let bar = |fill, y: f32| egui::Frame::new().fill(fill).inner_margin(egui::Margin::symmetric(PAD as i8, y as i8));
+        egui::Panel::top("song_header").frame(bar(PANEL_DARK, U + 2.0)).show(ui, |ui| self.header(ui));
+        let transport = egui::Panel::top("transport_bar")
             .show_separator_line(false)
-            .frame(egui::Frame::new().fill(PANEL_DARK).inner_margin(egui::Margin::symmetric(12, 6)))
-            .show(ui, |ui| self.header(ui));
-        egui::Panel::top("transport_bar")
-            .show_separator_line(false)
-            .frame(egui::Frame::new().fill(PANEL).inner_margin(egui::Margin::symmetric(12, 8)))
-            .show(ui, |ui| self.transport(ui));
-        egui::Panel::top("camera_bar")
-            .show_separator_line(false)
-            .frame(egui::Frame::new().fill(BASE).inner_margin(egui::Margin { left: 12, right: 12, top: 6, bottom: 2 }))
-            .show(ui, |ui| crate::camera_ui::bar(ui, &mut self.session));
+            .frame(bar(PANEL, U + 2.0))
+            .show(ui, |ui| self.transport(ui))
+            .response
+            .rect;
+        // The rule under the transport says what the machine is doing, right across the window.
+        let rail = egui::Rect::from_min_max(egui::pos2(transport.left(), transport.bottom() - RULE_STRONG), transport.max);
+        ui.painter().rect_filled(rail, 0.0, machine_rule(&self.session));
+        egui::Panel::top("camera_bar").frame(bar(PANEL_DARK, U)).show(ui, |ui| crate::camera_ui::bar(ui, &mut self.session));
         if let Some(lost) = self.session.lost.clone() {
-            egui::Panel::top("lost_banner")
-                .show_separator_line(false)
-                .frame(egui::Frame::new().fill(RED).inner_margin(egui::Margin::symmetric(12, 6)))
-                .show(ui, |ui| {
-                    ui.label(
-                        RichText::new(format!(
-                            "{}  {lost}. The show keeps running on the server; this window is not in control.",
-                            icon::PLUGS
-                        ))
-                        .font(semibold(13.0))
-                        .color(egui::Color32::WHITE),
-                    );
-                });
+            egui::Panel::top("lost_banner").show_separator_line(false).frame(bar(RED, U + 2.0)).show(ui, |ui| {
+                ui.label(
+                    RichText::new(format!(
+                        "{}  {lost}. The show keeps running on the server; this window is not in control.",
+                        icon::PLUGS
+                    ))
+                    .font(semibold(BODY))
+                    .color(egui::Color32::WHITE),
+                );
+            });
         }
 
         let before = serde_json::to_string(&self.dock).unwrap_or_default();
@@ -501,9 +526,11 @@ impl Shell {
     }
 
     fn panels(&mut self, ui: &mut Ui) {
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(BASE).inner_margin(egui::Margin::same(4))).show(ui, |ui| {
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(BASE)).show(ui, |ui| {
             let style = dock_style(ui.style());
-            let mut viewer = Viewer { session: &mut self.session };
+            let leaves = self.dock.iter_surfaces().flat_map(|surface| surface.iter_nodes()).filter_map(|node| node.get_leaf());
+            let front = leaves.filter_map(|leaf| leaf.tabs.get(leaf.active.0).copied()).collect();
+            let mut viewer = Viewer { session: &mut self.session, front };
             DockArea::new(&mut self.dock)
                 .style(style)
                 .show_close_buttons(false)
@@ -519,15 +546,17 @@ impl Shell {
         let can_edit = s.can_edit();
         let song_id = s.song.as_ref().map(|x| x.id.clone());
         let st = s.status.song.clone();
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            ui.label(RichText::new(icon::VIDEO_CAMERA).font(icon_font(18.0)).color(ACCENT));
-            ui.label(RichText::new("PTZ Programmer").font(semibold(13.5)));
-            ui.add_space(8.0);
+        ui.horizontal_wrapped(|ui| {
+            let row = ui.cursor().top();
+            ui.spacing_mut().item_spacing.x = U;
+            ui.label(RichText::new(icon::VIDEO_CAMERA).font(icon_font(TITLE)));
+            ui.label(RichText::new("PTZ Programmer").font(semibold(BODY)));
+            ui.add_space(U);
+            ui.separator();
             let parked = s.status.transport.run == Run::Stopped && s.status.transport.output == Output::Rehearse;
             let need_lease = can_edit.clone().err().filter(|_| !s.status.you_hold_lease || s.lost.is_some());
             let gate = |ui: &mut Ui, enabled: bool, glyph: &str, label: &str, why: Option<String>, tip: &str| -> bool {
-                let r = icon_button(ui, enabled, glyph, label, Look::Quiet, vec2(0.0, 26.0));
+                let r = icon_button(ui, enabled, glyph, label, Look::Quiet, vec2(0.0, CONTROL_H));
                 let r = match (&why, enabled) {
                     (Some(w), false) => r.on_disabled_hover_text(w.clone()),
                     _ => r.on_hover_text(tip),
@@ -586,8 +615,21 @@ impl Shell {
                     s.link.send(Cmd::Commit(id.clone()));
                 }
             }
-            ui.add_space(8.0);
-            ui.spacing_mut().item_spacing.x = 8.0;
+            ui.separator();
+            ui.add_space(U);
+            ui.spacing_mut().item_spacing.x = GAP;
+
+            // The song's own fields go to a second row when the window is too narrow to hold them beside
+            // what stays at the right. Both are given the width they were laid out at last.
+            let rooms = egui::Id::new("header_rooms");
+            let (song_room, lease_room) = ui.data(|d| d.get_temp::<(f32, f32)>(rooms)).unwrap_or_default();
+            let mut first_row_ends = None;
+            if song_room + lease_room > ui.available_size_before_wrap().x {
+                first_row_ends = Some(ui.cursor().left());
+                ui.end_row();
+                ui.set_row_height(CONTROL_H);
+            }
+            let song_from = ui.cursor().left();
 
             match &s.song {
                 Some(song) => {
@@ -617,7 +659,8 @@ impl Shell {
                             Some(n) => format!("revision {n} + edits"),
                             None => "never committed".to_string(),
                         };
-                        chip(ui, &rev, if st.committed_clean { GREEN } else { MUTED }, false);
+                        // Green is kept for live output: a committed revision is said in plain ink.
+                        chip(ui, &rev, if st.committed_clean { OFF_WHITE } else { MUTED }, false);
                         if st.dirty {
                             chip(ui, "unsaved", AMBER, false).on_hover_text(
                                 "The draft has changes since the last Save. They are kept on the server either way",
@@ -629,9 +672,9 @@ impl Shell {
                     if n > 0 {
                         let blocking = s.song.as_ref().map(|song| s.compiled.blocking_count(song)).unwrap_or(0);
                         let text = format!("{n} issue{}", if n == 1 { "" } else { "s" });
-                        ui.label(RichText::new(icon::WARNING).font(icon_font(15.0)).color(AMBER));
+                        ui.label(RichText::new(icon::WARNING).font(icon_font(TITLE)).color(AMBER));
                         let r = ui.add(
-                            egui::Label::new(RichText::new(text).color(AMBER).font(semibold(13.0))).sense(egui::Sense::click()),
+                            egui::Label::new(RichText::new(text).color(AMBER).font(semibold(BODY))).sense(egui::Sense::click()),
                         );
                         let tip = if blocking > 0 {
                             "Arm is blocked until these are fixed or accepted. Click to go to the first"
@@ -654,10 +697,15 @@ impl Shell {
                 }
             }
 
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            // Who may edit, and the View menu, keep the right of the first row whatever has gone to the second.
+            let song_now = ui.cursor().left() - song_from;
+            let from = first_row_ends.unwrap_or(ui.cursor().left());
+            let place = egui::Rect::from_min_max(egui::pos2(from, row), egui::pos2(ui.max_rect().right(), row + CONTROL_H));
+            let at_the_right = egui::UiBuilder::new().max_rect(place).layout(Layout::right_to_left(Align::Center));
+            let lease_now = ui.scope_builder(at_the_right, |ui| {
                 let view = ui.button("View");
                 // E-STOP is just beneath and is drawn above everything: the menu opens beside it, not across it.
-                let clear = ui.max_rect().right() - ESTOP_SIZE.x - 6.0;
+                let clear = ui.max_rect().right() - ESTOP_GROUND.x - GAP;
                 let beside =
                     egui::Rect::from_x_y_ranges(view.rect.left().min(clear)..=view.rect.right().min(clear), view.rect.y_range());
                 egui::Popup::menu(&view).anchor(beside).align(egui::RectAlign::BOTTOM_END).align_alternatives(&[]).show(|ui| {
@@ -676,7 +724,7 @@ impl Shell {
                     {
                         s.link.send(Cmd::ReleaseLease);
                     }
-                    chip(ui, "You hold the edit lease", GREEN, false);
+                    chip(ui, "You hold the edit lease", OFF_WHITE, false);
                 } else {
                     let (label, text, force) = match &s.status.lease {
                         Some(l) => ("Take over", format!("Watching. {} holds the edit lease", l.holder), true),
@@ -689,11 +737,28 @@ impl Shell {
                             s.link.send(Cmd::TakeLease { name: s.station.clone(), force });
                         }
                     }
-                    ui.label(RichText::new(icon::EYE).font(icon_font(15.0)).color(AMBER));
+                    ui.label(RichText::new(icon::EYE).font(icon_font(TITLE)).color(AMBER));
                     ui.label(RichText::new(text).color(AMBER));
                 }
-                ui.label(RichText::new(&s.link.base).color(MUTED).small());
+                let needed = place.right() - ui.cursor().right();
+                // The server's address is the first thing to give way: it is shown where there is room left for it.
+                let address = egui::WidgetText::from(RichText::new(&s.link.base).color(MUTED).small()).into_galley(
+                    ui,
+                    Some(egui::TextWrapMode::Extend),
+                    f32::INFINITY,
+                    egui::TextStyle::Small,
+                );
+                if address.size().x + GAP <= ui.available_width() {
+                    ui.add(egui::Label::new(address));
+                }
+                needed
             });
+            let rooms_now = (song_now, lease_now.inner);
+            if (rooms_now.0 - song_room).abs() > 0.5 || (rooms_now.1 - lease_room).abs() > 0.5 {
+                ui.data_mut(|d| d.insert_temp(rooms, rooms_now));
+                // The rows were laid out for other widths: lay the bar out again before it is shown.
+                ui.ctx().request_discard("the song header changed");
+            }
         });
     }
 
@@ -706,40 +771,38 @@ impl Shell {
             // row is all the rest may use: it goes onto further rows instead of running on under the button.
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if t.estop {
+                    // The latch is said where the stop button was, on the same ground, with the way out of it beside it.
+                    stop_latched(ui, "E-STOP LATCHED", ESTOP_GROUND, ESTOP_SIZE);
                     let reset = action_glyph(Action::ResetEstop);
                     action_button(ui, s, Action::ResetEstop, reset, "Reset E-Stop", Look::Solid(AMBER), 130.0);
-                    chip(ui, "E-STOP LATCHED", RED, true);
                 } else {
                     e_stop(ui, s);
                 }
-                ui.add_space(4.0);
+                ui.add_space(U);
                 crate::media_ui::meters(ui, s);
-                ui.add_space(4.0);
+                ui.add_space(U);
 
                 let room = ui.available_rect_before_wrap();
                 ui.with_layout(Layout::left_to_right(Align::Center).with_main_wrap(true), |ui| {
                     // Should anything still be wider than the room it has, it is cut off there, not drawn over the meters and the stop.
                     ui.shrink_clip_rect(egui::Rect::everything_left_of(room.right()));
+                    // Everything that runs the machine is the large size.
+                    ui.spacing_mut().interact_size.y = CONTROL_LARGE;
                     let frame = s.playhead().floor() as i64;
-                    let ink = if t.estop {
-                        RED
-                    } else if s.status.hardware_live {
-                        GREEN
-                    } else {
-                        OFF_WHITE
-                    };
+                    let ink = clock_ink(t.estop, s.status.hardware_live);
                     // The main button: whatever the server says is the next step.
                     let g = s.status.guidance.clone();
                     let primary = g.primary.filter(|a| *a != Action::Estop && *a != Action::ResetEstop);
                     let live = t.output != Output::Rehearse;
                     flow.together(ui, "run", BUTTON_ROW, |ui| {
+                        // The show's clock, in a well: the largest figures in the window.
                         egui::Frame::new()
                             .fill(BASE)
-                            .stroke(Stroke::new(1.0, LINE))
-                            .corner_radius(7)
-                            .inner_margin(egui::Margin::symmetric(12, 3))
-                            .show(ui, |ui| ui.label(RichText::new(s.timecode_at(frame)).monospace().size(22.0).color(ink)));
-                        ui.add_space(4.0);
+                            .stroke(Stroke::new(RULE, CONTROL_LINE))
+                            .corner_radius(RADIUS)
+                            .inner_margin(egui::Margin::symmetric(PAD as i8, U as i8))
+                            .show(ui, |ui| ui.label(RichText::new(s.timecode_at(frame)).font(mono(DISPLAY)).color(ink)));
+                        ui.add_space(U);
                         match primary {
                             Some(action) => {
                                 let look = match action {
@@ -750,7 +813,7 @@ impl Shell {
                                 action_button(ui, s, action, action_glyph(action), &g.primary_label, look, 124.0);
                             }
                             None => {
-                                icon_button(ui, false, icon::PLAY, "Rehearse", Look::Plain, vec2(124.0, 30.0))
+                                icon_button(ui, false, icon::PLAY, "Rehearse", Look::Plain, vec2(124.0, CONTROL_LARGE))
                                     .on_disabled_hover_text(g.hint.clone());
                             }
                         }
@@ -759,7 +822,7 @@ impl Shell {
                         }
                         action_button(ui, s, Action::Cue, icon::SKIP_BACK, "Cue", Look::Plain, 0.0);
                     });
-                    ui.add_space(6.0);
+                    ui.add_space(GAP);
 
                     flow.together(ui, "modes", BUTTON_ROW, |ui| {
                         if t.locked() {
@@ -778,7 +841,7 @@ impl Shell {
                             action_button(ui, s, Action::RecordOn, icon::RECORD, "Record", Look::Outline(RED), 0.0);
                         }
                     });
-                    ui.add_space(6.0);
+                    ui.add_space(GAP);
 
                     flow.together(ui, "state", chip_height(ui), |ui| crate::lock_ui::state_chips(ui, s, flow.width));
                     // What is wrong is said in full, on as many lines as it takes.
@@ -925,9 +988,9 @@ impl Shell {
             Dialog::New { name, start_tc } => {
                 Prompt::NewSong.show(ctx, |ui| {
                     ui.set_width(340.0);
-                    ui.heading("New song");
-                    ui.add_space(6.0);
-                    egui::Grid::new("new_grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+                    dialog_title(ui, "New song");
+                    ui.add_space(U);
+                    egui::Grid::new("new_grid").num_columns(2).spacing([PAD, GAP]).show(ui, |ui| {
                         ui.label("Name");
                         ui.add(egui::TextEdit::singleline(name).desired_width(220.0));
                         ui.end_row();
@@ -941,7 +1004,7 @@ impl Shell {
                     } else {
                         ui.label(RichText::new("The timecode at which this song's first frame plays.").color(MUTED));
                     }
-                    ui.add_space(8.0);
+                    ui.add_space(PAD);
                     ui.horizontal(|ui| {
                         let ok = valid && !name.trim().is_empty();
                         if ui.add_enabled(ok, filled("Create", ACCENT)).clicked() {
@@ -957,13 +1020,13 @@ impl Shell {
             Dialog::Load => {
                 Prompt::LoadSong.show(ctx, |ui| {
                     ui.set_width(520.0);
-                    ui.heading("Load a song");
-                    ui.add_space(6.0);
+                    dialog_title(ui, "Load a song");
+                    ui.add_space(U);
                     if s.songs.is_empty() {
                         ui.label(RichText::new("There are no songs on this server yet. Use New to start one.").color(MUTED));
                     }
                     egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
-                        egui::Grid::new("load_grid").num_columns(5).striped(true).spacing([14.0, 8.0]).show(ui, |ui| {
+                        egui::Grid::new("load_grid").num_columns(5).striped(true).spacing([PAD + U, GAP]).show(ui, |ui| {
                             for song in s.songs.clone() {
                                 ui.label(RichText::new(&song.name).strong());
                                 ui.label(RichText::new(&song.start_tc).monospace());
@@ -991,7 +1054,7 @@ impl Shell {
                             }
                         });
                     });
-                    ui.add_space(8.0);
+                    ui.add_space(PAD);
                     if ui.button("Close").clicked() {
                         close = true;
                     }
@@ -1000,11 +1063,11 @@ impl Shell {
             Dialog::SaveAs { name } => {
                 Prompt::SaveAs.show(ctx, |ui| {
                     ui.set_width(340.0);
-                    ui.heading("Save As");
+                    dialog_title(ui, "Save As");
                     ui.label(RichText::new("Makes a copy with its own revisions and opens it.").color(MUTED));
-                    ui.add_space(6.0);
+                    ui.add_space(U);
                     ui.add(egui::TextEdit::singleline(name).desired_width(300.0));
-                    ui.add_space(8.0);
+                    ui.add_space(PAD);
                     ui.horizontal(|ui| {
                         if ui.add_enabled(!name.trim().is_empty(), filled("Save copy", ACCENT)).clicked() {
                             if let Some(song) = &s.song {
@@ -1021,9 +1084,9 @@ impl Shell {
             Dialog::Revert => {
                 Prompt::Revert.show(ctx, |ui| {
                     ui.set_width(360.0);
-                    ui.heading("Revert to the last Save?");
+                    dialog_title(ui, "Revert to the last Save?");
                     ui.label("Every change since the last Save is dropped. This cannot be undone.");
-                    ui.add_space(8.0);
+                    ui.add_space(PAD);
                     ui.horizontal(|ui| {
                         if ui.add(filled("Revert", AMBER)).clicked() {
                             if let Some(song) = &s.song {
@@ -1040,9 +1103,9 @@ impl Shell {
             Dialog::DeleteSong { id, name } => {
                 Prompt::DeleteSong.show(ctx, |ui| {
                     ui.set_width(360.0);
-                    ui.heading(format!("Delete {name}?"));
+                    dialog_title(ui, format!("Delete {name}?"));
                     ui.label("The draft and every committed revision are removed from the server.");
-                    ui.add_space(8.0);
+                    ui.add_space(PAD);
                     ui.horizontal(|ui| {
                         if ui.add(filled("Delete", RED)).clicked() {
                             s.link.send(Cmd::DeleteSong(id.clone()));
@@ -1058,10 +1121,10 @@ impl Shell {
         if s.confirm_sync {
             Prompt::SyncPresets.show(ctx, |ui| {
                 ui.set_width(380.0);
-                ui.heading("Read presets from the camera?");
+                dialog_title(ui, "Read presets from the camera?");
                 ui.label("The camera is recalled to each of its presets in turn, so that its pose and picture can be read. It will move, at its own speed, through every preset it holds.");
                 ui.label(RichText::new("The pedestal does not move. E-Stop stops the camera and abandons the sync.").color(MUTED));
-                ui.add_space(8.0);
+                ui.add_space(PAD);
                 ui.horizontal(|ui| {
                     if ui.add(filled("Move the camera and sync", AMBER)).clicked() {
                         s.link.send(Cmd::SyncPresets(s.cam_id().to_string()));
@@ -1080,9 +1143,9 @@ impl Shell {
             let holder = s.status.lease.as_ref().map(|l| l.holder.clone()).unwrap_or_default();
             Prompt::TakeOver.show(ctx, |ui| {
                 ui.set_width(380.0);
-                ui.heading(format!("Take the edit lease from {holder}?"));
+                dialog_title(ui, format!("Take the edit lease from {holder}?"));
                 ui.label(format!("{holder} stops being able to edit or run the show at once, and is told this station took over. The song stays as it is."));
-                ui.add_space(8.0);
+                ui.add_space(PAD);
                 ui.horizontal(|ui| {
                     if ui.add(filled(format!("Take it from {holder}"), AMBER)).clicked() {
                         s.link.send(Cmd::TakeLease { name: s.station.clone(), force: true });
@@ -1110,13 +1173,13 @@ impl Shell {
             let mut apply = false;
             Prompt::RenameMarker.show(ctx, |ui| {
                 ui.set_width(300.0);
-                ui.heading("Rename marker");
+                dialog_title(ui, "Rename marker");
                 let r = ui.add(egui::TextEdit::singleline(&mut name).desired_width(260.0));
                 r.request_focus();
                 if ui.input(|i| i.key_pressed(Key::Enter)) {
                     apply = true;
                 }
-                ui.add_space(6.0);
+                ui.add_space(U);
                 ui.horizontal(|ui| {
                     if ui.add(filled("Rename", ACCENT)).clicked() {
                         apply = true;
@@ -1153,15 +1216,18 @@ impl Shell {
         Prompt::StopNotSent.show(ctx, |ui| {
             ui.set_width(440.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new(icon::WARNING_OCTAGON).font(icon_font(22.0)).color(RED));
+                ui.label(RichText::new(icon::WARNING_OCTAGON).font(icon_font(DISPLAY)).color(RED));
                 ui.heading(RichText::new(STOP_NOT_SENT).color(RED));
             });
-            ui.add_space(4.0);
-            ui.label(RichText::new(STOP_NOT_SENT_DO).strong());
-            ui.add_space(4.0);
+            // The rule under this title is the stop's own red, and heavier than a hairline.
+            let (rule, _) = ui.allocate_exact_size(vec2(ui.available_width(), RULE_STRONG), egui::Sense::hover());
+            ui.painter().rect_filled(rule, 0.0, RED);
+            ui.add_space(U);
+            ui.label(RichText::new(STOP_NOT_SENT_DO).font(semibold(BODY)));
+            ui.add_space(U);
             ui.label(RichText::new(format!("What went wrong: {}", why.trim_end_matches('.'))).color(MUTED));
             ui.label(if trying { STOP_STILL_TRYING } else { STOP_GAVE_UP });
-            ui.add_space(8.0);
+            ui.add_space(PAD);
             if ui.button("Close").clicked() {
                 close = true;
             }
@@ -1189,15 +1255,15 @@ impl Shell {
         let mut close = false;
         Prompt::StampedDrop.show(ctx, |ui| {
             ui.set_width(430.0);
-            ui.heading(format!("{} starts at {file_start}", info.name));
-            ui.add_space(4.0);
+            dialog_title(ui, format!("{} starts at {file_start}", info.name));
+            ui.add_space(U);
             ui.label(format!(
                 "That is outside {}, which runs from {} to {}.",
                 song.name,
                 s.timecode_at(0),
                 s.timecode_at(song.length_frames)
             ));
-            ui.add_space(4.0);
+            ui.add_space(U);
             ui.label(
                 RichText::new(
                     "Setting the song start puts the file on its own timecode at the first frame. \
@@ -1205,7 +1271,7 @@ impl Shell {
                 )
                 .color(MUTED),
             );
-            ui.add_space(10.0);
+            ui.add_space(PAD);
             ui.horizontal(|ui| {
                 if ui.add(filled(format!("Set the song start to {file_start}"), ACCENT)).clicked() {
                     choice = Some(true);
@@ -1239,22 +1305,36 @@ impl Shell {
             return;
         }
         egui::Area::new(egui::Id::new("toasts"))
-            .anchor(egui::Align2::RIGHT_BOTTOM, vec2(-14.0, -14.0))
+            .anchor(egui::Align2::RIGHT_BOTTOM, vec2(-4.0 * U, -4.0 * U))
             .order(egui::Order::Foreground)
             .interactable(false)
             .show(ctx, |ui| {
                 ui.with_layout(Layout::bottom_up(Align::RIGHT), |ui| {
                     for toast in self.session.toasts.iter().rev() {
-                        let edge = if toast.warn { AMBER } else { BLUE };
-                        egui::Frame::new()
+                        // A plate with a bar down its leading edge: amber for what was refused, the accent for news.
+                        let edge = if toast.warn { AMBER } else { ACCENT };
+                        let plate = egui::Frame::new()
                             .fill(PANEL_DARK)
-                            .stroke(Stroke::new(1.0, edge))
-                            .corner_radius(6)
-                            .inner_margin(egui::Margin::symmetric(12, 8))
+                            .stroke(Stroke::new(RULE, CONTROL_LINE))
+                            .inner_margin(egui::Margin {
+                                left: (PAD + U) as i8,
+                                right: PAD as i8,
+                                top: GAP as i8,
+                                bottom: GAP as i8,
+                            })
                             .show(ui, |ui| {
                                 ui.set_max_width(420.0);
-                                ui.label(RichText::new(&toast.text).color(if toast.warn { AMBER } else { OFF_WHITE }));
-                            });
+                                let line = vec2(ui.available_width(), ui.text_style_height(&egui::TextStyle::Body));
+                                ui.allocate_ui_with_layout(line, Layout::left_to_right(Align::Min), |ui| {
+                                    if toast.warn {
+                                        ui.label(RichText::new(icon::WARNING).font(icon_font(TITLE)).color(AMBER));
+                                    }
+                                    ui.add(egui::Label::new(&toast.text).wrap());
+                                });
+                            })
+                            .response
+                            .rect;
+                        ui.painter().rect_filled(plate.with_max_x(plate.left() + U), 0.0, edge);
                     }
                 });
             });
@@ -1371,15 +1451,22 @@ pub(crate) fn connect_form(
 ) -> (bool, bool) {
     let mut go = false;
     let mut start_local = false;
-    egui::CentralPanel::default().frame(egui::Frame::new().fill(BASE)).show(ui, |ui| {
-        ui.vertical_centered(|ui| {
-            ui.add_space((ui.available_height() * 0.18).max(20.0));
-            ui.label(RichText::new("PTZ Programmer").size(30.0).strong());
+    egui::CentralPanel::default().frame(egui::Frame::new().fill(PANEL_DARK)).show(ui, |ui| {
+        // One column, set flush left, in the middle of the window: the name, a rule, the form, a rule, what to do.
+        let column = 460.0_f32.min(ui.available_width() - 2.0 * PAD);
+        let top = (ui.available_height() * 0.18).max(5.0 * U);
+        let place = egui::Rect::from_min_size(
+            ui.max_rect().min + vec2((ui.available_width() - column) / 2.0, top),
+            vec2(column, ui.available_height() - top),
+        );
+        ui.scope_builder(egui::UiBuilder::new().max_rect(place).layout(Layout::top_down(Align::LEFT)), |ui| {
+            ui.label(RichText::new("PTZ Programmer").font(semibold(HERO)));
             ui.label(RichText::new("Timeline programming and playout for the FR7 and its pedestal").color(MUTED));
-            ui.add_space(18.0);
-            egui::Frame::new().fill(PANEL).corner_radius(10).inner_margin(egui::Margin::same(18)).show(ui, |ui| {
-                ui.set_width(430.0);
-                egui::Grid::new("connect_grid").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
+            ui.add_space(PAD);
+            hairline(ui);
+            ui.add_space(PAD);
+            {
+                egui::Grid::new("connect_grid").num_columns(2).spacing([4.0 * U, GAP]).show(ui, |ui| {
                     ui.label("Show server");
                     let r = ui.add_enabled(
                         !busy,
@@ -1419,20 +1506,22 @@ pub(crate) fn connect_form(
                     );
                     ui.end_row();
                 });
-                ui.add_space(10.0);
+                ui.add_space(PAD);
+                hairline(ui);
+                ui.add_space(PAD);
                 ui.horizontal(|ui| {
                     if busy {
                         ui.spinner();
                         ui.label("Connecting");
                     } else {
                         let ok = !settings.server.trim().is_empty() && !settings.station.trim().is_empty();
-                        if ui.add_enabled(ok, filled("Connect", ACCENT).min_size(vec2(110.0, 32.0))).clicked() {
+                        if ui.add_enabled(ok, filled("Connect", ACCENT).min_size(vec2(120.0, CONTROL_LARGE))).clicked() {
                             go = true;
                         }
                         if ui
                             .add_enabled(
                                 have_server,
-                                egui::Button::new("Start a server on this computer").min_size(vec2(0.0, 32.0)),
+                                egui::Button::new("Start a server on this computer").min_size(vec2(0.0, CONTROL_LARGE)),
                             )
                             .on_hover_text("Runs ptz-server here on the show folder in your home folder, then connects to it. It drives the rig that project names, the simulator on a new folder, and keeps running after the app quits")
                             .on_disabled_hover_text(link::NO_LOCAL_SERVER)
@@ -1443,10 +1532,13 @@ pub(crate) fn connect_form(
                     }
                 });
                 if let Some(e) = error {
-                    ui.add_space(8.0);
-                    ui.label(RichText::new(e).color(AMBER));
+                    ui.add_space(PAD);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new(icon::WARNING).font(icon_font(TITLE)).color(AMBER));
+                        ui.label(RichText::new(e).color(AMBER));
+                    });
                 }
-            });
+            }
         });
     });
     (go, start_local)
