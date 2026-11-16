@@ -24,6 +24,8 @@ tungstenite = { workspace = true }
 image = { workspace = true }
 rfd = { workspace = true }
 dirs = { workspace = true }
+sha2 = { workspace = true }
+ed25519-dalek = { workspace = true }
 
 [dev-dependencies]
 egui_kittest = { workspace = true }

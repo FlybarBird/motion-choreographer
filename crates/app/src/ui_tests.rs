@@ -1993,6 +1993,48 @@ fn the_stage_view_is_turned_slid_and_zoomed_from_its_pad_with_no_wheel() {
     assert_eq!(r.harness.state().session.stage_view.angle, Angle::Perspective);
 }
 
+/// A newer version is offered in the View menu, and is not installed while the show is live:
+/// installing closes the app.
+#[test]
+fn a_newer_version_is_offered_in_the_view_menu_and_waits_for_the_show_to_stop() {
+    use crate::update::{Installer, Release, Step};
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+    use ptz_core::transport::Output;
+    let mut r = rig(Song::new("s", "Test Song", "01:00:00:00", 1500));
+    r.harness.run_steps(2);
+    assert!(r.toasts().is_empty(), "{:?}", r.toasts());
+
+    let installer = Installer { name: "PTZ-Programmer-0.9.0-macos-arm64.pkg".into(), size: 13_000_000, sha256: "0".repeat(64) };
+    let release = Release {
+        version: "0.9.0".into(),
+        platform: "macos-arm64".into(),
+        installer,
+        notes: "Scroll bars on the timeline.".into(),
+    };
+    r.harness.state().updater.set(Step::Available(release));
+    r.harness.run_steps(3);
+    assert_eq!(r.toasts().iter().filter(|t| t.contains("Version 0.9.0 is available")).count(), 1, "said once: {:?}", r.toasts());
+
+    r.harness.state_mut().session.status.transport.output = Output::Armed;
+    r.harness.get_by_label("View").click();
+    r.harness.run_steps(3);
+    r.harness.get_by_label("Update to 0.9.0").click();
+    r.harness.run_steps(3);
+    assert!(r.harness.query_by_label("Version 0.9.0 is available").is_some());
+    assert!(r.harness.query_by_label("Scroll bars on the timeline.").is_some(), "it says what is new");
+    assert!(r.harness.get_by_label("Install and reopen").accesskit_node().is_disabled(), "not while the rig is armed");
+    assert!(r.harness.query_by_label_contains("Stop the show and disarm it first").is_some());
+
+    r.harness.state_mut().session.status.transport.output = Output::Rehearse;
+    r.harness.run_steps(3);
+    assert!(!r.harness.get_by_label("Install and reopen").accesskit_node().is_disabled());
+
+    r.harness.get_by_label("Later").click();
+    r.harness.run_steps(3);
+    assert!(r.harness.query_by_label("Install and reopen").is_none(), "Later closes it");
+    assert!(matches!(r.harness.state().updater.step(), Step::Available(_)), "and the version is still on offer");
+}
+
 mod picture;
 mod safety;
 mod settings;

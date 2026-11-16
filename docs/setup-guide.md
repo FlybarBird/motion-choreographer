@@ -1010,11 +1010,25 @@ way; copy the log off the machine after a show if it matters.
 
 ### Update
 
-Back up the data folder, quit the app, stop the server, pull the new source,
-then build and run the installers again (or `make install-mac`, if that is how
-it was installed). That replaces the app and the tools. The data
-folder is not touched, and a project saved by an earlier version is brought up
-to date when the server opens it.
+A copy of the Mac app that came from a published release updates itself. It
+looks for a newer version when it opens and every six hours, and says when
+there is one. Then:
+
+1. Stop the show, disarm, and turn Record off. The app and the show server on
+   that Mac close during the update.
+2. **View → Update to <version>**, then **Install and reopen**.
+3. Type the Mac's password when it asks.
+
+The app installs the new version and reopens, and restarts the show server on
+that Mac as the new version. Do each station in turn, the server's Mac first.
+The data folder is not touched, and a project saved by an earlier version is
+brought up to date when the server opens it. The Mac needs to reach the
+internet for this; **View → Updates** says why if it cannot.
+
+A copy built from source does not look for updates. To update one, back up the
+data folder, quit the app, stop the server, pull the new source, then build and
+run the installers again (or `make install-mac`, if that is how it was
+installed).
 
 ### Remove
 

@@ -36,6 +36,8 @@ egui-phosphor = "0.14"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 rfd = "0.18"
 dirs = "6"
+# Checks the signature on an update before it is installed.
+ed25519-dalek = { version = "3", default-features = false }
 
 [workspace.lints.clippy]
 too_many_arguments = "allow"

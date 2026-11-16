@@ -4,6 +4,7 @@ use crate::link::{self, Cmd, Event, Link};
 use crate::panels::{self, text_field};
 use crate::session::Session;
 use crate::theme::*;
+use crate::update::{self, Step, Updater};
 use crate::{monitor, timeline_ui};
 use egui::{vec2, Align, Key, Layout, RichText, Stroke, Ui};
 use egui_dock::{DockArea, DockState, NodeIndex};
@@ -156,11 +157,12 @@ pub enum Prompt {
     RenameMarker,
     StampedDrop,
     StopNotSent,
+    Update,
 }
 
 impl Prompt {
     #[cfg(test)]
-    pub const ALL: [Prompt; 10] = [
+    pub const ALL: [Prompt; 11] = [
         Prompt::NewSong,
         Prompt::LoadSong,
         Prompt::SaveAs,
@@ -171,6 +173,7 @@ impl Prompt {
         Prompt::RenameMarker,
         Prompt::StampedDrop,
         Prompt::StopNotSent,
+        Prompt::Update,
     ];
 
     /// The one way a dialog is put on the screen.
@@ -184,6 +187,176 @@ impl Prompt {
 /// and for any added later. While it is true the keyboard does nothing to the show and no jog is held.
 pub fn modal_open(ctx: &egui::Context) -> bool {
     ctx.memory(|m| m.top_modal_layer().is_some())
+}
+
+/// Is the server at this address on this computer?
+pub fn on_this_computer(server: &str) -> bool {
+    let host = server.trim().trim_start_matches("http://").trim_start_matches("https://");
+    ["127.0.0.1", "localhost", "[::1]"].iter().any(|own| host.starts_with(own))
+}
+
+/// The update dialog, while it is open: what there is to install, how the install is going, and what
+/// went wrong. `busy` is why the app may not close just now. With `server` the show server on this
+/// computer is restarted when the app reopens, so that it is the new version too.
+pub(crate) fn update_dialog(ctx: &egui::Context, updater: &Updater, busy: Option<&str>, server: bool) {
+    // An install that was asked for and has finished reopens the app at once, if the show still allows it.
+    if updater.take_reopen() && busy.is_none() && update::can_reopen() {
+        reopen(ctx, updater, server);
+    }
+    if !updater.is_open() {
+        return;
+    }
+    let step = updater.step();
+    let mut close = false;
+    Prompt::Update.show(ctx, |ui| {
+        ui.set_width(420.0);
+        let this = format!("This is version {}.", update::VERSION);
+        let quiet = |ui: &mut Ui, text: &str| {
+            ui.label(RichText::new(text).color(MUTED));
+        };
+        let buttons = |ui: &mut Ui, add: &mut dyn FnMut(&mut Ui), last: &str, close: &mut bool| {
+            ui.add_space(PAD);
+            ui.horizontal(|ui| {
+                add(ui);
+                if ui.button(last).clicked() {
+                    *close = true;
+                }
+            });
+        };
+        match &step {
+            Step::Off(why) => {
+                dialog_title(ui, "Updates");
+                ui.label(&this);
+                quiet(ui, why);
+                buttons(ui, &mut |_| {}, "Close", &mut close);
+            }
+            Step::Idle | Step::Checking => {
+                dialog_title(ui, "Updates");
+                ui.label(&this);
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    quiet(ui, "Looking for a newer one");
+                });
+                buttons(ui, &mut |_| {}, "Close", &mut close);
+            }
+            Step::Newest => {
+                dialog_title(ui, "Updates");
+                ui.label(format!("{this} It is the newest."));
+                buttons(
+                    ui,
+                    &mut |ui| {
+                        if ui.button("Look again").clicked() {
+                            updater.check();
+                        }
+                    },
+                    "Close",
+                    &mut close,
+                );
+            }
+            Step::NotChecked(why) => {
+                dialog_title(ui, "Updates");
+                ui.label(&this);
+                ui.label(RichText::new(why).color(AMBER));
+                buttons(
+                    ui,
+                    &mut |ui| {
+                        if ui.add(filled("Look again", ACCENT)).clicked() {
+                            updater.check();
+                        }
+                    },
+                    "Close",
+                    &mut close,
+                );
+            }
+            Step::Available(release) | Step::Failed(release, _) => {
+                let failed = matches!(step, Step::Failed(..));
+                if let Step::Failed(_, why) = &step {
+                    dialog_title(ui, format!("Version {} was not installed", release.version));
+                    ui.label(RichText::new(why).color(AMBER));
+                } else {
+                    dialog_title(ui, format!("Version {} is available", release.version));
+                    ui.label(&this);
+                    if !release.notes.trim().is_empty() {
+                        ui.add_space(U);
+                        ui.label(release.notes.trim());
+                    }
+                }
+                ui.add_space(U);
+                quiet(
+                    ui,
+                    if server {
+                        "The Mac asks for its password. Then the app and the show server on this computer close, and reopen as the new version."
+                    } else {
+                        "The Mac asks for its password. Then the app closes, and reopens as the new version."
+                    },
+                );
+                buttons(
+                    ui,
+                    &mut |ui| {
+                        let label = if failed { "Try again" } else { "Install and reopen" };
+                        let install = ui.add_enabled(busy.is_none(), filled(label, ACCENT));
+                        if install.on_disabled_hover_text(busy.unwrap_or_default()).clicked() {
+                            updater.install();
+                        }
+                    },
+                    "Later",
+                    &mut close,
+                );
+                if let Some(busy) = busy {
+                    ui.label(RichText::new(busy).color(AMBER));
+                }
+            }
+            Step::Downloading(release, got) => {
+                dialog_title(ui, format!("Downloading version {}", release.version));
+                let size = release.installer.size.max(1);
+                ui.add(egui::ProgressBar::new((*got as f32 / size as f32).min(1.0)).desired_width(ui.available_width()));
+                quiet(ui, &format!("{:.1} of {:.1} MB", *got as f64 / 1e6, size as f64 / 1e6));
+                buttons(ui, &mut |_| {}, "Hide", &mut close);
+            }
+            Step::Installing(release) => {
+                dialog_title(ui, format!("Installing version {}", release.version));
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label("The Mac asks for its password, then installs it.");
+                });
+                buttons(ui, &mut |_| {}, "Hide", &mut close);
+            }
+            Step::Installed(release) => {
+                dialog_title(ui, format!("Version {} is installed", release.version));
+                if update::can_reopen() {
+                    ui.label("It runs once the app has been closed and opened again.");
+                    buttons(
+                        ui,
+                        &mut |ui| {
+                            let again = ui.add_enabled(busy.is_none(), filled("Reopen now", ACCENT));
+                            if again.on_disabled_hover_text(busy.unwrap_or_default()).clicked() {
+                                reopen(ctx, updater, server);
+                            }
+                        },
+                        "Later",
+                        &mut close,
+                    );
+                    if let Some(busy) = busy {
+                        ui.label(RichText::new(busy).color(AMBER));
+                    }
+                } else {
+                    ui.label("Quit the app and open it again to use it.");
+                    buttons(ui, &mut |_| {}, "Close", &mut close);
+                }
+            }
+        }
+    });
+    if close || ctx.input(|i| i.key_pressed(Key::Escape)) {
+        updater.open(false);
+    }
+}
+
+/// Close the app and have it opened again, as the version that was just installed.
+fn reopen(ctx: &egui::Context, updater: &Updater, server: bool) {
+    if update::reopen_after_exit(server).is_ok() {
+        updater.open(false);
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
 }
 
 /// The marker a double-click on the timeline asked to rename, and the name as typed so far.
@@ -216,6 +389,10 @@ pub struct Shell {
     pub dock: DockState<Tab>,
     pub(crate) dialog: Dialog,
     pub layout_changed: bool,
+    /// Looks for a newer version of the app. The window's own; one that never looks, in the tests.
+    pub updater: Updater,
+    /// The newer version the operator has been told of.
+    update_told: Option<String>,
 }
 
 impl Shell {
@@ -464,11 +641,24 @@ fn action_glyph(action: Action) -> &'static str {
 impl Shell {
     pub fn new(session: Session, layout: Option<DockState<Tab>>) -> Shell {
         let dock = layout.map(with_every_tab).unwrap_or_else(default_layout);
-        Shell { session, dock, dialog: Dialog::None, layout_changed: false }
+        Shell { session, dock, dialog: Dialog::None, layout_changed: false, updater: Updater::off(), update_told: None }
+    }
+
+    /// Why the app may not close to install an update just now.
+    fn too_busy_to_update(&self) -> Option<&'static str> {
+        let s = &self.session;
+        let t = &s.status.transport;
+        let parked = t.run == Run::Stopped && t.output == Output::Rehearse && !t.record;
+        // A window that has lost the server is not running the show, and closing it changes nothing.
+        (s.lost.is_none() && !parked).then_some("Stop the show and disarm it first: the app closes to install the update.")
     }
 
     pub fn ui(&mut self, ui: &mut Ui) {
         self.session.poll();
+        if let Some(version) = self.updater.offered().filter(|v| self.update_told.as_ref() != Some(v)) {
+            self.session.toast(format!("Version {version} is available: View, then Update"), false);
+            self.update_told = Some(version);
+        }
         self.shortcuts(ui);
         self.dropped_files(ui);
 
@@ -540,6 +730,7 @@ impl Shell {
     }
 
     fn header(&mut self, ui: &mut Ui) {
+        let updater = self.updater.clone();
         let s = &mut self.session;
         let can_edit = s.can_edit();
         let song_id = s.song.as_ref().map(|x| x.id.clone());
@@ -717,7 +908,23 @@ impl Shell {
                         s.fit_requested = true;
                         ui.close();
                     }
+                    ui.separator();
+                    let updates = match updater.offered() {
+                        Some(version) => format!("Update to {version}"),
+                        None => "Updates".to_string(),
+                    };
+                    if ui.button(updates).on_hover_text(format!("This is version {}", update::VERSION)).clicked() {
+                        if matches!(updater.step(), Step::Newest | Step::NotChecked(_)) {
+                            updater.check();
+                        }
+                        updater.open(true);
+                        ui.close();
+                    }
                 });
+                if updater.offered().is_some() {
+                    // A newer version is waiting in the menu.
+                    ui.painter().circle_filled(view.rect.right_top() + vec2(-U, U), 3.0, ACCENT);
+                }
                 if s.status.you_hold_lease {
                     if ui.button("Release").on_hover_text("Give up the edit lease so another station can take it").clicked() {
                         s.link.send(Cmd::ReleaseLease);
@@ -1210,6 +1417,8 @@ impl Shell {
             }
         }
 
+        let server_here = on_this_computer(&self.session.link.base) && self.session.lost.is_none();
+        update_dialog(ctx, &self.updater, self.too_busy_to_update(), server_here);
         self.stamped_drop_dialog(ctx);
         self.stop_not_sent_dialog(ctx);
     }
@@ -1397,6 +1606,9 @@ pub struct PtzApp {
     last_layout_save: std::time::Instant,
     /// Whether the show server is installed on this computer, and when that was last looked at.
     have_server: Option<(std::time::Instant, bool)>,
+    updater: Updater,
+    /// The app was reopened by an update that stopped the show server on this computer: start it again.
+    start_server: bool,
 }
 
 impl PtzApp {
@@ -1408,9 +1620,11 @@ impl PtzApp {
         let mut app = PtzApp {
             settings,
             screen: Screen::Connect { error: None },
+            updater: Updater::of_this_build(repaint.clone()),
             repaint,
             last_layout_save: std::time::Instant::now(),
             have_server: None,
+            start_server: std::env::args().any(|arg| arg == update::START_SERVER),
         };
         app.connect();
         app
@@ -1429,7 +1643,28 @@ impl PtzApp {
             self.have_server = Some((std::time::Instant::now(), link::local_server().is_some()));
         }
         let have_server = self.have_server.is_some_and(|(_, found)| found);
-        let (mut go, start_local) = connect_form(ui, &mut self.settings, error.as_deref(), busy, have_server);
+        // Which version this is, and a newer one when there is one, along the bottom of the window.
+        let updater = self.updater.clone();
+        egui::Panel::bottom("version")
+            .show_separator_line(false)
+            .frame(egui::Frame::new().fill(PANEL_DARK).inner_margin(PAD))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("Version {}", update::VERSION)).color(MUTED).small());
+                    if let Some(version) = updater.offered() {
+                        if ui.button(format!("Update to {version}")).clicked() {
+                            updater.open(true);
+                        }
+                    }
+                });
+            });
+        // No show is connected, so nothing is running that this window would be leaving.
+        update_dialog(ui.ctx(), &updater, None, false);
+        let (mut go, mut start_local) = connect_form(ui, &mut self.settings, error.as_deref(), busy, have_server);
+        // Reopened by an update that stopped the server here, and it is not answering: start the new one.
+        if error.is_some() && std::mem::take(&mut self.start_server) && have_server && on_this_computer(&self.settings.server) {
+            start_local = true;
+        }
         if start_local {
             match link::start_local_server() {
                 Ok(url) => {
@@ -1554,6 +1789,7 @@ pub(crate) fn connect_form(
 
 impl eframe::App for PtzApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        self.updater.tick();
         let mut next: Option<Screen> = None;
         match &mut self.screen {
             Screen::Connect { error } => {
@@ -1579,7 +1815,9 @@ impl eframe::App for PtzApp {
                         remember_server(&mut self.settings.recent, &server);
                         self.settings.save();
                         let session = Session::new(link, &self.settings.station, *hello);
-                        let shell = Shell::new(session, self.settings.layout.take());
+                        let mut shell = Shell::new(session, self.settings.layout.take());
+                        shell.updater = self.updater.clone();
+                        self.start_server = false;
                         next = Some(Screen::Main(Box::new(shell)));
                     }
                     Some(Err(msg)) => {
