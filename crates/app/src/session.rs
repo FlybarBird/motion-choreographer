@@ -638,15 +638,6 @@ impl Session {
         }
     }
 
-    /// The camera Record writes: the one a pass is capturing, else the selected one.
-    pub fn record_camera_shown(&self) -> &str {
-        if self.status.transport.record && self.project.camera(&self.status.record.camera).is_some() {
-            &self.status.record.camera
-        } else {
-            self.cam_id()
-        }
-    }
-
     pub fn toggle_record_axis(&mut self, axis: ptz_core::Axis) {
         if self.status.transport.record {
             self.toast("Turn Record off to change which axes it writes", true);

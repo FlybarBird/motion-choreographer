@@ -150,10 +150,8 @@ pub fn bar(ui: &mut Ui, s: &mut Session) {
                         }
                     }
                     if s.status.transport.record {
-                        if let Some(i) = s.project.camera_index(&s.status.record.camera) {
-                            ui.add_space(GAP);
-                            ui.label(RichText::new(format!("Record writes camera {}", i + 1)).color(RED).small());
-                        }
+                        ui.add_space(GAP);
+                        ui.label(RichText::new("Record writes each camera you move").color(RED).small());
                     }
                 });
             });

@@ -483,8 +483,11 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
                 }
             });
             let state = s.status.record.clone();
-            if state.active {
+            if state.active && state.moved.iter().any(|id| id == s.cam_id()) {
                 ui.label(RichText::new(format!("Recording: {} frames", state.frames)).color(RED).small());
+            } else if state.active {
+                let text = format!("Rolling: {} frames. Move this camera to record it.", state.frames);
+                ui.label(RichText::new(text).color(RED).small());
             } else if recording {
                 ui.label(RichText::new("Record is on. Play starts the pass.").color(RED).small());
             } else {

@@ -830,8 +830,15 @@ impl Controller {
         let (Some(old), Some(new)) = (self.song.take(), next) else { return };
         if old.edit_counter != new.edit_counter && old.song != new.song {
             // A record pass lands by itself: keep it one Undo away and select it.
-            let pass =
-                new.song.motion.iter().find(|c| c.recorded_pass.is_some() && old.song.motion_clip(&c.id).is_none_or(|o| o != *c));
+            // A pass can land on several cameras at once: the one this panel is on comes first.
+            let landed = |c: &&MotionClip| c.recorded_pass.is_some() && old.song.motion_clip(&c.id).is_none_or(|o| o != *c);
+            let pass = new
+                .song
+                .motion
+                .iter()
+                .filter(landed)
+                .find(|c| c.camera == self.camera)
+                .or_else(|| new.song.motion.iter().find(landed));
             match pass {
                 Some(clip) if self.holds_lease() => {
                     self.clip = Some(clip.id.clone());

@@ -107,7 +107,8 @@ pub struct AdapterStatus {
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub struct RecordStatus {
-    /// The camera Record writes for.
+    /// The camera that was selected when Record was turned on. A pass is kept for every camera
+    /// that is moved, whichever was selected.
     #[serde(default = "crate::camera::first_camera")]
     pub camera: String,
     /// Axes that Record will write.
@@ -115,11 +116,14 @@ pub struct RecordStatus {
     /// A pass is being captured now.
     pub active: bool,
     pub frames: i64,
+    /// The cameras moved so far in this pass: the ones it will be kept for.
+    #[serde(default)]
+    pub moved: Vec<String>,
 }
 
 impl Default for RecordStatus {
     fn default() -> Self {
-        RecordStatus { camera: crate::camera::first_camera(), axes: Vec::new(), active: false, frames: 0 }
+        RecordStatus { camera: crate::camera::first_camera(), axes: Vec::new(), active: false, frames: 0, moved: Vec::new() }
     }
 }
 

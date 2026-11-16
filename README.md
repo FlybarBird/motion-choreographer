@@ -227,9 +227,10 @@ step one frame.
 
 A show holds one to twelve cameras. The camera bar under the song header lists
 them; click one, or press `1` to `9`, `0`, `-` and `=`, to select it. The
-Program monitor, the Presets tab, the Rig controller and Record all follow the
-selected camera. Each camera has its own **Camera move** lane on the timeline,
-with its own axis lanes. A preset belongs to one camera and always lands on
+Program monitor, the Presets tab and the Rig controller follow the selected
+camera. Record watches every camera and writes the ones that are moved. Each
+camera has its own **Camera move** lane on the timeline, with its own axis
+lanes. A preset belongs to one camera and always lands on
 that camera's lane, whichever lane the pointer is over. A move can be dragged
 to another camera's lane afterwards.
 
@@ -445,11 +446,12 @@ To record a move by hand:
 
 1. Open the axis lanes and click the red dot on each lane Record should write.
    Pan and Tilt are on to start with.
-2. Press **Record**, then play. The enabled axes follow the rig controller; the
-   others keep playing the timeline.
-3. Stop, Cue or **Record off** ends the pass. It lands on the timeline as a
-   keys clip covering exactly the frames it was recorded on, replacing those
-   axes over that range and nothing else. One undo removes the whole pass.
+2. Press **Record**, then play. On any camera you move, the enabled axes follow
+   the rig controller; everything else keeps playing the timeline.
+3. Stop, Cue or **Record off** ends the pass. Each camera that was moved gets a
+   keys clip covering exactly the frames of the pass, replacing those axes over
+   that range and nothing else. A camera that was not moved is left as it was.
+   One undo removes the whole pass.
 
 The pass is reduced to as few keys as reproduce it within 0.05 degrees of pan
 and tilt, 0.2 % of zoom and focus and 1 mm of elevation; a stretch where the

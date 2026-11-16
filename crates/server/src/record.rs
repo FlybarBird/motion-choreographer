@@ -47,6 +47,10 @@ pub struct Capture {
     start_frame: i64,
     poses: Vec<Pose>,
     last: Option<(f64, Pose)>,
+    /// The server was told to drive this camera by hand during the pass.
+    driven: bool,
+    /// The lowest and the highest reading of each axis so far.
+    span: Option<(Pose, Pose)>,
 }
 
 fn lerp(a: &Pose, b: &Pose, t: f64) -> Pose {
@@ -55,11 +59,31 @@ fn lerp(a: &Pose, b: &Pose, t: f64) -> Pose {
 
 impl Capture {
     pub fn new(camera: &str, axes: Vec<Axis>) -> Capture {
-        Capture { camera: camera.to_string(), axes, start_frame: 0, poses: Vec::new(), last: None }
+        Capture { camera: camera.to_string(), axes, start_frame: 0, poses: Vec::new(), last: None, driven: false, span: None }
+    }
+
+    /// The camera was driven by hand during the pass.
+    pub fn mark_driven(&mut self) {
+        self.driven = true;
+    }
+
+    pub fn driven(&self) -> bool {
+        self.driven
+    }
+
+    /// How far apart the readings of `axis` have been: nothing for a rig that stood where it was.
+    pub fn travel(&self, axis: Axis) -> f64 {
+        self.span.map(|(low, high)| high.get(axis) - low.get(axis)).unwrap_or(0.0)
     }
 
     /// The rig was at `pose` when the transport was at `stamp` frames.
     pub fn feed(&mut self, stamp: f64, pose: Pose) {
+        self.span = Some(match self.span {
+            None => (pose, pose),
+            Some((low, high)) => {
+                (Pose::from_fn(|a| low.get(a).min(pose.get(a))), Pose::from_fn(|a| high.get(a).max(pose.get(a))))
+            }
+        });
         match self.last {
             None => {
                 self.start_frame = stamp.ceil() as i64;
@@ -125,6 +149,18 @@ mod tests {
         // A reading that does not move time forward changes nothing.
         c.feed(12.0, at(99.0));
         assert_eq!(c.frames(), 21);
+    }
+
+    #[test]
+    fn a_capture_knows_how_far_each_axis_travelled_and_whether_it_was_driven() {
+        let mut c = Capture::new(ptz_core::FIRST_CAMERA, vec![Axis::Pan, Axis::Tilt]);
+        assert_eq!((c.travel(Axis::Pan), c.driven()), (0.0, false));
+        for (stamp, pan) in [(0.0, 4.0), (1.0, 4.0), (2.0, 1.5), (3.0, 6.0), (4.0, 4.0)] {
+            c.feed(stamp, Pose { pan, tilt: -2.0, ..Pose::home() });
+        }
+        assert_eq!((c.travel(Axis::Pan), c.travel(Axis::Tilt)), (4.5, 0.0));
+        c.mark_driven();
+        assert!(c.driven());
     }
 
     #[test]

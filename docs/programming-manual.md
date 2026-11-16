@@ -371,15 +371,22 @@ within a quarter of a second. Hand control is refused while armed.
    should write. Pan and Tilt are on to start with. The same choice is in the
    Rig controller under **Record writes**.
 2. Put the playhead a little before where the move should begin.
-3. Press **Record**. The REC chip appears and the camera bar says which camera
-   Record writes.
-4. Press **Space** to play, and perform the move. The axes you enabled follow
-   your hands; the others keep playing the timeline.
+3. Press **Record**. The REC chip appears and the camera bar says that Record
+   writes each camera you move.
+4. Press **Space** to play, and perform the move. Any camera can be moved
+   during the pass, and several in the same pass. On a camera you move, the
+   axes you enabled follow your hands; everything else keeps playing the
+   timeline.
 5. **Stop**, **Cue** or **Record off** ends the pass.
 
-The pass lands as one keys clip covering exactly the frames it was recorded
-on, replacing those axes over that range and nothing else. One undo removes the
-whole pass.
+Each camera that was moved gets one keys clip covering exactly the frames of
+the pass, replacing those axes over that range and nothing else. A camera that
+was not moved is left as it was, and a pass in which nothing was moved writes
+nothing. One undo removes the whole pass.
+
+A camera put somewhere by hand before the pass starts its move from there. A
+real head is moved from its own controller, and counts as moved when its
+position changes: one that stands still is not recorded.
 
 ### Cleaning it up
 

@@ -98,6 +98,10 @@ fn close(a: &Pose, b: &Pose, tol: &Pose, share: f64) -> bool {
     Axis::ALL.iter().all(|x| (a.get(*x) - b.get(*x)).abs() <= tol.get(*x) * share)
 }
 
+fn clips_of<'a>(song: &'a Song, camera: &str) -> Vec<&'a ptz_core::song::MotionClip> {
+    song.motion.iter().filter(|c| c.camera == camera).collect()
+}
+
 fn log(api: &Api) -> Vec<LogRecord> {
     api.get("/log?since=0").unwrap()
 }
@@ -233,7 +237,7 @@ fn a_show_from_before_cameras_opens_as_one_camera_with_its_rig_limits_and_preset
 }
 
 #[test]
-fn simulated_cameras_follow_their_own_clips_and_are_jogged_stored_synced_and_recorded_one_at_a_time() {
+fn simulated_cameras_follow_their_own_clips_and_are_jogged_stored_synced_and_recorded_when_moved() {
     let t = TestServer::start("multicam-sim");
     let api = t.client("a");
     api.take_lease("Luke-MacBook", false).unwrap();
@@ -288,7 +292,7 @@ fn simulated_cameras_follow_their_own_clips_and_are_jogged_stored_synced_and_rec
     assert_eq!(ids.len(), after_third.len(), "ids stay unique across cameras");
     assert_eq!(refused(api.sync_presets("cam7"), 404), "No camera with id cam7");
 
-    // Record captures one camera. The other cameras play the timeline and cannot be hand-driven meanwhile.
+    // Record watches every camera and keeps a pass for the ones that are moved. Here that is the second.
     seek(&api, 300);
     api.act(
         Action::RecordOn,
@@ -297,15 +301,14 @@ fn simulated_cameras_follow_their_own_clips_and_are_jogged_stored_synced_and_rec
     .unwrap();
     let st = do_act(&api, Action::Play);
     assert_eq!((st.record.camera.as_str(), st.record.active), ("cam2", true));
-    assert_eq!(
-        refused(api.jog("cam1", &Jog { pan: 0.5, ..Jog::default() }), 409),
-        "Record is capturing 2 Stage left. Stop to position another camera by hand"
-    );
+    // Pan is not record-enabled, so pushing it drives nothing: the first camera has not been moved.
+    api.jog("cam1", &Jog { pan: 0.5, ..Jog::default() }).unwrap();
     wait_for(&api, |s| s.frame >= 310);
     while api.status().unwrap().frame < 360 {
         let st = api.jog("cam2", &Jog { tilt: 0.3, pan: 1.0, ..Jog::default() }).unwrap();
         assert_eq!(st.camera("cam2").unwrap().pose_source, PoseSource::Record);
-        assert_eq!(st.camera("cam1").unwrap().pose_source, PoseSource::Timeline);
+        assert_eq!(st.camera("cam1").unwrap().pose_source, PoseSource::Record);
+        assert_eq!(st.record.moved, ["cam2"]);
         std::thread::sleep(Duration::from_millis(20));
     }
     api.jog("cam2", &Jog::default()).unwrap();
@@ -314,15 +317,149 @@ fn simulated_cameras_follow_their_own_clips_and_are_jogged_stored_synced_and_rec
     assert!(!st.transport.record, "Stop ends the pass");
 
     let after = api.working(&song.id).unwrap().song;
-    let recorded = after.motion.iter().find(|c| c.recorded_pass.is_some()).expect("the pass is on the timeline");
+    let passes: Vec<_> = after.motion.iter().filter(|c| c.recorded_pass.is_some()).collect();
+    assert_eq!(passes.len(), 1, "only the camera that was moved has a pass");
+    let recorded = passes[0];
     assert_eq!((recorded.camera.as_str(), recorded.axes.as_slice()), ("cam2", &[Axis::Tilt][..]));
+    for camera in ["cam1", "cam3"] {
+        assert_eq!(clips_of(&after, camera), clips_of(&song, camera), "{camera} was not moved, so its clips are as they were");
+    }
     assert!(pose_at(&after, "cam2", 365).tilt > pose_at(&song, "cam2", 365).tilt + 1.0, "the second camera's tilt was recorded");
     for f in (0..=after.length_frames).step_by(5) {
         assert_eq!(pose_at(&after, "cam1", f), pose_at(&song, "cam1", f), "the first camera's motion is untouched at {f}");
         assert_eq!(pose_at(&after, "cam2", f).pan, pose_at(&song, "cam2", f).pan, "pan was not record-enabled at {f}");
     }
-    let pass = log(&api).into_iter().rfind(|r| r.kind == "record_pass").expect("logged");
-    assert_eq!(pass.data["camera"], "cam2");
+    let logged: Vec<_> = log(&api).into_iter().filter(|r| r.kind == "record_pass").collect();
+    assert_eq!(logged.len(), 1);
+    assert_eq!(logged[0].data["camera"], "cam2");
+}
+
+fn record_on(api: &Api, axes: &[Axis]) -> Status {
+    api.act(Action::RecordOn, &TransportRequest { axes: Some(axes.to_vec()), ..Default::default() }).unwrap()
+}
+
+fn passes_on(song: &Song) -> Vec<&str> {
+    let mut cameras: Vec<&str> = song.motion.iter().filter(|c| c.recorded_pass.is_some()).map(|c| c.camera.as_str()).collect();
+    cameras.sort();
+    cameras
+}
+
+#[test]
+fn a_pass_is_kept_for_each_camera_that_is_moved_and_for_no_other() {
+    let t = TestServer::start_with("multicam-record", |cfg| cfg.seed = false);
+    let api = t.client("a");
+    api.take_lease("Luke-MacBook", false).unwrap();
+    let project = with_cameras(&api, 3);
+    let marks = [
+        store(&api, "cam1", "Wide", Pose { pan: 10.0, ..Pose::home() }),
+        store(&api, "cam2", "Keys", Pose { pan: -35.0, tilt: 4.0, ..Pose::home() }),
+        store(&api, "cam3", "Drums", Pose { pan: 22.0, tilt: -6.0, ..Pose::home() }),
+    ];
+    let song = song_with_moves(&api, &project, "Three Hands", &marks);
+
+    // The third camera is put somewhere by hand while stopped, and then left alone.
+    seek(&api, 300);
+    for _ in 0..20 {
+        api.jog("cam3", &Jog { pan: 1.0, ..Jog::default() }).unwrap();
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    api.jog("cam3", &Jog::default()).unwrap();
+    // It ramps down to a stop; where it comes to rest is where it was put.
+    std::thread::sleep(Duration::from_secs(1));
+    let parked = api.status().unwrap().camera("cam3").unwrap().rig_pose.pan;
+    assert!(parked > 30.0, "the third camera was panned away from 22 degrees, to {parked}");
+
+    // Two cameras are moved in one pass.
+    record_on(&api, &[Axis::Pan, Axis::Tilt]);
+    let st = do_act(&api, Action::Play);
+    assert!(st.record.active && st.record.moved.is_empty(), "{:?}", st.record);
+    wait_for(&api, |s| s.frame >= 310);
+    while api.status().unwrap().frame < 360 {
+        api.jog("cam1", &Jog { pan: 0.4, ..Jog::default() }).unwrap();
+        api.jog("cam2", &Jog { tilt: 0.3, ..Jog::default() }).unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    api.jog("cam1", &Jog::default()).unwrap();
+    let st = api.jog("cam2", &Jog::default()).unwrap();
+    assert_eq!(st.record.moved, ["cam1", "cam2"]);
+    assert_eq!(st.camera("cam3").unwrap().rig_pose.pan, parked, "a camera put somewhere by hand stays there until it is moved");
+    wait_for(&api, |s| s.frame >= 380);
+    do_act(&api, Action::Stop);
+
+    let after = api.working(&song.id).unwrap();
+    assert_eq!(passes_on(&after.song), ["cam1", "cam2"]);
+    assert!(pose_at(&after.song, "cam1", 365).pan > pose_at(&song, "cam1", 365).pan + 1.0, "the first camera's pan was recorded");
+    assert!(
+        pose_at(&after.song, "cam2", 365).tilt > pose_at(&song, "cam2", 365).tilt + 1.0,
+        "the second camera's tilt was recorded"
+    );
+    // Until it was touched, a camera played the timeline, and that is what its pass holds there.
+    assert_eq!(pose_at(&after.song, "cam1", 305), pose_at(&song, "cam1", 305));
+    // The camera nobody moved during the pass is as it was: no clip, and not one frame of where it stood.
+    assert_eq!(clips_of(&after.song, "cam3"), clips_of(&song, "cam3"));
+    for f in 0..=after.song.length_frames {
+        assert_eq!(pose_at(&after.song, "cam3", f), pose_at(&song, "cam3", f), "the third camera at frame {f}");
+    }
+    assert_eq!(api.status().unwrap().camera("cam3").unwrap().rig_pose.pan, 22.0, "and after the pass it is back on the timeline");
+    assert_eq!(log(&api).iter().filter(|r| r.kind == "record_pass").count(), 2);
+
+    // A pass in which nothing is moved leaves the song exactly as it was, and the log says why.
+    seek(&api, 400);
+    record_on(&api, &[Axis::Pan, Axis::Tilt]);
+    do_act(&api, Action::Play);
+    wait_for(&api, |s| s.frame >= 430);
+    let st = do_act(&api, Action::Stop);
+    assert!(!st.record.active && st.record.moved.is_empty());
+    assert_eq!(api.working(&song.id).unwrap(), after);
+    let last = log(&api).into_iter().rfind(|r| r.kind.starts_with("record_")).unwrap();
+    assert_eq!(
+        (last.kind.as_str(), &last.data["reason"]),
+        ("record_discarded", &serde_json::json!("No camera was moved during the pass"))
+    );
+}
+
+#[test]
+fn a_head_that_stands_still_is_not_recorded_and_one_moved_by_its_own_controller_is() {
+    let t = TestServer::start_with("multicam-record-heads", |cfg| cfg.seed = false);
+    let api = t.client("a");
+    api.take_lease("Luke-MacBook", false).unwrap();
+    let rigs: Vec<Rig> = (0..3).map(|_| Rig::start()).collect();
+    // In Rehearse nothing is sent to a head, so each stands where it was left: nowhere near the timeline.
+    for (n, rig) in rigs.iter().enumerate() {
+        rig.fr7.place(60.0 + n as f64, -15.0, 0.1, 0.5);
+        rig.pod.place(10.0);
+    }
+    let project = connect(&api, &rigs);
+    let marks = [
+        store(&api, "cam1", "Wide", Pose { pan: 10.0, ..Pose::home() }),
+        store(&api, "cam2", "Keys", Pose { pan: -35.0, tilt: 4.0, ..Pose::home() }),
+        store(&api, "cam3", "Drums", Pose { pan: 22.0, tilt: -6.0, ..Pose::home() }),
+    ];
+    let song = song_with_moves(&api, &project, "Three Heads", &marks);
+
+    seek(&api, 300);
+    record_on(&api, &[Axis::Pan, Axis::Tilt]);
+    do_act(&api, Action::Play);
+    wait_for(&api, |s| s.frame >= 310);
+    // The second head is panned from its own controller.
+    let mut pan = 61.0;
+    while api.status().unwrap().frame < 360 {
+        pan -= 0.25;
+        rigs[1].fr7.place(pan, -15.0, 0.1, 0.5);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let st = wait_for(&api, |s| s.frame >= 380);
+    assert_eq!(st.record.moved, ["cam2"]);
+    do_act(&api, Action::Stop);
+
+    let after = api.working(&song.id).unwrap().song;
+    assert_eq!(passes_on(&after), ["cam2"]);
+    let travelled = pose_at(&after, "cam2", 305).pan - pose_at(&after, "cam2", 375).pan;
+    assert!(travelled > 5.0, "the pass holds the pan the head made: {travelled} degrees");
+    for camera in ["cam1", "cam3"] {
+        assert_eq!(clips_of(&after, camera), clips_of(&song, camera), "{camera} stood still, so its clips are as they were");
+    }
+    assert!(rigs.iter().all(|r| r.fr7.commands().is_empty()), "recording sends a head nothing");
 }
 
 #[test]

@@ -1011,13 +1011,14 @@ fn paint(painter: &Painter, l: &Layout, song: &Song, s: &Session, playhead: f64)
                 painter.circle_filled(pos2(l.rect.left() + 32.0, y), 3.5, axis_color(axis));
                 let ink = if chosen { OFF_WHITE } else { MUTED };
                 painter.text(pos2(l.rect.left() + 44.0, y), Align2::LEFT_CENTER, axis.label(), small(), ink);
-                // Record-enable: a ring when off, filled when Record will write this axis, lit during a pass.
-                let records = s.project.camera_index(s.record_camera_shown()) == Some(camera);
+                // Record-enable: a ring when off, filled when Record will write this axis on a camera
+                // that is moved, lit during a pass on the cameras moved so far.
+                let moved = s.project.cameras.get(camera).is_some_and(|c| s.status.record.moved.contains(&c.id));
                 if let Some(c) = record_dot(l, camera, axis) {
-                    if records && s.record_axes_shown().contains(&axis) {
+                    if s.record_axes_shown().contains(&axis) {
                         let live = s.status.transport.record;
                         painter.circle_filled(c, 5.5, if live { RED } else { mix(RED, PANEL, 0.35) });
-                        if s.status.record.active {
+                        if s.status.record.active && moved {
                             painter.circle_stroke(c, 8.0, Stroke::new(1.5, RED));
                         }
                     } else {

@@ -449,7 +449,8 @@ move should start, then press the preset.
 2. CAM 6 **Record** on.
 3. CAM 8 to play, and drive.
 4. CAM 8 to stop. The pass lands as a keys clip, selected, and Record turns
-   off. Undo removes it.
+   off. Undo removes it. A camera that was not moved during the pass is not
+   written.
 5. With U4, CAM 1 **Fewer keys** and CAM 2 **More keys** thin or thicken the
    selected pass.
 

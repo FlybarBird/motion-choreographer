@@ -15,6 +15,7 @@ use ptz_core::chase::{Chase, ChaseState};
 use ptz_core::codes::CodeRate;
 use ptz_core::compile::{compile, Compiled};
 use ptz_core::edit;
+use ptz_core::fit::default_tolerance;
 use ptz_core::pose::{Axis, Pose, Preset, Project, Routing};
 use ptz_core::song::{ClipBody, Song};
 use ptz_core::time::{frame_to_sample, FrameRate, Timecode};
@@ -208,8 +209,8 @@ pub struct Show {
     record_camera: String,
     /// Axes that Record writes.
     record_axes: Vec<Axis>,
-    /// The pass being captured, while there is one.
-    capture: Option<Capture>,
+    /// One capture per camera while Record and Play are both on. A pass is kept for each camera that is moved.
+    captures: Vec<Capture>,
     lock_source: Option<String>,
     external: Option<External>,
     /// Why the last lock was refused or let go, until the operator's next action.
@@ -418,7 +419,7 @@ impl Show {
             ticks: 0,
             record_camera,
             record_axes: vec![Axis::Pan, Axis::Tilt],
-            capture: None,
+            captures: Vec::new(),
             lock_source: None,
             external: None,
             lock_problem: None,
@@ -1596,7 +1597,11 @@ impl Show {
                     // Code decides when the playhead and the sound start.
                     TimeMode::LockedExternal => {}
                 }
-                self.clear_manual();
+                // A rig placed by hand goes back to the timeline, unless Record is on: then the
+                // pass starts from where it was put, if it is moved again.
+                if !before.record {
+                    self.clear_manual();
+                }
             }
             // While armed the rig keeps following the timeline, which now stands still.
             Action::Stop => self.audio.stop(),
@@ -1710,7 +1715,7 @@ impl Show {
         self.log("transport", json!({ "action": action.key(), "by": self.who(client), "frame": frame, "state": self.transport }));
         self.sync_capture();
         // A virtual rig follows a moved playhead at once, not a tick later.
-        if self.transport.output == Output::Rehearse && self.capture.is_none() {
+        if self.transport.output == Output::Rehearse && self.captures.is_empty() {
             for i in 0..self.units.len() {
                 if self.units[i].rig.is_simulator() && !self.units[i].manual {
                     let pose = self.timeline_pose(&self.units[i].id);
@@ -2208,19 +2213,71 @@ impl Show {
     /// Start a pass when Record and Play are both on; end it when either goes off.
     fn sync_capture(&mut self) {
         if self.recording() {
-            if self.capture.is_none() && self.entry().is_some() {
-                // The pass includes the frame Play was pressed on.
-                let Ok(i) = self.unit_index(Some(&self.record_camera)) else { return };
-                let rig = &self.units[i].rig;
-                let mut capture = Capture::new(&self.record_camera, self.record_axes.clone());
-                capture.feed(self.frame_f - self.rate().seconds_to_frames(rig.query_delay_s()), rig.pose());
-                self.capture = Some(capture);
-                let (camera, axes) = (self.record_camera.clone(), self.record_axes.clone());
-                self.log("record_start", json!({ "camera": camera, "frame": self.frame_f.ceil() as i64, "axes": axes }));
+            if self.captures.is_empty() && self.entry().is_some() {
+                // A virtual rig starts the pass where the timeline is, on the axes that are not in
+                // someone's hand, so a playhead that moved with Play is not in the first frame.
+                for i in 0..self.units.len() {
+                    if self.units[i].rig.is_simulator() {
+                        let target = self.timeline_pose(&self.units[i].id);
+                        let axes = self.playing_axes(i);
+                        self.units[i].rig.sync_virtual(&target, &axes);
+                    }
+                }
+                // The pass includes the frame Play was pressed on. Every camera is captured together.
+                let rate = self.rate();
+                self.captures = self
+                    .units
+                    .iter()
+                    .map(|unit| {
+                        let mut capture = Capture::new(&unit.id, self.record_axes.clone());
+                        capture.feed(self.frame_f - rate.seconds_to_frames(unit.rig.query_delay_s()), unit.rig.pose());
+                        capture
+                    })
+                    .collect();
+                let cameras: Vec<&str> = self.captures.iter().map(|c| c.camera.as_str()).collect();
+                self.log(
+                    "record_start",
+                    json!({ "cameras": cameras, "frame": self.frame_f.ceil() as i64, "axes": self.record_axes }),
+                );
             }
-        } else if let Some(capture) = self.capture.take() {
-            self.finish_pass(capture);
+        } else if !self.captures.is_empty() {
+            // Only a camera that was moved has a pass to keep. The others go back to the timeline.
+            let captures = std::mem::take(&mut self.captures);
+            let mut kept = 0;
+            for capture in captures {
+                if self.moved(&capture) {
+                    kept += 1;
+                    self.finish_pass(capture);
+                } else if let Ok(i) = self.unit_index(Some(&capture.camera)) {
+                    let unit = &mut self.units[i];
+                    let _ = unit.rig.jog(Jog::default());
+                    unit.jog_deadline = None;
+                    unit.manual = false;
+                }
+            }
+            if kept == 0 {
+                let song = self.current.clone();
+                self.log("record_discarded", json!({ "song": song, "reason": "No camera was moved during the pass" }));
+            }
         }
+    }
+
+    /// Was this camera moved by hand during the pass? A virtual rig is, when it was driven. A
+    /// real head is, when its position changed: in Rehearse only its own controller moves it.
+    fn moved(&self, capture: &Capture) -> bool {
+        let Ok(i) = self.unit_index(Some(&capture.camera)) else { return false };
+        if self.units[i].rig.is_simulator() {
+            capture.driven()
+        } else {
+            capture.axes.iter().any(|a| capture.travel(*a) > 2.0 * default_tolerance(*a))
+        }
+    }
+
+    /// The axes of a virtual rig that play the timeline now: all of them, or all but the
+    /// record-enabled ones while Record is on and the rig is in someone's hand.
+    fn playing_axes(&self, i: usize) -> Vec<Axis> {
+        let in_hand = self.units[i].manual && self.transport.record;
+        Axis::ALL.into_iter().filter(|a| !(in_hand && self.record_axes.contains(a))).collect()
     }
 
     fn free_pass_id(&self, song: &str) -> String {
@@ -2344,12 +2401,6 @@ impl Show {
         if self.transport.run != Run::Stopped && !self.transport.record {
             return Err(Fail::refused("Stop to position the rig by hand, or turn Record on to capture the move"));
         }
-        if self.transport.run != Run::Stopped && self.units[i].id != self.record_camera {
-            return Err(Fail::refused(format!(
-                "Record is capturing {}. Stop to position another camera by hand",
-                self.project.label(&self.record_camera)
-            )));
-        }
         // During a pass only the record-enabled axes are hand-driven; the rest play the timeline.
         let jog = if self.transport.run != Run::Stopped {
             let keep = |a: Axis| if self.record_axes.contains(&a) { jog.get(a) } else { 0.0 };
@@ -2365,6 +2416,12 @@ impl Show {
         };
         let unit = &mut self.units[i];
         unit.rig.jog(jog).map_err(Fail::refused)?;
+        if !jog.is_zero() {
+            // Moved during a pass: this camera's pass is one to keep.
+            if let Some(capture) = self.captures.iter_mut().find(|c| c.camera == unit.id) {
+                capture.mark_driven();
+            }
+        }
         if jog.is_zero() {
             unit.jog_deadline = None;
         } else {
@@ -2396,7 +2453,7 @@ impl Show {
         let passing = self.transport.record && self.transport.run != Run::Stopped;
         if self.transport.hardware_live() {
             (unit.rig.pose(), PoseSource::Rig)
-        } else if passing && unit.id == self.record_camera {
+        } else if passing {
             (unit.rig.pose(), PoseSource::Record)
         } else if !passing && unit.manual && unit.rig.is_simulator() {
             (unit.rig.pose(), PoseSource::Rig)
@@ -2460,17 +2517,17 @@ impl Show {
                 self.tick_cameras(now, dt);
             } else {
                 // In Rehearse the virtual rigs show the timeline; hardware is sent nothing.
-                let recorded = self.capture.as_ref().map(|c| c.camera.clone());
+                let recording = !self.captures.is_empty();
                 for i in 0..self.units.len() {
                     if !self.units[i].rig.is_simulator() {
                         continue;
                     }
                     let target = self.timeline_pose(&self.units[i].id);
-                    if recorded.as_deref() == Some(self.units[i].id.as_str()) {
-                        let playing: Vec<Axis> = Axis::ALL.into_iter().filter(|a| !self.record_axes.contains(a)).collect();
-                        self.units[i].rig.sync_virtual(&target, &playing);
-                    } else if !self.units[i].manual || recorded.is_some() {
-                        self.units[i].rig.sync_virtual(&target, &Axis::ALL);
+                    // During a pass a rig in someone's hand keeps its record-enabled axes; every
+                    // other rig, and every other axis, plays the timeline.
+                    if recording || !self.units[i].manual {
+                        let axes = self.playing_axes(i);
+                        self.units[i].rig.sync_virtual(&target, &axes);
                     }
                 }
             }
@@ -2481,7 +2538,7 @@ impl Show {
         self.ticks += 1;
         self.tick_rig(now);
         let rate = self.rate();
-        if let Some(capture) = &mut self.capture {
+        for capture in &mut self.captures {
             if let Some(unit) = self.units.iter().find(|u| u.id == capture.camera) {
                 // The pose just read belongs to where the transport was `query_delay_s` ago.
                 capture.feed(self.frame_f - rate.seconds_to_frames(unit.rig.query_delay_s()), unit.rig.pose());
@@ -2560,8 +2617,9 @@ impl Show {
             record: RecordStatus {
                 camera: self.record_camera.clone(),
                 axes: self.record_axes.clone(),
-                active: self.capture.is_some(),
-                frames: self.capture.as_ref().map(|c| c.frames() as i64).unwrap_or(0),
+                active: !self.captures.is_empty(),
+                frames: self.captures.iter().map(|c| c.frames() as i64).max().unwrap_or(0),
+                moved: self.captures.iter().filter(|c| self.moved(c)).map(|c| c.camera.clone()).collect(),
             },
             telemetry,
             panel: self.panel.as_ref().map(|(p, _, _)| p.clone()),
