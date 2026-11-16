@@ -250,7 +250,7 @@ which is what the next press reads.
 | CAM 3 **Forward** | Five seconds on | Winds forward, same speeds |
 | CAM 4 **To start** | The playhead to the start of the song | |
 | CAM 5 **Cancel** | Takes back the newest mark. Dark when nothing is marked | |
-| CAM 6 **Save** | Saves the song. Amber when there is something to save | |
+| CAM 6 **Save** | Saves every song with unsaved changes. Amber when the loaded song has something to save | |
 | CAM 7 **Undo** | Undo. With U4 held, **Redo** | |
 
 With **U4** held, Back and Forward say **1 frame**. A tap is one frame. A hold

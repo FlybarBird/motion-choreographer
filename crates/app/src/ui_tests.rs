@@ -197,12 +197,12 @@ fn ctrl_s_and_cmd_s_save_the_song() {
     r.harness.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::S);
     r.harness.run_steps(2);
     let cmds: Vec<Cmd> = r.cmds.try_iter().collect();
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::Save(id) if id == "s")), "Ctrl-S saves: {cmds:?}");
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveAll)), "Ctrl-S saves: {cmds:?}");
 
     r.harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
     r.harness.run_steps(2);
     let cmds: Vec<Cmd> = r.cmds.try_iter().collect();
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::Save(id) if id == "s")), "Cmd-S saves: {cmds:?}");
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveAll)), "Cmd-S saves: {cmds:?}");
 }
 
 #[test]

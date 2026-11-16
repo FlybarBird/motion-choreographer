@@ -309,3 +309,41 @@ fn websocket_streams_status_and_edit_events() {
     assert!(frames.windows(2).all(|w| w[1] >= w[0]));
     assert!(frames.last().unwrap() - frames.first().unwrap() > 15.0);
 }
+
+#[test]
+fn save_writes_every_song_with_unsaved_changes_whichever_is_loaded() {
+    let t = TestServer::start("save-all");
+    let api = t.client("a");
+    api.take_lease("Luke-MacBook", false).unwrap();
+    let project = api.project().unwrap();
+    let unsaved = |api: &Api| -> Vec<String> { api.songs().unwrap().into_iter().filter(|s| s.dirty).map(|s| s.name).collect() };
+    assert_eq!(api.save_all().unwrap().text(), "Nothing to save");
+
+    // Two songs are edited and left unsaved; the second is the one that is loaded.
+    let mut edited = Vec::new();
+    for name in ["Opener", "Closer"] {
+        let made = api.new_song(name, None).unwrap();
+        api.load_song(&made.song.id).unwrap();
+        let song = edit::set_song_length(&made.song, &project, 900).unwrap();
+        let counter = api.working(&song.id).unwrap().edit_counter;
+        assert!(api.put_working(&PutWorking { expected_counter: counter, song: song.clone() }).unwrap().dirty);
+        edited.push(song);
+    }
+    assert_eq!(unsaved(&api), ["Closer", "Opener"]);
+
+    let saved = api.save_all().unwrap();
+    assert_eq!(saved.songs, ["Closer", "Opener"]);
+    assert_eq!(saved.text(), "Saved 2 songs");
+    let loaded = saved.working.expect("the loaded song comes back");
+    assert_eq!((loaded.song.name.as_str(), loaded.dirty), ("Closer", false));
+    assert!(unsaved(&api).is_empty());
+    for song in &edited {
+        let draft: Song = read_json(&t.dir.join("songs").join(&song.id).join("draft.json"));
+        assert_eq!(draft, *song, "{} is on disk as it was edited", song.name);
+    }
+    assert_eq!(api.save_all().unwrap().text(), "Nothing to save");
+
+    // Without the lease nothing is saved.
+    let other = t.client("b");
+    assert!(matches!(other.save_all(), Err(ApiErr::Refused { .. })));
+}

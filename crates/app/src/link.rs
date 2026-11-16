@@ -33,7 +33,8 @@ pub enum Cmd {
         start_tc: Option<String>,
     },
     LoadSong(String),
-    Save(String),
+    /// Save every song that has unsaved changes.
+    SaveAll,
     Revert(String),
     Commit(String),
     CopySong {
@@ -491,13 +492,16 @@ impl Worker {
                 let r = self.api.load_song(&id);
                 self.working("Load", r, Why::Open);
             }
-            Cmd::Save(id) => {
-                let r = self.api.save(&id);
-                if r.is_ok() {
-                    self.emit(Event::Info("Saved".into()));
+            Cmd::SaveAll => match self.api.save_all() {
+                Ok(saved) => {
+                    self.emit(Event::Info(saved.text()));
+                    if let Some(w) = saved.working {
+                        self.working("Save", Ok(w), Why::Flags);
+                    }
+                    self.handle(Cmd::RefreshSongs);
                 }
-                self.working("Save", r, Why::Flags);
-            }
+                Err(e) => self.refused("Save", e),
+            },
             Cmd::Revert(id) => {
                 let r = self.api.revert(&id);
                 self.working("Revert", r, Why::Open);

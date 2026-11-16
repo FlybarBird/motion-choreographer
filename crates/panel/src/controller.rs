@@ -1914,16 +1914,14 @@ impl Controller {
                 }
                 Err(e) => self.failed(e),
             },
-            Act::Save => {
-                let Some(id) = self.song_id() else { return };
-                match self.api.save(&id) {
-                    Ok(_) => {
-                        self.refresh_status();
-                        self.say(format!("Saved {}", self.song_name()));
-                    }
-                    Err(e) => self.failed(e),
+            // Save writes every song with unsaved changes, not only the one that is loaded.
+            Act::Save => match self.api.save_all() {
+                Ok(saved) => {
+                    self.refresh_status();
+                    self.say(saved.text());
                 }
-            }
+                Err(e) => self.failed(e),
+            },
             Act::Commit => {
                 let Some(id) = self.song_id() else { return };
                 match self.api.commit(&id) {

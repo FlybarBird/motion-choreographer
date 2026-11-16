@@ -211,6 +211,11 @@ impl Api {
         self.post_empty(&format!("/songs/{id}/save"))
     }
 
+    /// Save the draft of every song that has unsaved changes.
+    pub fn save_all(&self) -> ApiResult<SavedAll> {
+        self.post_empty("/save")
+    }
+
     pub fn revert(&self, id: &str) -> ApiResult<WorkingSong> {
         self.post_empty(&format!("/songs/{id}/revert"))
     }

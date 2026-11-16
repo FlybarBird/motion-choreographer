@@ -866,6 +866,24 @@ impl Show {
         Ok(out)
     }
 
+    /// Save the draft of every song that has unsaved changes, whichever is loaded.
+    pub fn save_all(&mut self, client: &str) -> Res<SavedAll> {
+        self.require_lease(client)?;
+        let unsaved: Vec<String> = self.songs.iter().filter(|(_, e)| e.dirty()).map(|(id, _)| id.clone()).collect();
+        let mut songs = Vec::new();
+        for id in &unsaved {
+            let song = self.songs[id].song.clone();
+            self.storage.save_draft(&song).map_err(Fail::io)?;
+            songs.push(song.name.clone());
+            self.songs.get_mut(id).unwrap().draft = Some(song);
+        }
+        if !songs.is_empty() {
+            self.push(WsMsg::SongListChanged);
+            self.poke();
+        }
+        Ok(SavedAll { songs, working: self.entry().map(|e| e.working()) })
+    }
+
     pub fn revert_song(&mut self, client: &str, id: &str) -> Res<WorkingSong> {
         self.require_lease(client)?;
         let entry = self.song_entry(id)?;

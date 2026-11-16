@@ -170,6 +170,10 @@ async fn save_song(State(app): State<App>, Client(c): Client, Path(id): Path<Str
     Ok(Json(lock(&app.show).save_song(&c, &id)?))
 }
 
+async fn save_all(State(app): State<App>, Client(c): Client) -> Reply<SavedAll> {
+    Ok(Json(lock(&app.show).save_all(&c)?))
+}
+
 async fn revert_song(State(app): State<App>, Client(c): Client, Path(id): Path<String>) -> Reply<WorkingSong> {
     Ok(Json(lock(&app.show).revert_song(&c, &id)?))
 }
@@ -590,6 +594,7 @@ pub fn router(app: App) -> Router {
         .route("/songs/{id}/load", post(load_song))
         .route("/songs/{id}/working", get(get_working).put(put_working))
         .route("/songs/{id}/save", post(save_song))
+        .route("/save", post(save_all))
         .route("/songs/{id}/revert", post(revert_song))
         .route("/songs/{id}/copy", post(copy_song))
         .route("/songs/{id}/commit", post(commit_song))

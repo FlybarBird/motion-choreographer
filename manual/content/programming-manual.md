@@ -551,7 +551,7 @@ timecode source is on site. **Unlock** returns to free-run.
 
 | Command | What it does |
 | --- | --- |
-| **Save** (Cmd-S or Ctrl-S) | Saves the draft. The *unsaved* chip goes away. |
+| **Save** (Cmd-S or Ctrl-S) | Saves the draft of every song with unsaved changes, not only the one that is open. The *unsaved* chip goes away. |
 | **Revert** | Goes back to the last Save. Everything since is dropped, and this cannot be undone. |
 | **Commit** | Freezes the saved draft as the next revision. Only a committed revision can be armed. |
 | **Save As** | Makes a copy under a new name, with its own revisions, and opens it |
@@ -851,7 +851,7 @@ Enter it with **U4 and Image**.
 | CAM 3 **Forward** | Five seconds forward | Winds forward |
 | CAM 4 **To start** | The playhead to the start of the song | |
 | CAM 5 **Cancel** | Takes back the newest mark | |
-| CAM 6 **Save** | Saves the song (amber when there are unsaved changes) | |
+| CAM 6 **Save** | Saves every song with unsaved changes (amber when the loaded song has some) | |
 | CAM 7 **Undo** | Undo; with U4, **Redo** | |
 
 With **U4** held, a tap on Back or Forward is **one frame** and a hold steps

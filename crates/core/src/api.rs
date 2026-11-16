@@ -255,6 +255,26 @@ pub struct SongSummary {
     pub loaded: bool,
 }
 
+/// What Save wrote: the draft of every song that had unsaved changes.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+pub struct SavedAll {
+    /// The names of the songs that were saved.
+    pub songs: Vec<String>,
+    /// The loaded song as it stands now, when there is one.
+    pub working: Option<WorkingSong>,
+}
+
+impl SavedAll {
+    /// What to tell the operator.
+    pub fn text(&self) -> String {
+        match &self.songs[..] {
+            [] => "Nothing to save".into(),
+            [one] => format!("Saved {one}"),
+            many => format!("Saved {} songs", many.len()),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub struct WorkingSong {
     pub song: Song,

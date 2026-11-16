@@ -871,16 +871,13 @@ impl Shell {
                 s.link.send(Cmd::RefreshSongs);
                 self.dialog = Dialog::Load;
             }
-            let dirty = st.as_ref().is_some_and(|x| x.dirty);
+            // Save writes every song with unsaved changes, not only the one that is open.
+            let dirty = st.as_ref().is_some_and(|x| x.dirty) || s.songs.iter().any(|x| x.dirty);
             let has = song_id.is_some();
-            let save_why = need_lease
-                .clone()
-                .or_else(|| (!has).then(|| "No song is open".to_string()))
-                .or_else(|| (!dirty).then(|| "Nothing to save".to_string()));
-            if gate(ui, save_why.is_none(), icon::FLOPPY_DISK, "Save", save_why, "Save the draft  ( Cmd-S or Ctrl-S )") {
-                if let Some(id) = &song_id {
-                    s.link.send(Cmd::Save(id.clone()));
-                }
+            let save_why = need_lease.clone().or_else(|| (!dirty).then(|| "Nothing to save".to_string()));
+            let save_tip = "Save every song with unsaved changes  ( Cmd-S or Ctrl-S )";
+            if gate(ui, save_why.is_none(), icon::FLOPPY_DISK, "Save", save_why, save_tip) {
+                s.link.send(Cmd::SaveAll);
             }
             let any_why = need_lease.clone().or_else(|| (!has).then(|| "No song is open".to_string()));
             if gate(ui, any_why.is_none(), icon::COPY, "Save As", any_why.clone(), "Save a copy under a new name and open it") {
@@ -1262,9 +1259,7 @@ impl Shell {
         let alone = |k: Key| chord(k).is_some_and(|m| !m.command);
         // Save is both Cmd-S and Ctrl-S, on every machine: on a Mac Cmd is not Ctrl.
         if chord(Key::S).is_some_and(|m| m.command || m.ctrl) {
-            if let Some(song) = &s.song {
-                s.link.send(Cmd::Save(song.id.clone()));
-            }
+            s.link.send(Cmd::SaveAll);
         }
         // Nothing below edits or runs the show while a text field has the keyboard. Cmd-Z there
         // is the field's own undo: it does not reach past the field into the song.
