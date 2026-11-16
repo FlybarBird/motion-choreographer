@@ -1,0 +1,26 @@
+// The update service for PTZ Programmer. The app asks it what the newest release is and
+// where its installer can be downloaded; it answers from the releases of the private
+// GitHub repository, which the app cannot read itself.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "ptz-updates",
+  // The Cloudflare account it is deployed to.
+  "account_id": "fce985d7a92a7917e77fe19e9629f222",
+  "main": "src/index.js",
+  "compatibility_date": "2026-11-15",
+  "workers_dev": true,
+  "preview_urls": false,
+  "vars": {
+    // The repository whose releases are served.
+    "GITHUB_REPO": "FlybarBird/motion-choreographer"
+  },
+  // Two secrets are set with `npx wrangler secret put <name>`, after the first deploy. Neither is kept
+  // in this repository, and the Worker answers 503 until both are there.
+  //   GITHUB_TOKEN  a fine-grained token that can only read this one repository's contents
+  //   UPDATE_KEY    what an app must send to be answered; scripts/release.sh builds it into the app
+  "observability": {
+    "enabled": true,
+    "logs": { "enabled": true, "head_sampling_rate": 1 },
+    "traces": { "enabled": true, "head_sampling_rate": 1 }
+  }
+}

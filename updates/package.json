@@ -1,0 +1,14 @@
+{
+  "name": "ptz-updates",
+  "private": true,
+  "type": "module",
+  "description": "The update service for PTZ Programmer: a Cloudflare Worker in front of the private GitHub releases.",
+  "scripts": {
+    "test": "node --test",
+    "deploy": "wrangler deploy",
+    "check": "wrangler deploy --dry-run"
+  },
+  "devDependencies": {
+    "wrangler": "^4.162.0"
+  }
+}

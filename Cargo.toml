@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/core", "crates/scene", "crates/server", "crates/panel", "crates/app"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.2"
 edition = "2021"
 license = "MIT"
 rust-version = "1.95"
@@ -36,6 +36,8 @@ egui-phosphor = "0.14"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 rfd = "0.18"
 dirs = "6"
+# Checks the signature on an update before it is installed.
+ed25519-dalek = { version = "3", default-features = false }
 
 [workspace.lints.clippy]
 too_many_arguments = "allow"

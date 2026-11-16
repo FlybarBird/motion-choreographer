@@ -197,6 +197,21 @@ pub(super) fn open(r: &mut Rig, prompt: Prompt) {
             ctx.data_mut(|d| d.insert_temp(crate::app::marker_rename_id(), ("m1".to_string(), "Chorus".to_string())));
         }
         Prompt::StopNotSent => shell.session.stop_not_sent = Some(("Connection refused".into(), true)),
+        Prompt::Update => {
+            let installer = crate::update::Installer {
+                name: "PTZ-Programmer-0.9.0-macos-arm64.pkg".into(),
+                size: 13_000_000,
+                sha256: "0".repeat(64),
+            };
+            let release = crate::update::Release {
+                version: "0.9.0".into(),
+                platform: "macos-arm64".into(),
+                installer,
+                notes: "A scroll bar along the bottom of the timeline.".into(),
+            };
+            shell.updater.set(crate::update::Step::Available(release));
+            shell.updater.open(true);
+        }
         Prompt::StampedDrop => {
             shell.session.stamped_drop = Some(crate::session::StampedDrop {
                 media: stamped_media("late", ptz_core::api::MediaKind::Audio, "05:00:00:00"),
@@ -221,6 +236,7 @@ fn words_of(prompt: Prompt) -> &'static str {
         Prompt::RenameMarker => "Rename marker",
         Prompt::StampedDrop => "late.wav starts at 05:00:00:00",
         Prompt::StopNotSent => crate::app::STOP_NOT_SENT,
+        Prompt::Update => "Version 0.9.0 is available",
     }
 }
 

@@ -126,6 +126,72 @@ make package                                    # for this Mac
 PTZ_TARGET=x86_64-apple-darwin make package     # for Intel Macs, from an Apple Silicon one
 ```
 
+### Updates
+
+A released copy of the Mac app looks for a newer version when it opens and
+every six hours after that. When there is one it says so, and **View** shows
+**Update to <version>**. **Install and reopen** downloads the installer, checks
+it, asks for the Mac's password once, installs it, and reopens the app. If the
+show server runs on that Mac it is restarted too, so that it is the new version
+as well. Because the app and the server close, the button is off until the
+show is stopped, in rehearse, and not recording. The data folder is not touched.
+
+A new version is published with one command, on the Mac that holds the release
+keys:
+
+```sh
+scripts/release.sh 0.1.1 "A scroll bar along the bottom of the timeline."
+```
+
+It sets the version, builds the installers, signs a description of them,
+commits and tags the version, pushes it, and publishes the installers as a
+GitHub release. It refuses to start with uncommitted changes, off `main`, or
+when the update service does not answer.
+
+How it fits together:
+
+- **GitHub Releases** hold the installers, a description of the release
+  (`update-<platform>.json`: version, installer name, size and SHA-256, notes)
+  and its signature.
+- **The update service** (`updates/`, a Cloudflare Worker) is the address the
+  app asks. The repository is private, so the Worker holds a read-only GitHub
+  token and hands the app the description and a short-lived link to the
+  installer. It answers only requests that carry the update key.
+- **The app** installs nothing it cannot verify: the description has to be
+  signed by the release key whose public half is `crates/app/update-signing.pub`,
+  be for this kind of Mac, be a later version, and the download has to match
+  the size and SHA-256 in it. Neither GitHub nor Cloudflare holds the signing key.
+
+The keys are in `~/.ptz-release` on the release Mac, never in the repository:
+`signing-key.pem` signs releases, and `update-key` is what apps send to the
+service. **Back that folder up.** Without `signing-key.pem` no installed copy
+will accept another update, and each would have to be reinstalled by hand.
+`node updates/tools/release-tool.mjs keys` makes them the first time.
+
+Setting the service up, once:
+
+```sh
+cd updates
+npm install
+npx wrangler login
+npx wrangler deploy                      # prints the address; put it in updates/service-url
+tr -d '\n' < ~/.ptz-release/update-key | npx wrangler secret put UPDATE_KEY
+npx wrangler secret put GITHUB_TOKEN     # paste the token when asked
+```
+
+It is deployed at `https://ptz-updates.flybar.workers.dev`, on the Cloudflare
+account named in `updates/wrangler.jsonc`. A new address takes a few minutes
+to answer the first time.
+
+The GitHub token is a fine-grained one, limited to this repository, with
+**Contents: Read-only** and nothing else. When it expires the app says that
+GitHub refused the update service's token; make a new one and run the last
+line again.
+
+A copy built with `make package` or `cargo build` has no update address in it
+and never looks: **View → Updates** says so. Only `scripts/release.sh` builds
+copies that update themselves. Linux copies do not update themselves yet.
+
 ### A remote operator station
 
 ```sh
@@ -738,6 +804,8 @@ run the real server and adapters against the stand-in devices over loopback.
 | `crates/panel` | `ptz-panel`: the Raw Panel protocol, the control map, the controller that turns what is done on a SKAARHOJ panel into the requests the app makes, and a stand-in PTZ Pro for tests. Linked into `ptz-server` for `--panel`. |
 | `crates/app` | `ptz-app`. |
 | `scripts/macos-install.sh` | The Mac installer. |
+| `scripts/release.sh` | Publishes a new version as an update. |
+| `updates` | The update service (a Cloudflare Worker), its tests, and the tool that signs a release. |
 | `brand/` | The brand kit: logo, app icon, colours, type and tokens. `brand/BRAND.md` explains them. |
 
 Data folder (`~/PTZProgrammer` by default): `project.json`, `presets.json`,
