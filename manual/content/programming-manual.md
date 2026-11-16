@@ -352,7 +352,8 @@ within a quarter of a second. Hand control is refused while armed.
 ### Recording a pass
 
 1. Open the camera's axis lanes and click the **red dot** on each lane Record
-   should write. Pan and Tilt are on to start with. The same choice is in the
+   should write. Pan, Tilt, Zoom and Elevation are on to start with; Focus is
+   off. The same choice is in the
    Rig controller under **Record writes**.
 2. Put the playhead a little before where the move should begin.
 3. Press **Record**. The REC chip appears and the camera bar says that Record
@@ -363,10 +364,12 @@ within a quarter of a second. Hand control is refused while armed.
    timeline.
 5. **Stop**, **Cue** or **Record off** ends the pass.
 
-Each camera that was moved gets one keys clip covering exactly the frames of
-the pass, replacing those axes over that range and nothing else. A camera that
-was not moved is left as it was, and a pass in which nothing was moved writes
-nothing. One undo removes the whole pass.
+Each camera that was moved gets one keys clip holding only the axes that were
+moved, starting half a second before the first of them was. An axis nobody
+touched writes nothing, and the frames before the first move are not filled in,
+so what was on the timeline there is left alone. A camera that was not moved is
+left as it was, and a pass in which nothing was moved writes nothing. One undo
+removes the whole pass.
 
 A camera put somewhere by hand before the pass starts its move from there. A
 real head is moved from its own controller, and counts as moved when its
@@ -417,8 +420,12 @@ nothing selected, under **Recorded moves**; with a recorded clip selected,
 - A move that is still over a limit after that, because there is no room in the
   take to make it any slower, is accepted as programmed in your station's name,
   exactly as the button in chapter 6 does it.
-- Range, step and keep-out problems are never accepted this way. They are left
-  in the list, and the report counts them.
+- A recorded move that begins somewhere other than where the timeline has the
+  camera, as a second take does when the head was moved in between, is a step
+  no rig can make. It is given the move there instead, from its first frame,
+  as quick as the rig's limits allow, and is back on the take after it.
+- Range and keep-out problems are never accepted this way. They are left in
+  the list, and the report counts them.
 - The rig's limits are not changed, and neither are moves that were not
   recorded. A recorded move that was accepted while still over a limit is
   smoothed again from its take, and is no longer an accepted one once it is

@@ -93,15 +93,16 @@ fn a_jogged_pan_is_recorded_and_plays_back_on_the_frames_it_was_recorded_at() {
     assert_eq!(song.motion.len(), 1);
     let clip = &song.motion[0];
     assert_eq!(clip.axes, vec![Axis::Pan]);
-    assert_eq!(clip.start_frame, 0);
-    assert!(clip.duration_frames >= 239);
+    // It starts half a second before the pan did: the still frames before that are not filled in.
+    assert!((80..=100).contains(&clip.start_frame), "the take starts on frame {}", clip.start_frame);
+    assert!(clip.start_frame + clip.duration_frames >= 239);
     let pass_id = clip.recorded_pass.clone().expect("the clip names its raw samples");
     let issues = api.status().unwrap().song.map(|s| s.issues);
     assert_eq!(issues, Some(0), "a move the rig made by hand passes the feasibility check");
     let keys = clip.keys(Axis::Pan).len();
     assert!((2..=12).contains(&keys), "a still, a ramp and a still should be a few keys, not {keys}");
     let pass: serde_json::Value = read_json(&t.dir.join("songs").join(&song_id).join("passes").join(format!("{pass_id}.json")));
-    assert_eq!(pass["start_frame"], 0);
+    assert_eq!(pass["start_frame"], clip.start_frame);
     assert_eq!(pass["samples"]["pan"].as_array().unwrap().len() as i64, clip.duration_frames + 1);
 
     // Every reading taken during the pass is on the curve.

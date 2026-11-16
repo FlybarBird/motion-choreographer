@@ -479,7 +479,7 @@ impl Controller {
             clip: None,
             media_clip: None,
             lock_source: 0,
-            record_axes: vec![Axis::Pan, Axis::Tilt],
+            record_axes: vec![Axis::Pan, Axis::Tilt, Axis::Zoom, Axis::Elevation],
             speed: 0.25,
             seek_to: None,
             last_turn: None,

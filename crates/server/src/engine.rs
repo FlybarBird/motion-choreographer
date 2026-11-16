@@ -15,7 +15,7 @@ use ptz_core::chase::{Chase, ChaseState};
 use ptz_core::codes::CodeRate;
 use ptz_core::compile::{compile, Compiled, Issue};
 use ptz_core::edit;
-use ptz_core::eval::keys_value;
+use ptz_core::eval::{keys_value, Evaluator};
 use ptz_core::fit::{default_tolerance, overruns};
 use ptz_core::pose::{Axis, Pose, Preset, Project, Routing};
 use ptz_core::song::{ClipBody, MotionClip, Song};
@@ -419,7 +419,7 @@ impl Show {
             units,
             ticks: 0,
             record_camera,
-            record_axes: vec![Axis::Pan, Axis::Tilt],
+            record_axes: vec![Axis::Pan, Axis::Tilt, Axis::Zoom, Axis::Elevation],
             captures: Vec::new(),
             lock_source: None,
             external: None,
@@ -2349,12 +2349,15 @@ impl Show {
         unit.manual = false;
         let query_delay_s = unit.rig.query_delay_s();
         let Some(song_id) = self.current.clone() else { return };
-        let frames = capture.frames() as i64;
+        // Only what was moved is kept: the axes that left where they stood, from half a second
+        // before the first of them did.
+        let lead = (self.rate().fps() / 2.0).round() as usize;
+        let (dropped, samples) = record::moved_part(&capture.samples(), lead).unwrap_or_default();
+        let frames = samples.values().map(Vec::len).min().unwrap_or(0) as i64;
         if frames < 2 {
-            self.log(
-                "record_discarded",
-                json!({ "song": song_id, "camera": capture.camera, "reason": "The pass was shorter than two frames" }),
-            );
+            let reason =
+                if capture.frames() < 2 { "The pass was shorter than two frames" } else { "No axis was moved during the pass" };
+            self.log("record_discarded", json!({ "song": song_id, "camera": capture.camera, "reason": reason }));
             return;
         }
         let pass = RecordedPass {
@@ -2363,9 +2366,9 @@ impl Show {
             camera: capture.camera.clone(),
             recorded_at: storage::now_rfc3339(),
             rate: self.rate(),
-            start_frame: capture.start_frame(),
+            start_frame: capture.start_frame() + dropped as i64,
             query_delay_s,
-            samples: capture.samples(),
+            samples,
         };
         let saved = match self.storage.pass_path(&song_id, &pass.id) {
             Some(path) => storage::write_json(&path, &pass).map_err(|e| e.to_string()),
@@ -2395,7 +2398,7 @@ impl Show {
                     "record_pass",
                     json!({
                         "song": song_id, "camera": pass.camera, "clip": clip, "pass": pass.id,
-                        "start_frame": pass.start_frame, "frames": frames, "axes": capture.axes, "keys": keys,
+                        "start_frame": pass.start_frame, "frames": frames, "axes": keys.keys().collect::<Vec<_>>(), "keys": keys,
                     }),
                 ),
                 Err(fail) => self.log("record_failed", json!({ "song": song_id, "pass": pass.id, "reason": fail.msg })),
@@ -2483,21 +2486,32 @@ impl Show {
         let mut song = entry.song.clone();
         for clip in &recorded {
             let Some(camera) = self.project.camera(&clip.camera) else { continue };
-            let overrun = entry.compiled.issues.iter().any(|i| i.clip_id() == Some(clip.id.as_str()) && i.acceptable());
-            if !overrun {
+            let fixable =
+                |i: &&Issue| i.clip_id() == Some(clip.id.as_str()) && (i.acceptable() || matches!(i, Issue::Jump { .. }));
+            if !entry.compiled.issues.iter().any(|i| fixable(&i)) {
                 continue;
             }
             let raw = self.raw_samples(&song_id, clip);
+            // Where the timeline has the camera when the take begins. A take that begins
+            // somewhere else is a step no rig can make: it is given the move there instead.
+            let before: BTreeMap<Axis, f64> = {
+                let ev = Evaluator::new(&song, &clip.camera);
+                clip.axes.iter().map(|a| (*a, ev.value_before(clip, *a))).collect()
+            };
             let mut curves = BTreeMap::new();
             for &axis in &clip.axes {
                 let (keys, limits) = (clip.keys(axis), camera.axes.get(axis));
                 let plays: Vec<f64> = (0..=clip.duration_frames).filter_map(|f| keys_value(keys, f as f64)).collect();
-                // An axis that is inside its limits keeps the keys it has.
-                if !overruns(&plays, limits, fps) {
+                let steps = clip.start_frame > 0 && plays.first().is_some_and(|v| (v - before[&axis]).abs() > 1e-9);
+                // An axis that is inside its limits and starts where the camera is keeps the keys it has.
+                if !steps && !overruns(&plays, limits, fps) {
                     continue;
                 }
-                let samples = raw.as_ref().and_then(|r| r.get(&axis)).unwrap_or(&plays);
-                let (smooth, departure) = record::smooth_axis(samples, axis, limits, fps);
+                let mut samples = raw.as_ref().and_then(|r| r.get(&axis)).unwrap_or(&plays).clone();
+                if let Some(first) = samples.first_mut().filter(|_| steps) {
+                    *first = before[&axis];
+                }
+                let (smooth, departure) = record::smooth_axis(&samples, axis, limits, fps);
                 if smooth != keys {
                     let furthest = report.departure.entry(axis).or_insert(0.0);
                     *furthest = furthest.max(departure);

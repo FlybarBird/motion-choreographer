@@ -38,6 +38,21 @@ pub fn fit_pass(samples: &BTreeMap<Axis, Vec<f64>>, scale: f64) -> BTreeMap<Axis
     samples.iter().map(|(axis, values)| (*axis, fit_keys(values, default_tolerance(*axis) * scale))).collect()
 }
 
+/// What of a pass was moved: the axes that left where they stood, from `lead` frames before
+/// the first of them did. An axis nobody touched writes nothing, and the frames before the
+/// first move are not filled in, so the take starts where the rig was standing and what was
+/// on the timeline before it is left alone. Returns how many frames were dropped from the
+/// front and the samples that are kept, or nothing when no axis moved.
+pub fn moved_part(samples: &BTreeMap<Axis, Vec<f64>>, lead: usize) -> Option<(usize, BTreeMap<Axis, Vec<f64>>)> {
+    let leaves = |axis: Axis, values: &[f64]| {
+        let slack = 2.0 * default_tolerance(axis);
+        values.iter().position(|v| (v - values[0]).abs() > slack)
+    };
+    let moved: Vec<(Axis, usize)> = samples.iter().filter_map(|(a, v)| leaves(*a, v).map(|at| (*a, at))).collect();
+    let start = moved.iter().map(|(_, at)| *at).min()?.saturating_sub(lead);
+    Some((start, moved.iter().map(|(a, _)| (*a, samples[a][start..].to_vec())).collect()))
+}
+
 /// Fit tolerances tried on a smoothed move, loosest first, as multiples of the default.
 const SMOOTH_FITS: [f64; 4] = [1.0, 0.5, 0.25, 0.1];
 
@@ -151,6 +166,34 @@ mod tests {
     use ptz_core::eval::pose_at;
     use ptz_core::pose::Project;
     use ptz_core::song::Song;
+
+    #[test]
+    fn a_pass_keeps_only_the_axes_that_moved_from_just_before_the_first_of_them_did() {
+        // A head and its column as they were recorded on the rig: the column stands low for
+        // 1247 frames and then rises, zoom starts 35 frames later, tilt and pan never move.
+        let n = 2070;
+        let elevation: Vec<f64> = (0..n).map(|f| 1338.964 + 0.5 * (f as f64 - 1246.0).max(0.0)).collect();
+        let zoom: Vec<f64> = (0..n).map(|f| 0.105 - 0.0005 * (f as f64 - 1281.0).clamp(0.0, 200.0)).collect();
+        let samples = BTreeMap::from([
+            (Axis::Pan, vec![-25.318; n]),
+            (Axis::Tilt, vec![-18.869; n]),
+            (Axis::Zoom, zoom.clone()),
+            (Axis::Elevation, elevation.clone()),
+        ]);
+        let (dropped, kept) = moved_part(&samples, 15).expect("two axes moved");
+        // The column is 2 mm from where it stood on frame 1251: the take starts 15 frames before.
+        assert_eq!(dropped, 1236);
+        assert_eq!(kept.keys().copied().collect::<Vec<_>>(), vec![Axis::Zoom, Axis::Elevation]);
+        assert_eq!(kept[&Axis::Elevation], elevation[1236..].to_vec());
+        assert_eq!(kept[&Axis::Zoom], zoom[1236..].to_vec());
+        // It starts on what the column was standing at, which is where the song then has it wait.
+        assert_eq!(kept[&Axis::Elevation][0], 1338.964);
+        // A move from the first frame keeps the whole pass; a pass nobody moved keeps nothing.
+        let from_start = BTreeMap::from([(Axis::Pan, (0..30).map(|f| f as f64).collect::<Vec<_>>())]);
+        assert_eq!(moved_part(&from_start, 15), Some((0, from_start.clone())));
+        let still = BTreeMap::from([(Axis::Pan, vec![4.0; 30]), (Axis::Elevation, vec![1324.962; 30])]);
+        assert_eq!(moved_part(&still, 15), None);
+    }
 
     #[test]
     fn whole_frames_are_interpolated_between_readings() {

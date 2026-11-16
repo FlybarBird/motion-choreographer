@@ -165,7 +165,7 @@ impl Session {
             reference_shown: None,
             inputs: None,
             stamped_drop: None,
-            record_axes: vec![ptz_core::Axis::Pan, ptz_core::Axis::Tilt],
+            record_axes: vec![ptz_core::Axis::Pan, ptz_core::Axis::Tilt, ptz_core::Axis::Zoom, ptz_core::Axis::Elevation],
             axis_lanes: Default::default(),
             graph: Default::default(),
             rig: Default::default(),

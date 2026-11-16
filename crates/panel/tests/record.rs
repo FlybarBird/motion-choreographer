@@ -20,13 +20,20 @@ fn a_pass_is_recorded_by_hand_and_refitted() {
     b.take_lease();
     b.new_song();
 
-    // Choose the axes: Pan and Tilt are on to begin with. Zoom on, Tilt off.
+    // Choose the axes: everything but Focus is on to begin with. Focus on and off again,
+    // Tilt and Elevation off.
     b.mode(RECORD);
     assert_eq!((b.line(K1).as_str(), b.light(K1)), ("Pan", (Lit::On, Color::Red)));
     assert_eq!((b.line(K2).as_str(), b.light(K2)), ("Tilt", (Lit::On, Color::Red)));
-    assert_eq!((b.line(K3).as_str(), b.light(K3)), ("Zoom", (Lit::Dim, Color::White)));
-    b.press(K3);
-    b.wait("Zoom to be record-enabled", || b.light(K3) == (Lit::On, Color::Red));
+    assert_eq!((b.line(K3).as_str(), b.light(K3)), ("Zoom", (Lit::On, Color::Red)));
+    assert_eq!((b.line(K4).as_str(), b.light(K4)), ("Focus", (Lit::Dim, Color::White)));
+    assert_eq!((b.line(K5).as_str(), b.light(K5)), ("Elevation", (Lit::On, Color::Red)));
+    b.press(K4);
+    b.wait("Focus to be record-enabled", || b.light(K4) == (Lit::On, Color::Red));
+    b.press(K4);
+    b.wait("Focus to be taken out", || b.light(K4) == (Lit::Dim, Color::White));
+    b.press(K5);
+    b.wait("Elevation to be taken out", || b.light(K5) == (Lit::Dim, Color::White));
     b.press(K2);
     b.wait("Tilt to be taken out", || b.light(K2) == (Lit::Dim, Color::White));
 

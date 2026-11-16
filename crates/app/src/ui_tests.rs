@@ -676,31 +676,35 @@ fn record_dots_on_the_axis_lanes_choose_what_record_writes_and_k_keys_the_select
     let mut r = rig(Song::new("s", "Test Song", "01:00:00:00", 1500));
     r.harness.state_mut().session.timeline.view.set_open(0, true);
     r.harness.run_steps(3);
-    assert_eq!(r.harness.state().session.record_axes, vec![Axis::Pan, Axis::Tilt]);
+    // Everything but focus is recorded to start with.
+    assert_eq!(r.harness.state().session.record_axes, vec![Axis::Pan, Axis::Tilt, Axis::Zoom, Axis::Elevation]);
 
     let dot = |r: &Rig, axis: Axis| crate::timeline_ui::record_dot(&r.layout(), 0, axis).expect("the axis lane is open");
-    let at = dot(&r, Axis::Zoom);
+    let at = dot(&r, Axis::Focus);
     r.click(at);
-    let at = dot(&r, Axis::Pan);
-    r.click(at);
-    assert_eq!(r.harness.state().session.record_axes, vec![Axis::Tilt, Axis::Zoom]);
+    assert!(r.harness.state().session.record_axes.contains(&Axis::Focus));
+    for axis in [Axis::Focus, Axis::Pan] {
+        let at = dot(&r, axis);
+        r.click(at);
+    }
+    assert_eq!(r.harness.state().session.record_axes, vec![Axis::Tilt, Axis::Zoom, Axis::Elevation]);
 
     r.harness.get_by_label("Record").click();
     r.harness.run_steps(2);
     let sent: Vec<_> =
         r.cmds.try_iter().filter_map(|c| if let Cmd::Act(Action::RecordOn, req) = c { Some(req.axes) } else { None }).collect();
-    assert_eq!(sent, vec![Some(vec![Axis::Tilt, Axis::Zoom])]);
+    assert_eq!(sent, vec![Some(vec![Axis::Tilt, Axis::Zoom, Axis::Elevation])]);
 
     // While Record is on the server's axes are shown and cannot be changed.
     {
         let s = &mut r.harness.state_mut().session;
         s.status.transport.record = true;
-        s.status.record.axes = vec![Axis::Tilt, Axis::Zoom];
+        s.status.record.axes = vec![Axis::Tilt, Axis::Zoom, Axis::Elevation];
     }
     r.harness.run_steps(2);
     let at = dot(&r, Axis::Focus);
     r.click(at);
-    assert_eq!(r.harness.state().session.record_axes, vec![Axis::Tilt, Axis::Zoom]);
+    assert_eq!(r.harness.state().session.record_axes, vec![Axis::Tilt, Axis::Zoom, Axis::Elevation]);
     assert!(r.toasts().iter().any(|t| t.contains("Turn Record off")), "{:?}", r.toasts());
     r.harness.state_mut().session.status.transport.record = false;
 

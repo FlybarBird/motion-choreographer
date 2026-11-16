@@ -448,13 +448,15 @@ while the rig is armed.
 To record a move by hand:
 
 1. Open the axis lanes and click the red dot on each lane Record should write.
-   Pan and Tilt are on to start with.
+   Pan, Tilt, Zoom and Elevation are on to start with; Focus is off.
 2. Press **Record**, then play. On any camera you move, the enabled axes follow
    the rig controller; everything else keeps playing the timeline.
 3. Stop, Cue or **Record off** ends the pass. Each camera that was moved gets a
-   keys clip covering exactly the frames of the pass, replacing those axes over
-   that range and nothing else. A camera that was not moved is left as it was.
-   One undo removes the whole pass.
+   keys clip holding only the axes that were moved, starting half a second
+   before the first of them was. An axis nobody touched writes nothing, and the
+   frames before the first move are not filled in, so what was on the timeline
+   there is left alone. A camera that was not moved is left as it was. One undo
+   removes the whole pass.
 
 The pass is reduced to as few keys as reproduce it within 0.05 degrees of pan
 and tilt, 0.2 % of zoom and focus and 1 mm of elevation; a stretch where the
@@ -474,9 +476,11 @@ that is over a speed or acceleration limit until its rig can make it, changing
 only the stretches that are over and keeping each move's frames and ends. A
 take that stands still and then jumps, which is what a head that stopped
 reporting while it moved leaves, becomes the quickest move the rig can make,
-arriving when the take does. What
-is still over a limit is accepted as programmed in the station's name; range,
-step and keep-out problems never are, and are reported as left. The limits and
+arriving when the take does. A take that begins somewhere other than where the
+timeline has the camera, as a second take does when the head was moved in
+between, is given the move there from its first frame. What
+is still over a limit is accepted as programmed in the station's name; range
+and keep-out problems never are, and are reported as left. The limits and
 the raw samples are not touched, smoothing again gives the same moves, and one
 undo puts the song back. Over the API it is `POST /api/v1/record/smooth`, with
 an optional `camera`.

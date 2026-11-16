@@ -81,6 +81,53 @@ fn two_cameras(api: &Api) -> Project {
     api.put_project(&project).unwrap()
 }
 
+/// A second take on a camera that had been moved since the first: it begins somewhere other
+/// than where the timeline has the camera. Smoothing gives the rig the move there.
+#[test]
+fn a_take_that_starts_away_from_where_the_camera_is_gets_the_move_there_and_stops_being_a_step() {
+    let t = TestServer::start("smooth-step");
+    let api = t.client("a");
+    api.take_lease("Luke-MacBook", false).unwrap();
+    let project = api.project().unwrap();
+    let fps = project.rate.fps();
+    let mut song = api.new_song("Hit The Wall", None).unwrap().song;
+    api.load_song(&song.id).unwrap();
+    song = edit::set_song_length(&song, &project, 900).unwrap();
+
+    let ease =
+        |from: f64, by: f64, at: f64| move |f: usize| from + by * ease_value(Ease::EaseInOut, (f as f64 - at) / (2.0 * fps));
+    let earlier =
+        take(&t, &project, &mut song, "cam1", 34, [(Axis::Tilt, (0..200).map(ease(-9.3, -10.3, 60.0)).collect())].into());
+    // The head was at -29.96 when the second pass began, and sat there for two seconds.
+    let moved: Vec<f64> = (0..300).map(ease(-29.96, 8.0, 60.0)).collect();
+    let later = take(&t, &project, &mut song, "cam1", 400, [(Axis::Tilt, moved.clone())].into());
+    let recorded = put(&api, &song);
+    assert!(
+        matches!(&recorded.issues[..], [Issue::Jump { clip, axis: Axis::Tilt, frame: 400, distance }] if *clip == later && (distance - 10.36).abs() < 0.01),
+        "{:?}",
+        recorded.issues
+    );
+    let raw_before = std::fs::read(t.dir.join("songs").join(&song.id).join("passes/pass-0002.json")).unwrap();
+
+    let done = smooth(&api, None);
+    assert_eq!((done.report.smoothed.clone(), done.report.left.len()), (vec![later.clone()], 0), "{:?}", done.report);
+    assert!(done.working.issues.is_empty(), "{:?}", done.working.issues);
+    let tilt = |f: i64| pose_at(&done.working.song, "cam1", f).tilt;
+    // It leaves from where the first take left it, inside the rig's limits all the way, and is
+    // back on what was recorded before the recorded move begins.
+    assert!((tilt(399) + 19.6).abs() < 1e-6 && (tilt(400) - tilt(399)).abs() < 1e-6, "{} {}", tilt(399), tilt(400));
+    let played: Vec<f64> = (399..=700).map(tilt).collect();
+    assert!(!overruns(&played, &project.first().axes.tilt, fps));
+    for f in 460..700 {
+        assert!((tilt(f) - moved[(f - 400) as usize]).abs() < 0.06, "frame {f}: {} for {}", tilt(f), moved[(f - 400) as usize]);
+    }
+    // The earlier take and the raw samples are as they were, and smoothing again finds nothing to do.
+    assert_eq!(done.working.song.motion_clip(&earlier), song.motion_clip(&earlier));
+    assert_eq!(std::fs::read(t.dir.join("songs").join(&song.id).join("passes/pass-0002.json")).unwrap(), raw_before);
+    let again = smooth(&api, None);
+    assert!(again.report.smoothed.is_empty() && again.working.song == done.working.song, "{:?}", again.report);
+}
+
 /// The shape of a real session: two heads recorded together from a few seconds into the song,
 /// each already off home, each take read late and unevenly from the head.
 #[test]
@@ -181,7 +228,7 @@ fn takes_read_late_from_real_heads_are_smoothed_inside_the_limits_and_the_show_a
 }
 
 #[test]
-fn a_move_still_over_a_limit_is_accepted_and_a_step_or_a_range_problem_is_reported_not_accepted() {
+fn a_move_still_over_a_limit_is_accepted_a_step_is_given_its_move_and_a_range_problem_is_reported() {
     let t = TestServer::start("smooth-left");
     let api = t.client("a");
     api.take_lease("Luke-MacBook", false).unwrap();
@@ -221,19 +268,21 @@ fn a_move_still_over_a_limit_is_accepted_and_a_step_or_a_range_problem_is_report
     assert_eq!(report.accepted, vec![fast.clone()]);
     assert!(matches!(&of(&done.working.issues, &fast)[..], [Issue::TooFast { axis: Axis::Pan, .. }]));
     assert_eq!(after.motion_clip(&fast).unwrap().accepted.as_ref().map(|a| a.by.as_str()), Some("Luke-MacBook"));
-    // A step in the middle of the song: the take is smoothed, the step is left for the operator.
+    // A step in the middle of the song: the take is given the move from where the first ended.
+    assert!(of(&recorded.issues, &later).iter().any(|i| matches!(i, Issue::Jump { frame: 500, .. })));
     assert!(report.smoothed.contains(&later));
-    assert!(matches!(&of(&done.working.issues, &later)[..], [Issue::Jump { frame: 500, .. }]));
+    assert_eq!(of(&done.working.issues, &later), vec![]);
     assert!(after.motion_clip(&later).unwrap().accepted.is_none());
+    assert!((pose_at(after, "cam1", 500).pan - pose_at(after, "cam1", 499).pan).abs() < 1e-6);
     // Outside the head's travel: nothing about that move is accepted, its speed included.
     assert!(of(&done.working.issues, &beyond).iter().any(|i| matches!(i, Issue::OutOfRange { .. })));
     assert!(after.motion_clip(&beyond).unwrap().accepted.is_none());
-    assert!(report.left.iter().any(|i| matches!(i, Issue::Jump { .. })));
+    assert!(!report.left.iter().any(|i| matches!(i, Issue::Jump { .. })));
     assert!(report.left.iter().any(|i| matches!(i, Issue::OutOfRange { .. })));
     assert!(report.left.iter().any(|i| matches!(i, Issue::TooFast { clip, .. } if *clip == beyond)));
     assert!(report.left.iter().all(|i| i.clip_id() != Some(fast.as_str())));
     let text = report.text(project.units);
-    assert!(text.contains("Accepted 1 move still over a limit") && text.ends_with("3 issues are left to fix"), "{text}");
+    assert!(text.contains("Accepted 1 move still over a limit") && text.ends_with("2 issues are left to fix"), "{text}");
     assert_eq!(api.project().unwrap(), project, "no limit was raised to make an issue go away");
 
     // The acceptance is in the run log like any other, and Arm is still refused.
@@ -244,7 +293,7 @@ fn a_move_still_over_a_limit_is_accepted_and_a_step_or_a_range_problem_is_report
     api.save(&song.id).unwrap();
     api.commit(&song.id).unwrap();
     let why = refused(api.act(Action::Arm, &TransportRequest::default()), 409);
-    assert!(why.contains("Fix or accept 3 timeline issues first"), "{why}");
+    assert!(why.contains("Fix or accept 2 timeline issues first"), "{why}");
 
     // A move that was accepted is left alone the next time.
     let again = smooth(&api, None);
