@@ -235,6 +235,16 @@ impl<'a> Evaluator<'a> {
         Pose::from_fn(|a| self.axis_at(a, frame))
     }
 
+    /// Where the axis waits before its first move: the start of a recorded pass, else home.
+    pub fn rest(&self, axis: Axis) -> f64 {
+        self.rest[axis.index()]
+    }
+
+    /// Start frame of the axis's first move, if the song has one.
+    pub fn first_start(&self, axis: Axis) -> Option<i64> {
+        self.lanes[axis.index()].first().map(|s| s.start)
+    }
+
     /// Index into `song.motion` of the clip driving `axis` at `frame`.
     pub fn clip_index_at(&self, axis: Axis, frame: i64) -> Option<usize> {
         self.seg_at(axis, frame as f64).filter(|s| frame < s.start + s.duration).map(|s| s.clip)

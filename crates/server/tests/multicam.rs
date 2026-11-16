@@ -636,14 +636,14 @@ fn twelve_stand_in_rigs_position_together_play_live_within_tolerance_and_estop_h
     let end = song.motion.iter().map(|c| c.start_frame + c.duration_frames).max().unwrap();
     assert!(rigs.iter().all(|r| r.fr7.commands().is_empty()), "nothing is sent before Arm");
 
-    // Arm positions all twelve to the first frame; the show is armed when the last one is there.
+    // Arm: each camera goes to its get-set target (stay put, or fade to rest when the first
+    // move is near). The show is armed when the last one is there.
     let st = do_act(&api, Action::Arm);
     assert_eq!(st.transport.output, Output::Positioning);
     let st = wait_for(&api, |s| s.transport.output == Output::Armed || s.telemetry.fault.is_some());
     assert_eq!(st.telemetry.fault, None);
-    for (n, rig) in rigs.iter().enumerate() {
-        assert!(close(&rig.pose(), &Pose::home(), &tol, 0.3), "rig {} positioned to the first frame: {:?}", n + 1, rig.pose());
-    }
+    assert_eq!(st.transport.output, Output::Armed);
+    assert!(st.cameras.iter().all(|c| !c.held && c.fault.is_none()), "{:?}", st.cameras);
     let arm = log(&api).into_iter().rfind(|r| r.kind == "arm").expect("Arm is logged");
     assert_eq!(arm.data["cameras"].as_array().unwrap().len(), 12);
     assert_eq!(arm.data["cameras"][11]["camera"], "cam12");

@@ -465,8 +465,10 @@ rig stood still is two keys. The raw samples are kept beside the song
 them again looser or tighter. Record works in Rehearse only.
 
 Before a camera's first recorded move the timeline holds it where that take
-starts, not at home, so the take does not begin with a step and Arm takes the
-camera there (at **Arm moves at**: 100 % is the rig's top speed).
+starts, not at home, so the take does not begin with a step. **Arm** leaves each
+axis where it stands until that first move is near enough that a fade at
+**Arm moves at** can arrive as the take starts (100 % is the rig's top speed);
+an axis the song never moves is left alone.
 
 A real head reports where it is at uneven moments, so a take of a steady move
 reads as stand, jump, stand, jump: too fast and too sharp for the head that

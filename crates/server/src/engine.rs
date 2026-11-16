@@ -302,6 +302,9 @@ pub struct StageUpload {
 struct Live {
     /// Where the rig has been told to be: the timeline pose, held to each axis's top speed.
     commanded: Option<Pose>,
+    /// Where the rig stood when it was armed (or when the playhead was last moved while armed).
+    /// Axes the song has not yet asked for stay here until their first move is near.
+    stand: Option<Pose>,
     /// Recent commanded poses, to compare a reading with what was asked when it was taken.
     history: VecDeque<(Instant, Pose)>,
     /// Since when the rig has been outside tolerance.
@@ -1629,6 +1632,7 @@ impl Show {
                 self.audio.seek(0.0, rate);
                 self.frame_f = 0.0;
                 self.clear_manual();
+                self.capture_stand();
             }
             Action::Seek => {
                 let Some(frame) = req.frame else {
@@ -1636,6 +1640,7 @@ impl Show {
                 };
                 self.frame_f = (frame as f64).clamp(0.0, length);
                 self.clear_manual();
+                self.capture_stand();
                 self.audio.seek(self.frame_f, rate);
             }
             Action::Lock => {
@@ -1674,7 +1679,8 @@ impl Show {
             }
             Action::Arm => {
                 for u in &mut self.units {
-                    u.live = Live { commanded: Some(u.rig.pose()), ..Live::default() };
+                    let pose = u.rig.pose();
+                    u.live = Live { commanded: Some(pose), stand: Some(pose), ..Live::default() };
                     u.held = false;
                 }
                 self.log_arm(client);
@@ -1852,6 +1858,63 @@ impl Show {
         Some(Ride { pan: pose.pan, tilt: pose.tilt, seconds: self.rate().frames_to_seconds(end as f64 - f) })
     }
 
+    /// Remember where each live rig stands, so Arm can leave unused axes there.
+    fn capture_stand(&mut self) {
+        if !self.transport.hardware_live() {
+            return;
+        }
+        for u in &mut self.units {
+            let pose = u.rig.pose();
+            u.live.stand = Some(pose);
+            u.live.commanded = Some(pose);
+            u.live.positioning = None;
+            u.live.late = false;
+        }
+    }
+
+    /// Where the live loop drives camera `i`: the timeline once a move has begun, else the pose
+    /// it stood at on Arm until that move is near enough that positioning speed can fade into it.
+    fn playhead_target(&self, i: usize) -> Pose {
+        let timeline = self.timeline_pose(&self.units[i].id);
+        let stand = self.units[i].live.stand.unwrap_or_else(|| self.units[i].rig.pose());
+        let Some(e) = self.entry() else {
+            return timeline;
+        };
+        let camera = &self.project.cameras[i];
+        let ev = ptz_core::eval::Evaluator::new(&e.song, &self.units[i].id);
+        let fps = self.rate().fps().max(1e-9);
+        let frame = self.frame_f;
+        let scale = camera.rig.positioning_speed.clamp(0.01, 1.0);
+        let speeds = camera.axes;
+        let stopped = self.transport.run == Run::Stopped;
+        Pose::from_fn(|axis| {
+            let Some(start) = ev.first_start(axis) else {
+                // The song never moves this axis: leave it where it stood.
+                return stand.get(axis);
+            };
+            let start = start as f64;
+            if frame >= start {
+                return timeline.get(axis);
+            }
+            let rest = ev.rest(axis);
+            // Lead time at Arm-positioning speed, plus a short settle so the fade is not late.
+            let travel_s = (rest - stand.get(axis)).abs() / (speeds.get(axis).max_speed * scale).max(1e-9);
+            let lead = (travel_s + 0.35) * fps;
+            if start - frame > lead {
+                stand.get(axis)
+            } else if stopped {
+                // Standing inside the lead: go all the way to rest; positioning speed fades there.
+                rest
+            } else {
+                // Playing: ease the target from stand to rest so the take is not raced into.
+                let begin = start - lead;
+                let t = ((frame - begin) / lead.max(1e-9)).clamp(0.0, 1.0);
+                // Linear: the peak is the average, kept under the axis's top speed by the lead.
+                stand.get(axis) + (rest - stand.get(axis)) * t
+            }
+        })
+    }
+
     /// One turn of the live loop for every camera that is not held.
     fn tick_cameras(&mut self, now: Instant, dt: f64) {
         let positioning = self.transport.output == Output::Positioning;
@@ -1865,7 +1928,7 @@ impl Show {
             if self.units[i].held {
                 continue;
             }
-            let target = self.timeline_pose(&self.units[i].id);
+            let target = self.playhead_target(i);
             match self.tick_live(i, now, dt, target) {
                 Step::Arrived => arrived += 1,
                 Step::Travelling => waiting += 1,
@@ -1911,6 +1974,8 @@ impl Show {
         // The project can say that a rig off the timeline is driven on instead of held.
         let carry_on = self.project.on_fault == OnFault::CarryOn;
         let camera = &self.project.cameras[i];
+        // While stopped on the get-set fade the approach uses Arm positioning speed. While the
+        // playhead is easing the target into rest, full speed tracks that eased target.
         let scale = if positioning { camera.rig.positioning_speed.clamp(0.01, 1.0) } else { 1.0 };
         let (speeds, limits) = (camera.axes, self.project.limits_of(camera));
         let (tol, window) = (camera.rig.tolerance, Duration::from_millis(camera.rig.tracking_window_ms));

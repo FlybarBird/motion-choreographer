@@ -405,10 +405,12 @@ the take closer. Then shape it in the graph editor like any other keys clip.
 A take starts wherever the camera stood when the pass began, which is rarely
 home. Before a camera's first recorded move the timeline therefore holds it
 where that take starts, not at home, so there is no step when the move begins.
-**Arm** takes each camera there, as it takes it to any pose at the playhead,
-and so does loading the song while the show is armed. How fast it travels is
-**Arm moves at** in that camera's rig settings: half its top speed to start
-with, its top speed at 100 %.
+**Arm** does not drive every axis there at once: an axis the song never moves
+is left where it stands, and an axis whose first move is still ahead stays put
+until that move is near enough that a fade at **Arm moves at** arrives as the
+take starts. Loading the song while the show is armed does the same. How fast
+the fade travels is **Arm moves at** in that camera's rig settings: half its
+top speed to start with, its top speed at 100 %.
 
 A later take on the same camera that starts somewhere else is still a step,
 and is reported as one.

@@ -216,7 +216,8 @@ fn takes_read_late_from_real_heads_are_smoothed_inside_the_limits_and_the_show_a
     let said = log.iter().rfind(|r| r.kind == "record_smooth").expect("the run log says the song was smoothed");
     assert_eq!((said.data["by"].as_str(), said.data["left"].as_u64()), (Some("Luke-MacBook"), Some(0)));
 
-    // The show arms, and Arm takes each head to where its take starts.
+    // The show arms. The simulator was already on the timeline rest (where each take starts),
+    // so Arm leaves it there.
     api.save(&song.id).unwrap();
     api.commit(&song.id).unwrap();
     do_act(&api, Action::Arm);

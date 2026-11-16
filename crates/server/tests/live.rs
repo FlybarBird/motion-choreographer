@@ -119,7 +119,8 @@ fn a_committed_song_arms_positions_plays_live_within_tolerance_and_estop_halts_i
     assert!(!st.hardware_live);
     assert!(close(&st.first().rig_pose, &rig.pose(), &tol, 0.1), "the server reads where the rig is: {:?}", st.first().rig_pose);
 
-    // Arm moves the rig to the pose at the playhead, slowly, and only then is it armed.
+    // The first move is at frame 25. Elevation needs more lead than that, so Arm fades the
+    // column to home; pan and tilt still have time and stay where they stood.
     let st = do_act(&api, Action::Arm);
     assert_eq!(st.transport.output, Output::Positioning);
     assert!(st.hardware_live);
@@ -131,7 +132,10 @@ fn a_committed_song_arms_positions_plays_live_within_tolerance_and_estop_halts_i
     let began = Instant::now();
     let st = wait_for(&api, |s| s.transport.output == Output::Armed);
     assert!(began.elapsed() > Duration::from_millis(600), "30 mm at half of 43 mm/s takes over a second");
-    assert!(close(&rig.pose(), &Pose::home(), &tol, 0.3), "positioned to the first frame: {:?}", rig.pose());
+    let at = rig.pose();
+    assert!(at.elevation.abs() <= tol.elevation * 0.3, "column faded toward home: {at:?}");
+    assert!((at.pan - 8.0).abs() <= tol.pan * 0.3, "pan still where it stood: {at:?}");
+    assert!((at.tilt - -3.0).abs() <= tol.tilt * 0.3, "tilt still where it stood: {at:?}");
     assert_eq!(st.guidance.primary_label, "Play Live");
     assert_eq!(st.first().pose_source, PoseSource::Rig);
 
@@ -568,6 +572,48 @@ fn syncing_presets_recalls_each_one_on_the_camera_and_is_refused_while_live() {
     assert!(!rig.fr7.is_moving());
     assert_eq!(st.telemetry.fault.as_deref(), Some("Preset sync: The preset sync was stopped"));
     assert!(log_kinds(&api).iter().any(|r| r.kind == "presets_sync_failed"));
+}
+
+#[test]
+fn arm_leaves_axes_where_they_stand_until_their_first_move_is_near_then_fades_in() {
+    let t = TestServer::start("live-arm-fade");
+    let api = t.client("a");
+    api.take_lease("Luke-MacBook", false).unwrap();
+    let rig = Rig::start();
+    rig.fr7.place(40.0, -12.0, 0.35, 0.55);
+    rig.pod.place(180.0);
+    let project = rig.connect(&api);
+    let tol = project.cameras[0].rig.tolerance;
+    let stood = rig.pose();
+
+    // One pan move late in the song; every other axis is left off the clip.
+    let mark = store(&api, "Late", Pose { pan: 10.0, ..Pose::home() });
+    let created = api.new_song("Late Get Set", None).unwrap();
+    let id = created.song.id.clone();
+    api.load_song(&id).unwrap();
+    let (mut song, _) = edit::insert_preset_move(&created.song, &project, &mark, 400).unwrap();
+    song.motion[0].axes = vec![Axis::Pan];
+    api.put_working(&PutWorking { expected_counter: 0, song }).unwrap();
+    api.save(&id).unwrap();
+    api.commit(&id).unwrap();
+
+    // Arm: the take is far ahead, so nothing moves — including the column.
+    let st = do_act(&api, Action::Arm);
+    assert!(matches!(st.transport.output, Output::Positioning | Output::Armed));
+    let st = wait_for(&api, |s| s.transport.output == Output::Armed);
+    assert!(close(&rig.pose(), &stood, &tol, 0.3), "still where it stood on Arm: {:?}", rig.pose());
+    assert_eq!(st.transport.output, Output::Armed);
+
+    // Seek into the lead of the pan take: only pan fades toward home (its rest); the rest hold.
+    seek(&api, 380);
+    let st = wait_for(&api, |s| s.transport.output == Output::Armed);
+    assert_eq!(st.telemetry.fault, None);
+    let at = rig.pose();
+    assert!(at.pan.abs() < 1.0, "pan faded to its rest (home): {at:?}");
+    assert!((at.tilt - stood.tilt).abs() <= tol.tilt * 0.5, "tilt stayed: {at:?}");
+    assert!((at.zoom - stood.zoom).abs() <= tol.zoom * 0.5, "zoom stayed: {at:?}");
+    assert!((at.focus - stood.focus).abs() <= tol.focus * 0.5, "focus stayed: {at:?}");
+    assert!((at.elevation - stood.elevation).abs() <= tol.elevation * 0.5, "column stayed: {at:?}");
 }
 
 #[test]
