@@ -79,10 +79,13 @@ pub struct LockStatus {
     pub problem: Option<String>,
 }
 
-/// What the server machine has to take timecode from.
+/// What the server machine has to take timecode from and to play sound through.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
 pub struct InputChoices {
     pub audio_inputs: Vec<String>,
+    /// The audio outputs the server could play through.
+    #[serde(default)]
+    pub audio_outputs: Vec<String>,
     /// Why audio inputs cannot be listed, when they cannot.
     pub audio_problem: Option<String>,
     pub midi_inputs: Vec<String>,

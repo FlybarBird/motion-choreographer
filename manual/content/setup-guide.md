@@ -458,7 +458,15 @@ ptz-server --audio-device "USB"    # start with the output whose name contains t
 ptz-server --selftest-audio        # tone on the left, then the right
 ```
 
-Under **Audio output**, route each channel:
+Under **Audio output**, **Device** picks the output the server plays through,
+from the ones the server machine has. The server moves to it as soon as it is
+chosen, without a restart, and the choice is kept with the show. *The server's
+default output* is the one the server started with: the system's output, or
+the one named with `--audio-device`. A server started with `--no-audio` stays
+silent whichever is chosen. If the output cannot be opened, the page and the
+transport bar say why and the show runs silent until another is chosen.
+
+Then route each channel:
 
 | Choice | What comes out |
 | --- | --- |
@@ -1058,7 +1066,7 @@ folder and the app's settings file stay until you delete them.
 | A red banner: the server is not reachable | This station lost the server | The show keeps running on the server. Check the network; the app reconnects by itself. |
 | *Watching. ... holds the edit lease* | Another station is editing | **Take over** if it should be you |
 | A button is disabled | The server will not allow that action now | Hover it. It says why. |
-| *No audio output*, or the bar says the device could not be opened | The server found no output | `ptz-server --list-audio`, then start with `--audio-device`. Until then the show runs silent on the system clock. |
+| *No audio output*, or the bar says the device could not be opened | The server found no output | Pick another under **Audio output** → **Device** in Show settings (`ptz-server --list-audio` lists them too). Until then the show runs silent on the system clock. |
 | No sound, but the meters move | The output is routed to another channel or device | Check **Audio output** in Show settings and the device named on the bar |
 | A video import is refused | `ffmpeg` and `ffprobe` are not on the server machine | `brew install ffmpeg` on the server machine |
 | The stage model is enormous or tiny | Wrong unit | Change **One unit is** |

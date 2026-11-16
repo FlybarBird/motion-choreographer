@@ -660,8 +660,16 @@ fn audio_output(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::Proj
     ui.label(RichText::new(device).color(MUTED).small());
     // What is set here is not all of it while a file gives up a channel to timecode.
     let mirrored = s.status.audio.routing != s.project.routing;
+    if s.inputs.is_none() {
+        s.inputs = Some(Default::default());
+        s.link.send(Cmd::RefreshInputs);
+    }
+    let outputs = s.inputs.as_ref().map(|c| c.audio_outputs.clone()).unwrap_or_default();
     ui.add_enabled_ui(editable, |ui| {
         egui::Grid::new("routing_grid").num_columns(2).spacing([4.0 * U, GAP]).show(ui, |ui| {
+            field(ui, "Device");
+            device_combo(ui, "audio_device", &mut project.audio_device, "The server's default output", &outputs);
+            ui.end_row();
             route_combo(ui, "Left", &mut project.routing.left);
             route_combo(ui, "Right", &mut project.routing.right);
             if project.routing.left == ChannelRoute::Ltc || project.routing.right == ChannelRoute::Ltc {

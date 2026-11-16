@@ -231,7 +231,10 @@ impl CodeSource for Feed {
 pub fn choices() -> ptz_core::api::InputChoices {
     let mut out = ptz_core::api::InputChoices::default();
     match crate::audio::device::list() {
-        Ok((_, inputs)) => out.audio_inputs = inputs,
+        Ok((outputs, inputs)) => {
+            out.audio_outputs = outputs;
+            out.audio_inputs = inputs;
+        }
         Err(why) => out.audio_problem = Some(why),
     }
     match midir::MidiInput::new("Motion Choreographer") {

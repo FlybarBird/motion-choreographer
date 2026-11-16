@@ -544,6 +544,9 @@ impl PresetMatch {
 pub struct Project {
     pub rate: FrameRate,
     pub routing: Routing,
+    /// The audio output the server plays through, by name. Empty is the one it started with:
+    /// the system's default, or the one named when it was started.
+    pub audio_device: String,
     pub freewheel_frames: u32,
     /// LTC generator level, 0 to 1.
     pub ltc_level: f32,
@@ -572,6 +575,7 @@ impl Default for Project {
         Project {
             rate: FrameRate::F25,
             routing: Routing::default(),
+            audio_device: String::new(),
             freewheel_frames: 8,
             ltc_level: 0.5,
             inputs: InputConfig::default(),
@@ -594,6 +598,7 @@ impl Default for Project {
 struct ProjectFile {
     rate: Option<FrameRate>,
     routing: Option<Routing>,
+    audio_device: String,
     freewheel_frames: Option<u32>,
     ltc_level: Option<f32>,
     inputs: Option<InputConfig>,
@@ -625,6 +630,7 @@ impl From<ProjectFile> for Project {
         Project {
             rate: f.rate.unwrap_or(d.rate),
             routing: f.routing.unwrap_or(d.routing),
+            audio_device: f.audio_device,
             freewheel_frames: f.freewheel_frames.unwrap_or(d.freewheel_frames),
             ltc_level: f.ltc_level.unwrap_or(d.ltc_level),
             inputs: f.inputs.unwrap_or(d.inputs),

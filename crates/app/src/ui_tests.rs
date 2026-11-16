@@ -464,6 +464,19 @@ fn the_audio_output_page_names_the_output_or_says_why_it_is_silent() {
     r.harness.get_by_label("MacBook Pro Speakers, 48000 Hz");
 }
 
+#[test]
+fn the_audio_output_page_shows_which_output_the_show_plays_through() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut r = rig(Song::new("s", "Test Song", "01:00:00:00", 1500));
+    r.settings(Page::Audio);
+    r.harness.run_steps(2);
+    r.harness.get_by_label("Device");
+    r.harness.get_by_value("The server's default output");
+    r.harness.state_mut().session.project.audio_device = "Desk Interface".into();
+    r.harness.run_steps(2);
+    r.harness.get_by_value("Desk Interface");
+}
+
 // ---- stage 3: keys, graph editor, rig controller, record ----
 
 use crate::app::Tab;

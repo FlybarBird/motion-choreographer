@@ -360,6 +360,11 @@ The transport bar
 shows a meter for each channel and the output device. If no device can be
 opened the server runs silent on the system clock and the bar says why.
 
+The output device is picked in Show settings, under **Audio output** →
+**Device**. The server moves to it at once and the choice is kept with the
+show. Left on *The server's default output*, it is the one the server started
+with:
+
 ```sh
 ptz-server --list-audio            # device names
 ptz-server --audio-device "USB"    # use the output whose name contains this

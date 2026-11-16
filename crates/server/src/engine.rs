@@ -43,6 +43,17 @@ pub enum AudioChoice {
     Off,
 }
 
+impl AudioChoice {
+    /// The output to play through: the one the project names, or else the one the server was
+    /// started with. A server started with no audio stays silent whatever the project names.
+    pub fn for_project(&self, project: &Project) -> AudioChoice {
+        match (self, project.audio_device.trim()) {
+            (AudioChoice::Off, _) | (_, "") => self.clone(),
+            (_, named) => AudioChoice::Named(named.to_string()),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub data: PathBuf,
@@ -177,6 +188,8 @@ pub struct Show {
     /// Ids handed to imports that are still decoding.
     media_reserved: HashSet<String>,
     audio: AudioEngine,
+    /// The output the server was started with: what an empty choice in the project means.
+    audio_started_with: AudioChoice,
     /// Each media file as one channel at the device rate, ready to play.
     audio_cache: HashMap<String, Arc<Vec<f32>>>,
     audio_loading: HashSet<String>,
@@ -376,7 +389,7 @@ impl Show {
         let mut log = RunLog::open(&storage.log_dir());
         log.append("server_start", json!({ "version": env!("CARGO_PKG_VERSION"), "songs": songs.len() }));
         let media = media::load_all(&storage.media_root(), project.rate);
-        let audio = AudioEngine::start(cfg.audio.clone());
+        let audio = AudioEngine::start(cfg.audio.for_project(&project));
         let (loaded_tx, loaded_rx) = mpsc::channel();
         let units = project.cameras.iter().map(Unit::new).collect();
         let record_camera = project.first().id.clone();
@@ -390,6 +403,7 @@ impl Show {
             media,
             media_reserved: HashSet::new(),
             audio,
+            audio_started_with: cfg.audio.clone(),
             audio_cache: HashMap::new(),
             audio_loading: HashSet::new(),
             audio_failed: HashSet::new(),
@@ -1007,6 +1021,10 @@ impl Show {
         }
         if let Some(ext) = &mut self.external {
             ext.chase.set_freewheel(project.freewheel_frames);
+        }
+        if project.audio_device != before.audio_device {
+            self.audio.set_device(self.audio_started_with.for_project(&project));
+            self.log("audio_output", json!({ "device": project.audio_device }));
         }
         self.rebuild_mix();
         self.log("project_changed", json!({ "by": self.lease.as_ref().map(|l| l.name.clone()) }));
@@ -2667,6 +2685,18 @@ pub fn spawn_tick(show: &Shared) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_project_names_the_output_unless_the_server_was_started_silent() {
+        let named = Project { audio_device: " Desk ".into(), ..Project::default() };
+        let unset = Project::default();
+        let started = AudioChoice::Named("USB".into());
+        assert_eq!(AudioChoice::Default.for_project(&named), AudioChoice::Named("Desk".into()));
+        assert_eq!(started.for_project(&named), AudioChoice::Named("Desk".into()));
+        assert_eq!(AudioChoice::Default.for_project(&unset), AudioChoice::Default);
+        assert_eq!(started.for_project(&unset), started);
+        assert_eq!(AudioChoice::Off.for_project(&named), AudioChoice::Off);
+    }
 
     #[test]
     fn the_playhead_follows_the_device_without_its_callback_jitter() {

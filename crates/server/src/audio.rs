@@ -254,6 +254,8 @@ pub struct AudioEngine {
     rate: u32,
     info: Arc<Mutex<DeviceInfo>>,
     stop: Arc<AtomicBool>,
+    /// The output asked for. The audio thread moves to it when it changes.
+    choice: Arc<Mutex<crate::engine::AudioChoice>>,
     next_gen: u64,
     /// Generation of the last Play, Stop or Seek. The renderer's report is stale until it has applied it.
     transport_gen: u64,
@@ -274,16 +276,25 @@ impl AudioEngine {
         let shared = Arc::new(Shared::new());
         let info = Arc::new(Mutex::new(DeviceInfo::default()));
         let stop = Arc::new(AtomicBool::new(false));
+        let choice = Arc::new(Mutex::new(choice));
         let (tx, rx) = std::sync::mpsc::channel::<u32>();
         {
-            let (shared, info, stop) = (shared.clone(), info.clone(), stop.clone());
+            let (shared, info, stop, choice) = (shared.clone(), info.clone(), stop.clone(), choice.clone());
             std::thread::Builder::new()
                 .name("audio".into())
                 .spawn(move || device::run(shared, info, stop, choice, tx))
                 .expect("audio thread");
         }
         let rate = rx.recv_timeout(Duration::from_secs(8)).unwrap_or(NULL_RATE);
-        AudioEngine { shared, rate, info, stop, next_gen: 0, transport_gen: 0, want_playing: false, want_pos: 0 }
+        AudioEngine { shared, rate, info, stop, choice, next_gen: 0, transport_gen: 0, want_playing: false, want_pos: 0 }
+    }
+
+    /// Play through another output from now on. The rate the engine started at stays: an output
+    /// that cannot run at it is not opened, and `info()` says why.
+    pub fn set_device(&self, choice: crate::engine::AudioChoice) {
+        if let Ok(mut wanted) = self.choice.lock() {
+            *wanted = choice;
+        }
     }
 
     /// An engine with nothing driving it. The caller renders by hand.
@@ -296,6 +307,7 @@ impl AudioEngine {
             rate,
             info: Arc::new(Mutex::new(info)),
             stop: Arc::new(AtomicBool::new(false)),
+            choice: Arc::new(Mutex::new(crate::engine::AudioChoice::Off)),
             next_gen: 0,
             transport_gen: 0,
             want_playing: false,
@@ -566,15 +578,22 @@ pub mod device {
     ) -> Result<Open, String> {
         let device = pick(choice)?;
         let name = device_name(&device);
-        let supported = device.default_output_config().map_err(|e| format!("{name} could not be opened: {e}"))?;
+        let mut supported = device.default_output_config().map_err(|e| format!("{name} could not be opened: {e}"))?;
         let rate = supported.sample_rate();
-        if let Some(want) = want_rate {
-            if want != rate {
-                return Err(format!(
-                    "{name} runs at {rate} Hz but the server started at {want} Hz. Restart the server to use it"
-                ));
-            }
+        if let Some(want) = want_rate.filter(|want| *want != rate) {
+            // The sound was prepared for the rate the server started at. Most outputs run at more
+            // than one rate: ask this one for that rate, in the shape it would have used anyway.
+            let (channels, format) = (supported.channels(), supported.sample_format());
+            let at_rate = device.supported_output_configs().ok().and_then(|configs| {
+                let fits: Vec<_> = configs.filter_map(|c| c.try_with_sample_rate(want)).collect();
+                let same = fits.iter().find(|c| c.channels() == channels && c.sample_format() == format).cloned();
+                same.or_else(|| fits.into_iter().find(|c| c.channels() >= 1))
+            });
+            supported = at_rate.ok_or_else(|| {
+                format!("{name} runs at {rate} Hz but the server started at {want} Hz. Restart the server to use it")
+            })?;
         }
+        let rate = supported.sample_rate();
         make_renderer(rate);
         let format = supported.sample_format();
         let config: cpal::StreamConfig = supported.config();
@@ -598,9 +617,11 @@ pub mod device {
         shared: Arc<Shared>,
         info: Arc<Mutex<DeviceInfo>>,
         stop: Arc<AtomicBool>,
-        choice: AudioChoice,
+        wanted: Arc<Mutex<AudioChoice>>,
         ready: Sender<u32>,
     ) {
+        let asked = || wanted.lock().map(|c| c.clone()).unwrap_or(AudioChoice::Off);
+        let mut choice = asked();
         let failed: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         // The renderer is created once the rate is known and then never replaced.
         let renderer = Arc::new(Mutex::new(Renderer::new(shared.clone(), NULL_RATE)));
@@ -638,6 +659,24 @@ pub mod device {
         let mut silent_buf = vec![0.0f32; 2 * 256];
         let mut last_retry = Instant::now();
         while !stop.load(Ordering::Relaxed) {
+            // Another output was chosen: let go of this one and open that. Until it is open the
+            // show runs on, silent, on the clock.
+            let now_asked = asked();
+            if now_asked != choice {
+                choice = now_asked;
+                current = None;
+                silent_rendered = (started.elapsed().as_secs_f64() * rate as f64) as u64;
+                last_retry = Instant::now();
+                // Some outputs take seconds to open. Say so rather than go on naming the old one.
+                set_info(None, Some("Changing the audio output".into()));
+                match open(&choice, Some(rate), &renderer, &failed, &mut make) {
+                    Ok(o) => {
+                        set_info(Some(o.name.clone()), None);
+                        current = Some(o);
+                    }
+                    Err(reason) => set_info(None, Some(format!("{reason}. Running silent"))),
+                }
+            }
             match &current {
                 Some(open) => {
                     let _keep_alive = &open.stream;
