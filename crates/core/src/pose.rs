@@ -624,7 +624,7 @@ struct ProjectFile {
 impl From<ProjectFile> for Project {
     fn from(f: ProjectFile) -> Project {
         let d = Project::default();
-        let cameras = f.cameras.unwrap_or_else(|| {
+        let mut cameras = f.cameras.unwrap_or_else(|| {
             vec![CameraConfig {
                 axes: f.axes.unwrap_or_default(),
                 keep_out: f.keep_out.unwrap_or_default(),
@@ -632,6 +632,8 @@ impl From<ProjectFile> for Project {
                 ..CameraConfig::default()
             }]
         });
+        // However a project arrives, an inverted camera has the tilt range of an inverted camera.
+        cameras.iter_mut().for_each(CameraConfig::settle_tilt_range);
         Project {
             rate: f.rate.unwrap_or(d.rate),
             routing: f.routing.unwrap_or(d.routing),

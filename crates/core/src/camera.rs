@@ -97,6 +97,19 @@ impl Default for CameraConfig {
 }
 
 impl CameraConfig {
+    /// An FR7 hung upside down travels the mirror of its upright tilt range: it looks straight
+    /// down at -90 degrees, not +90. A camera whose tilt limits are still the default for the
+    /// other way up is given the default for the way it is mounted. Limits someone has set
+    /// are left as they are.
+    pub fn settle_tilt_range(&mut self) {
+        let upright = AxisTable::default().tilt;
+        let (upright, hung) = ((upright.min, upright.max), (-upright.max, -upright.min));
+        let (now, fits) = ((self.axes.tilt.min, self.axes.tilt.max), if self.mount.inverted { hung } else { upright });
+        if now != fits && (now == upright || now == hung) {
+            (self.axes.tilt.min, self.axes.tilt.max) = fits;
+        }
+    }
+
     pub fn new(id: &str, name: &str) -> CameraConfig {
         CameraConfig {
             id: id.into(),
@@ -359,6 +372,33 @@ mod tests {
         assert!(mount.validate().is_ok());
         assert!(Mount { base_height_mm: 6000.0, ..mount }.validate().is_err());
         assert!(Mount { x: f64::NAN, ..mount }.validate().is_err());
+    }
+
+    #[test]
+    fn an_inverted_camera_has_the_mirrored_tilt_range_unless_its_limits_were_set() {
+        // A project from before: the overhead camera is marked inverted, its limits still upright.
+        let mut project = crate::pose::Project::default();
+        project.cameras.push(CameraConfig::new("cam2", "Overhead"));
+        project.cameras[1].mount.inverted = true;
+        let range = |c: &CameraConfig| (c.axes.tilt.min, c.axes.tilt.max);
+        assert_eq!(range(&project.cameras[1]), (-30.0, 195.0));
+        let opened: crate::pose::Project = serde_json::from_str(&serde_json::to_string(&project).unwrap()).unwrap();
+        assert_eq!(range(&opened.cameras[0]), (-30.0, 195.0), "an upright camera is as it was");
+        assert_eq!(range(&opened.cameras[1]), (-195.0, 30.0), "straight down is -90 for a camera that hangs");
+        assert_eq!(opened.cameras[1].axes.tilt.max_speed, project.cameras[1].axes.tilt.max_speed);
+
+        // Turned upright again, it gets the upright range back.
+        let mut camera = opened.cameras[1].clone();
+        camera.mount.inverted = false;
+        camera.settle_tilt_range();
+        assert_eq!(range(&camera), (-30.0, 195.0));
+        // Limits someone measured are theirs, whichever way up the camera is.
+        for inverted in [false, true] {
+            let mut camera = CameraConfig::default();
+            (camera.axes.tilt.min, camera.axes.tilt.max, camera.mount.inverted) = (-100.0, 20.0, inverted);
+            camera.settle_tilt_range();
+            assert_eq!(range(&camera), (-100.0, 20.0));
+        }
     }
 
     #[test]

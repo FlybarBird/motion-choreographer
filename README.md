@@ -332,9 +332,12 @@ calibration settings. Existing projects open with upright mounts and zero tilt
 offset.
 
 Views and motion planning support exact straight-up (+90°) and straight-down
-(−90°) tilt, including inverted mounts. Set the tilt limits to the camera's
-measured range in **Rig limits**. An unsupported angle is still rejected;
-the default FR7 mechanical limits are not widened by changing the mount.
+(−90°) tilt, including inverted mounts. An inverted FR7 travels the mirror of
+its upright range, so a camera marked **Inverted mount** whose tilt limits are
+still the default −30° to +195° is given −195° to +30°, and gets the upright
+range back if it is turned upright again. Tilt limits that were set by hand in
+**Rig limits** are left as they are. An angle outside the limits is still
+rejected.
 
 | Tool | What it does |
 | --- | --- |

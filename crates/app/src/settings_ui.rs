@@ -1202,6 +1202,8 @@ fn position(ui: &mut Ui, s: &Session, camera: &mut CameraConfig, units: Units, e
     if camera.mount.inverted {
         ui.label(RichText::new("Enable image flip on the camera for an upright picture. Check Pan / Tilt direction in Rig settings; mounting orientation does not change calibrated movement directions.").color(MUTED).small());
     }
+    // Hung the other way up, the camera's default tilt range is the mirror of what it was.
+    camera.settle_tilt_range();
 }
 
 /// The venue: an imported model, where it stands, and whether the built-in stage is drawn.

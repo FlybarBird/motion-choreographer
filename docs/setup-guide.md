@@ -455,10 +455,12 @@ downward from that point. Enable image flip on the camera itself, then verify
 the **Counts run backwards** settings during rig bring-up. Mount inversion
 keeps the calibrated pan/tilt directions; it does not change those settings.
 
-Exact +90° and −90° tilt are supported by the view and timeline. Allow those
-angles in **Rig limits** only when the installed camera can physically reach
-them. Bring-up should establish the normalized limits for an inverted rig;
-mount inversion does not change the manufacturer's default travel range.
+Exact +90° and −90° tilt are supported by the view and timeline. An inverted
+FR7 travels the mirror of its upright range: with **Inverted mount** chosen, tilt
+limits that are still the default −30° to +195° become −195° to +30°, so a
+camera hanging over the stage can look straight down at −90°. Limits you have
+set yourself in **Rig limits** are not changed; allow an angle there only when
+the installed camera can physically reach it.
 
 ---
 
