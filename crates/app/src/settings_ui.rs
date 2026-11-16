@@ -278,7 +278,7 @@ fn rig(ui: &mut Ui, s: &mut Session, camera: &mut CameraConfig, shared: &mut Vec
             height_map(ui, "height_map", shared, raw, units, "Add the current height");
             ui.label(
                 RichText::new(
-                    "A column's travel is from the lowest to the highest height measured here. Elevation limits set inside that travel are kept; others give way to it. A column the song has no elevation for is left where it stands.",
+                    "These heights say how the column's height is read; its elevation limits say how far it may travel. Limits that every height here lies outside give way: the travel is then from the lowest to the highest height measured. A column the song has no elevation for is left where it stands.",
                 )
                 .color(MUTED)
                 .small(),

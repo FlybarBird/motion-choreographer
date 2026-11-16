@@ -698,17 +698,19 @@ mod tests {
         assert_eq!(travel(&p, 0), (0.0, 670.0), "a camera with no column keeps its limits");
         assert_eq!(p.limits_of(&p.cameras[1]).elevation.max_speed, p.cameras[1].axes.elevation.max_speed);
 
-        // Limits set inside the measured travel are kept; limits that reach past it are cut to it.
+        // Limits the measured heights reach into stand as they were set, wider or narrower.
         let mut set = p.clone();
-        (set.cameras[1].axes.elevation.min, set.cameras[1].axes.elevation.max) = (1500.0, 2000.0);
-        assert_eq!(travel(&set, 1), (1500.0, 2000.0));
-        (set.cameras[1].axes.elevation.min, set.cameras[1].axes.elevation.max) = (1000.0, 3000.0);
+        for limits in [(1500.0, 2000.0), (1000.0, 3000.0), (2000.0, 5000.0)] {
+            (set.cameras[1].axes.elevation.min, set.cameras[1].axes.elevation.max) = limits;
+            assert_eq!(travel(&set, 1), limits);
+        }
+        // Limits wholly above the measured heights give way as limits wholly below them do.
+        (set.cameras[1].axes.elevation.min, set.cameras[1].axes.elevation.max) = (3000.0, 4000.0);
         assert_eq!(travel(&set, 1), (1327.15, 2641.6));
         // One height is not a map, and a camera's own map is the one that counts.
         set.autopod_calibration.truncate(1);
-        assert_eq!(travel(&set, 1), (1000.0, 3000.0));
+        assert_eq!(travel(&set, 1), (3000.0, 4000.0));
         set.cameras[1].rig.autopod_calibration = [(100.0, 0.0), (900.0, 500.0)].map(|(raw, mm)| CalPoint { raw, mm }).to_vec();
-        (set.cameras[1].axes.elevation.min, set.cameras[1].axes.elevation.max) = (0.0, 670.0);
         assert_eq!(travel(&set, 1), (0.0, 500.0));
 
         // The song pans the column's camera and says nothing of height: its home height of
@@ -728,6 +730,32 @@ mod tests {
             .iter()
             .any(|i| matches!(i, Issue::OutOfRange { camera, axis: Axis::Elevation, .. } if camera == "cam2")));
         assert!(c.blocking_count(&song) > 0);
+    }
+
+    #[test]
+    fn a_height_map_that_samples_part_of_a_column_does_not_narrow_the_travel_its_limits_allow() {
+        use crate::pose::CalPoint;
+        // What bring-up leaves: three heights a few seconds of travel apart, from where the
+        // column stood, and the elevation limits as they were.
+        let mut p = project();
+        p.cameras[0].rig.autopod_host = "192.168.60.24".into();
+        p.cameras[0].rig.autopod_calibration =
+            [(10096.0, 100.0), (13966.0, 164.5), (17836.0, 229.0)].map(|(raw, mm)| CalPoint { raw, mm }).to_vec();
+        let limits = p.limits_of(p.first()).elevation;
+        assert_eq!((limits.min, limits.max), (0.0, 670.0), "the heights lie inside the limits, so the limits stand");
+
+        // A move from the song's home height of zero up to a mark arms as it always did.
+        let mut song = Song::new("s", "S", "01:00:00:00", 500);
+        let to =
+            PresetRef { preset_id: "p".into(), name: "P".into(), pose: Pose { pan: 30.0, elevation: 160.0, ..Pose::home() } };
+        let mut rise = pan_move(10, 300, 30.0, false);
+        rise.axes = Axis::ALL.to_vec();
+        if let ClipBody::PresetMove { to: mark, .. } = &mut rise.body {
+            *mark = to;
+        }
+        song.motion.push(rise);
+        let c = compile(&song, &p);
+        assert!(c.issues.is_empty(), "{:?}", c.issues);
     }
 
     #[test]

@@ -673,10 +673,12 @@ impl Project {
         rig
     }
 
-    /// The limits a camera is held to. A column's travel is what was measured on it: from the
-    /// lowest to the highest height in its height map. Elevation limits someone set inside
-    /// that travel are kept; the untouched default, and limits that lie wholly outside the
-    /// measured heights, say nothing about this column and give way to the map.
+    /// The limits a camera is held to. A column's height map says how its height is read, and
+    /// its elevation limits say how far it may travel: they stand as they are set whenever the
+    /// measured heights reach into them. Limits that every measured height lies beyond are on
+    /// another scale than the map, as the untouched default is against heights taken from the
+    /// floor. They say nothing about this column, and its travel is then from the lowest to
+    /// the highest height that was measured.
     pub fn limits_of(&self, camera: &CameraConfig) -> AxisTable {
         let mut axes = camera.axes;
         let map = self.height_map(camera);
@@ -684,10 +686,10 @@ impl Project {
         if camera.has_column() && measured {
             let lowest = map.iter().map(|p| p.mm).fold(f64::INFINITY, f64::min);
             let highest = map.iter().map(|p| p.mm).fold(f64::NEG_INFINITY, f64::max);
-            let (default, set) = (AxisTable::default().elevation, &mut axes.elevation);
-            let untouched = (set.min, set.max) == (default.min, default.max);
-            let (min, max) = (set.min.max(lowest), set.max.min(highest));
-            (set.min, set.max) = if untouched || min >= max { (lowest, highest) } else { (min, max) };
+            let set = &mut axes.elevation;
+            if highest < set.min || lowest > set.max {
+                (set.min, set.max) = (lowest, highest);
+            }
         }
         axes
     }
