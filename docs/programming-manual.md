@@ -287,7 +287,7 @@ under **Issues in this song**, each with **Go there**.
 | *Pan is too fast: 85 per second, limit 60* | The move is shorter than the rig can do it | **Use auto time**, or lengthen the move, or **Accept as programmed** |
 | *Tilt starts or stops too sharply* | The acceleration limit is exceeded | Lengthen the move or soften the ease or the curve, or **Accept as programmed** |
 | *Pan reaches 190, outside its range* | The pose is beyond the axis's Min or Max | Change the preset or the keys. Cannot be accepted. |
-| *Zoom steps by 12 at the start of this move* | The axis would have to jump instantly, usually where keys take over from another clip | Start the keys where the previous move ends, or leave room between them. Cannot be accepted. |
+| *Zoom steps by 12 at the start of this move* | The axis would have to jump instantly, usually where keys take over from another clip | Start the keys where the previous move ends, or leave room between them. Cannot be accepted. A camera's first recorded move is never a step: the camera waits where the take starts (chapter 8). |
 | *Keep-out rule broken: ...* | Two axes together enter a forbidden combination | Change the move so it stays out. Cannot be accepted. |
 
 **Accept as programmed** is for speed and acceleration only. It says: I know
@@ -396,6 +396,51 @@ the rig stood still becomes two keys. The raw samples are kept, so with the
 clip selected, **Fewer keys** and **More keys** in the Inspector fit them again
 looser or tighter at any time. Fewer keys are easier to edit; more keys follow
 the take closer. Then shape it in the graph editor like any other keys clip.
+
+### Where the camera waits before a take
+
+A take starts wherever the camera stood when the pass began, which is rarely
+home. Before a camera's first recorded move the timeline therefore holds it
+where that take starts, not at home, so there is no step when the move begins.
+**Arm** takes each camera there, as it takes it to any pose at the playhead,
+and so does loading the song while the show is armed. How fast it travels is
+**Arm moves at** in that camera's rig settings: half its top speed to start
+with, its top speed at 100 %.
+
+A later take on the same camera that starts somewhere else is still a step,
+and is reported as one.
+
+### Smoothing a take
+
+A real head reports where it is at uneven moments, not exactly on every
+frame, so a take of a steady pan comes out as stand, jump, stand, jump. Played
+back as recorded that is faster and sharper than the head can move, and the
+song shows *too fast* and *starts or stops too sharply* on moves the camera
+made without trouble.
+
+**Smooth recorded moves** fixes them all at once. It is in the Inspector with
+nothing selected, under **Recorded moves**; with a recorded clip selected,
+**Smooth this camera's moves** does the same for that camera alone.
+
+- Each recorded move that is over a speed or acceleration limit is smoothed
+  until its rig can make it. Only the stretches over a limit are changed, by as
+  little as brings them inside; the move keeps its frames and starts and ends
+  where it did. A snap too quick for any head is spread over up to about a
+  second.
+- A move that is still over a limit after that, because the camera was really
+  moved faster than its limits for a while, is accepted as programmed in your
+  station's name, exactly as the button in chapter 6 does it.
+- Range, step and keep-out problems are never accepted this way. They are left
+  in the list, and the report counts them.
+- The rig's limits are not changed, and neither are moves someone has already
+  accepted or moves that were not recorded.
+
+When it is done the Inspector and the Log say how many moves were smoothed, how
+far the furthest is from the take, how many were accepted and how many issues
+are left. Smoothing works from the raw samples, so doing it again gives the
+same moves, and a move that was trimmed or split is smoothed from its keys
+instead. One undo puts the song back, and **Default** under **Recorded pass**
+returns a single move to the take as it was recorded.
 
 To record against the show's real clock, lock first (chapter 10): a move
 recorded while locked replays against the same code.

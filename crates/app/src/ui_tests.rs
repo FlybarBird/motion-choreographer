@@ -763,6 +763,63 @@ fn a_recorded_pass_arriving_from_the_server_is_one_undo_step_and_opens_in_the_gr
     assert_eq!(r.puts(), vec![before]);
 }
 
+#[test]
+fn smoothing_recorded_moves_is_asked_of_the_server_which_says_what_it_did_and_is_one_undo_step() {
+    use egui_kittest::kittest::Queryable as _;
+    // A take that snaps 40 degrees in four frames: no head does that.
+    let take = |keys: Vec<Key>| {
+        let empty = Song::new("s", "Test Song", "01:00:00:00", 600);
+        let curves = [(Axis::Pan, keys)].into();
+        ptz_core::edit::punch_keys(&empty, &Project::default(), ptz_core::FIRST_CAMERA, 34, 200, curves, Some("pass-0001".into()))
+            .unwrap()
+    };
+    let key = |frame, value| Key::new(frame, value, Interp::Linear);
+    let (recorded, clip) = take(vec![key(0, -13.0), key(100, -13.0), key(104, -53.0), key(200, -53.0)]);
+    let mut r = rig(recorded.clone());
+    r.harness.get_by_label("1 issue");
+    let asked = |r: &Rig| -> Vec<Option<String>> {
+        r.cmds.try_iter().filter_map(|c| if let Cmd::Smooth { camera } = c { Some(camera) } else { None }).collect()
+    };
+
+    // With nothing selected the Inspector is the song's, and offers every camera's takes at once.
+    r.press("Smooth recorded moves");
+    assert_eq!(asked(&r), vec![None]);
+
+    // The server answers with the smoothed song and what it did.
+    let (smoothed, _) = take(ptz_core::eval::ease_keys(-13.0, -53.0, 200, ptz_core::song::Ease::EaseInOut).to_vec());
+    let working = WorkingSong { song: smoothed.clone(), edit_counter: 1, dirty: true, revision: None, issues: Vec::new() };
+    r.events.send(Event::Working(Box::new(working), Why::Reload)).unwrap();
+    let report = ptz_core::api::SmoothReport {
+        moves: 1,
+        smoothed: vec![clip.clone()],
+        blocking_before: 1,
+        departure: [(Axis::Pan, 4.45)].into(),
+        ..Default::default()
+    };
+    r.events.send(Event::Smoothed(report)).unwrap();
+    r.harness.run_steps(3);
+    assert_eq!(r.song(), &smoothed);
+    assert!(r.harness.query_by_label("1 issue").is_none());
+    let said = "Smoothed 1 recorded move to the rig's limits, by at most pan 4.5°. No issue stops Arm";
+    assert_eq!(r.toasts(), vec![said.to_string()]);
+    // It stays in the Inspector after the toast has gone.
+    assert_eq!(r.harness.state().session.smoothed, Some((said.to_string(), false)));
+    assert!(r.harness.query_all_by_label(said).count() >= 1);
+
+    // One undo puts the take back as it was recorded.
+    r.harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    r.harness.run_steps(2);
+    assert_eq!(r.song(), &recorded);
+    assert_eq!(r.puts(), vec![recorded]);
+    assert_eq!(r.harness.state().session.smoothed, None, "what smoothing did is no longer said once it is undone");
+
+    // With the take selected, the same is offered for its camera alone.
+    r.harness.state_mut().session.timeline.selection.insert(clip);
+    r.harness.run_steps(2);
+    r.press("Smooth this camera's moves");
+    assert_eq!(asked(&r), vec![Some(ptz_core::FIRST_CAMERA.to_string())]);
+}
+
 fn stamped_media(id: &str, kind: ptz_core::api::MediaKind, start_tc: &str) -> ptz_core::api::MediaInfo {
     ptz_core::api::MediaInfo {
         id: id.into(),

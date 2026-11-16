@@ -630,7 +630,7 @@ mix real rigs and simulated ones.
 | Speed steps | The speed of each VISCA step. Shows *assumed* until bring-up has measured them. |
 | Plain moves | Send a preset move as one command and let the head run it. Use it if bring-up showed that steering strays. |
 | Query delay | How old a position is when it arrives. Zero uses the round trip measured as it runs. |
-| Arm moves at | The share of top speed used to travel to the playhead when arming. Half to start with. |
+| Arm moves at | The share of top speed used to travel to the playhead when arming, which is also how each camera gets to where its first recorded move starts. Half to start with; 100 % is the rig's top speed. |
 | Tracking fault after, Tolerance | How far and for how long an axis may be off the timeline while live before that camera is held |
 | AutoPod+ height map | Raw leg-box position against measured height, at three heights or more. **Add the current height** takes the raw value from the leg box. One map serves every camera's AutoPod+; a camera can have its own instead, under **A height map for this camera only**. With fewer than two heights the height is shown and recorded on an assumed scale, so a column's moves can be recorded before anything is measured; Arm still needs three. |
 

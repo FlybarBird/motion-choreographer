@@ -459,6 +459,22 @@ rig stood still is two keys. The raw samples are kept beside the song
 (`songs/<id>/passes/`), and **Fewer keys** / **More keys** in the Inspector fit
 them again looser or tighter. Record works in Rehearse only.
 
+Before a camera's first recorded move the timeline holds it where that take
+starts, not at home, so the take does not begin with a step and Arm takes the
+camera there (at **Arm moves at**: 100 % is the rig's top speed).
+
+A real head reports where it is at uneven moments, so a take of a steady move
+reads as stand, jump, stand, jump: too fast and too sharp for the head that
+made it. **Smooth recorded moves** in the Inspector (with nothing selected; or
+**Smooth this camera's moves** on a recorded clip) smooths every recorded move
+that is over a speed or acceleration limit until its rig can make it, changing
+only the stretches that are over and keeping each move's frames and ends. What
+is still over a limit is accepted as programmed in the station's name; range,
+step and keep-out problems never are, and are reported as left. The limits and
+the raw samples are not touched, smoothing again gives the same moves, and one
+undo puts the song back. Over the API it is `POST /api/v1/record/smooth`, with
+an optional `camera`.
+
 ## Lock and timecode
 
 Free-run, the song plays on the sound card's clock. **Lock** makes it follow

@@ -13,11 +13,12 @@ use ptz_core::api::*;
 use ptz_core::camera::OnFault;
 use ptz_core::chase::{Chase, ChaseState};
 use ptz_core::codes::CodeRate;
-use ptz_core::compile::{compile, Compiled};
+use ptz_core::compile::{compile, Compiled, Issue};
 use ptz_core::edit;
-use ptz_core::fit::default_tolerance;
+use ptz_core::eval::keys_value;
+use ptz_core::fit::{default_tolerance, overruns};
 use ptz_core::pose::{Axis, Pose, Preset, Project, Routing};
-use ptz_core::song::{ClipBody, Song};
+use ptz_core::song::{ClipBody, MotionClip, Song};
 use ptz_core::time::{frame_to_sample, FrameRate, Timecode};
 use ptz_core::transport::{self, Action, Context, Event, Output, Run, TimeMode, TransportState};
 use serde_json::json;
@@ -2386,6 +2387,110 @@ impl Show {
             json!({ "song": song_id, "clip": clip_id, "pass": pass_id_of(&out.song, clip_id), "scale": req.scale }),
         );
         Ok(out)
+    }
+
+    /// The raw samples of a recorded clip, when the clip still is the whole pass: one value
+    /// per frame of the clip on each of its axes.
+    fn raw_samples(&self, song_id: &str, clip: &MotionClip) -> Option<BTreeMap<Axis, Vec<f64>>> {
+        let path = self.storage.pass_path(song_id, clip.recorded_pass.as_ref()?)?;
+        let pass: RecordedPass = storage::read_json(&path)?;
+        let whole = clip.axes.iter().all(|a| pass.samples.get(a).is_some_and(|v| v.len() as i64 == clip.duration_frames + 1));
+        whole.then_some(pass.samples)
+    }
+
+    /// Smooth the recorded moves of the loaded song, or of one camera in it, until each is
+    /// inside its rig's speed and acceleration limits, then accept the ones that still are
+    /// not. A move is smoothed from its raw samples while it still is the whole pass, so
+    /// smoothing again starts from the same take; a trimmed one from its keys. A move someone
+    /// accepted is left as it is. Range, jump and keep-out problems are never accepted here:
+    /// the report lists them as left. The rig's limits are read, never changed.
+    pub fn smooth(&mut self, client: &str, req: &Smooth) -> Res<Smoothed> {
+        self.require_lease(client)?;
+        let Some(entry) = self.entry() else {
+            return Err(Fail::refused("Create or load a song first"));
+        };
+        let song_id = entry.song.id.clone();
+        self.require_editable(&song_id)?;
+        if let Some(camera) = req.camera.as_ref().filter(|id| self.project.camera(id).is_none()) {
+            return Err(Fail::not_found(format!("There is no camera {camera} in the project")));
+        }
+        let wanted = |c: &&MotionClip| c.recorded_pass.is_some() && req.camera.as_ref().is_none_or(|id| *id == c.camera);
+        let recorded: Vec<MotionClip> = entry.song.motion.iter().filter(wanted).cloned().collect();
+        if recorded.is_empty() {
+            return Err(Fail::refused(match &req.camera {
+                Some(camera) => format!("{} has no recorded moves in this song", self.project.label(camera)),
+                None => "This song has no recorded moves to smooth".into(),
+            }));
+        }
+        let fps = self.rate().fps();
+        let mut report = SmoothReport {
+            moves: recorded.len(),
+            blocking_before: entry.compiled.blocking_count(&entry.song),
+            ..SmoothReport::default()
+        };
+        let mut song = entry.song.clone();
+        for clip in &recorded {
+            let Some(camera) = self.project.camera(&clip.camera) else { continue };
+            let overrun = entry.compiled.issues.iter().any(|i| i.clip_id() == Some(clip.id.as_str()) && i.acceptable());
+            if !overrun || clip.accepted.is_some() {
+                continue;
+            }
+            let raw = self.raw_samples(&song_id, clip);
+            let mut curves = BTreeMap::new();
+            for &axis in &clip.axes {
+                let (keys, limits) = (clip.keys(axis), camera.axes.get(axis));
+                let plays: Vec<f64> = (0..=clip.duration_frames).filter_map(|f| keys_value(keys, f as f64)).collect();
+                // An axis that is inside its limits keeps the keys it has.
+                if !overruns(&plays, limits, fps) {
+                    continue;
+                }
+                let samples = raw.as_ref().and_then(|r| r.get(&axis)).unwrap_or(&plays);
+                let (smooth, departure) = record::smooth_axis(samples, axis, limits, fps);
+                if smooth != keys {
+                    let furthest = report.departure.entry(axis).or_insert(0.0);
+                    *furthest = furthest.max(departure);
+                    curves.insert(axis, smooth);
+                }
+            }
+            if !curves.is_empty() {
+                song = edit::replace_curves(&song, &self.project, &clip.id, curves).map_err(|r| Fail::invalid(r.to_string()))?;
+                report.smoothed.push(clip.id.clone());
+            }
+        }
+        // What is still over a limit is accepted the way the Inspector accepts it: only on a
+        // move whose every issue is one that may be accepted.
+        let by = self.lease.as_ref().map(|l| l.name.clone()).unwrap_or_default();
+        let at = storage::now_rfc3339();
+        let compiled = compile(&song, &self.project);
+        let mut decisions = Vec::new();
+        for clip in &recorded {
+            let issues: Vec<&Issue> = compiled.issues.iter().filter(|i| i.clip_id() == Some(clip.id.as_str())).collect();
+            let accepted = song.motion_clip(&clip.id).is_some_and(|c| c.accepted.is_some());
+            if issues.is_empty() || accepted || !issues.iter().all(|i| i.acceptable()) {
+                continue;
+            }
+            let said: Vec<String> = issues.iter().map(|i| i.message_in(self.project.units)).collect();
+            song = edit::accept_issues(&song, &self.project, &clip.id, &by, &at).map_err(|r| Fail::invalid(r.to_string()))?;
+            decisions.push(json!({ "song": song_id, "clip": clip.id, "by": by, "at": at, "issues": said }));
+            report.accepted.push(clip.id.clone());
+        }
+        report.left = compiled.blocking(&song).cloned().collect();
+        if song == entry.song {
+            return Ok(Smoothed { working: entry.working(), report });
+        }
+        let working = self.replace_working(&song_id, song, "smooth")?;
+        for data in decisions {
+            self.log("issue_accepted", data);
+        }
+        self.log(
+            "record_smooth",
+            json!({
+                "song": song_id, "camera": req.camera, "by": by, "moves": report.moves,
+                "smoothed": report.smoothed, "accepted": report.accepted, "departure": report.departure,
+                "blocking_before": report.blocking_before, "left": report.left.len(),
+            }),
+        );
+        Ok(Smoothed { working, report })
     }
 
     /// Drive one camera's rig by hand.

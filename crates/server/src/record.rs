@@ -1,8 +1,9 @@
 //! Record passes: the rig's pose on every frame while Record is on, and the
 //! raw samples kept beside the song so a pass can be refitted later.
 
-use ptz_core::fit::{default_tolerance, fit_keys};
-use ptz_core::pose::{Axis, Pose};
+use ptz_core::eval::keys_value;
+use ptz_core::fit::{default_tolerance, fit_keys, overruns, smooth_to_limits};
+use ptz_core::pose::{Axis, AxisLimits, Pose};
 use ptz_core::song::Key;
 use ptz_core::time::FrameRate;
 use serde::{Deserialize, Serialize};
@@ -35,6 +36,26 @@ impl RecordedPass {
 /// Fit every axis of a pass. `scale` multiplies the default tolerance.
 pub fn fit_pass(samples: &BTreeMap<Axis, Vec<f64>>, scale: f64) -> BTreeMap<Axis, Vec<Key>> {
     samples.iter().map(|(axis, values)| (*axis, fit_keys(values, default_tolerance(*axis) * scale))).collect()
+}
+
+/// Fit tolerances tried on a smoothed move, loosest first, as multiples of the default.
+const SMOOTH_FITS: [f64; 4] = [1.0, 0.5, 0.25, 0.1];
+
+/// Smooth one axis of a move to its limits and fit keys to the result: the loosest fit
+/// whose keys stay inside the limits, or the tightest when none does. Returns the keys and
+/// the furthest they are from `samples` on any frame.
+pub fn smooth_axis(samples: &[f64], axis: Axis, limits: &AxisLimits, fps: f64) -> (Vec<Key>, f64) {
+    let smooth = smooth_to_limits(samples, limits, fps);
+    let played = |keys: &[Key]| -> Vec<f64> { (0..samples.len()).filter_map(|f| keys_value(keys, f as f64)).collect() };
+    let mut keys = Vec::new();
+    for scale in SMOOTH_FITS {
+        keys = fit_keys(&smooth, default_tolerance(axis) * scale);
+        if !overruns(&played(&keys), limits, fps) {
+            break;
+        }
+    }
+    let departure = played(&keys).iter().zip(samples).map(|(now, was)| (now - was).abs()).fold(0.0, f64::max);
+    (keys, departure)
 }
 
 /// A pass in progress. Readings arrive at the engine's tick rate, stamped with

@@ -222,6 +222,10 @@ async fn refit(
     Ok(Json(lock(&app.show).refit(&c, &clip, &req)?))
 }
 
+async fn smooth(State(app): State<App>, Client(c): Client, Json(req): Json<Smooth>) -> Reply<Smoothed> {
+    Ok(Json(lock(&app.show).smooth(&c, &req)?))
+}
+
 async fn get_project(State(app): State<App>) -> Json<Project> {
     Json(lock(&app.show).project.clone())
 }
@@ -602,6 +606,7 @@ pub fn router(app: App) -> Router {
         .route("/presets/{id}/thumb.jpg", get(preset_thumb))
         .route("/rig/jog", post(rig_jog))
         .route("/record/{clip}/refit", post(refit))
+        .route("/record/smooth", post(smooth))
         .route("/media", get(list_media).post(upload_media))
         .route("/media/{id}", delete(delete_media))
         .route("/media/{id}/peaks", get(media_peaks))

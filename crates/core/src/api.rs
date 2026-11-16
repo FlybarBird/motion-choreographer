@@ -2,11 +2,12 @@
 
 use crate::chase::ChaseState;
 use crate::compile::Issue;
-use crate::pose::{Axis, Pose, Preset, Routing};
+use crate::pose::{Axis, Pose, Preset, Routing, Units};
 use crate::song::Song;
 use crate::time::FrameRate;
 use crate::transport::{Guidance, TransportState};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 pub const API: &str = "/api/v1";
 pub const DEFAULT_PORT: u16 = 8787;
@@ -482,6 +483,63 @@ pub struct UpdatePreset {
 pub struct Refit {
     /// Multiplier on the default per-axis tolerance.
     pub scale: f64,
+}
+
+/// Smooth the loaded song's recorded moves to what each rig can do.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+pub struct Smooth {
+    /// Only this camera's recorded moves. Omitted is every camera's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera: Option<String>,
+}
+
+/// What smoothing did to the song.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+pub struct SmoothReport {
+    /// Recorded moves that were looked at.
+    pub moves: usize,
+    /// Ids of the moves whose keys were smoothed.
+    pub smoothed: Vec<String>,
+    /// Ids of the moves still over a speed or acceleration limit, accepted as they are.
+    pub accepted: Vec<String>,
+    /// Issues that stopped Arm before.
+    pub blocking_before: usize,
+    /// Issues that still stop Arm. Range, jump and keep-out problems are never accepted here.
+    pub left: Vec<Issue>,
+    /// The furthest a smoothed move now is from what was recorded, on each axis that changed.
+    pub departure: BTreeMap<Axis, f64>,
+}
+
+impl SmoothReport {
+    /// The report in the operator's words.
+    pub fn text(&self, units: Units) -> String {
+        let count = |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+        let mut said = Vec::new();
+        if !self.smoothed.is_empty() {
+            let far: Vec<String> =
+                self.departure.iter().map(|(a, d)| format!("{} {}", a.label().to_lowercase(), a.format_in(*d, units))).collect();
+            let moves = count(self.smoothed.len(), "recorded move", "recorded moves");
+            said.push(format!("Smoothed {moves} to the rig's limits, by at most {}", far.join(" and ")));
+        }
+        if !self.accepted.is_empty() {
+            said.push(format!("Accepted {} still over a limit", count(self.accepted.len(), "move", "moves")));
+        }
+        if said.is_empty() {
+            said.push("No recorded move is over a speed or acceleration limit. Nothing was changed".into());
+        }
+        said.push(match self.left.len() {
+            0 => "No issue stops Arm".into(),
+            n => format!("{} left to fix", count(n, "issue is", "issues are")),
+        });
+        said.join(". ")
+    }
+}
+
+/// The song after smoothing, and what was done to it.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub struct Smoothed {
+    pub working: WorkingSong,
+    pub report: SmoothReport,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]

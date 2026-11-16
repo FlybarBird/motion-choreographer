@@ -146,6 +146,8 @@ impl Seg<'_> {
 pub struct Evaluator<'a> {
     song: &'a Song,
     lanes: [Vec<Seg<'a>>; 5],
+    /// Where each axis stands before its first move.
+    rest: [f64; 5],
 }
 
 impl<'a> Evaluator<'a> {
@@ -153,9 +155,16 @@ impl<'a> Evaluator<'a> {
     pub fn new(song: &'a Song, camera: &str) -> Evaluator<'a> {
         let mut order: Vec<usize> = (0..song.motion.len()).filter(|i| song.motion[*i].camera == camera).collect();
         order.sort_by_key(|i| (song.motion[*i].start_frame, *i));
+        // Home, unless the camera's first move on the axis is a recorded pass: the rig was
+        // already standing where the pass starts, so that is where the timeline has it wait.
+        let rest = Axis::ALL.map(|axis| {
+            let first = order.iter().map(|i| &song.motion[*i]).find(|c| c.has_axis(axis));
+            let recorded = first.filter(|c| c.recorded_pass.is_some()).and_then(|c| c.keys(axis).first());
+            recorded.map(|k| k.value).unwrap_or(song.home_pose.get(axis))
+        });
         let lanes = Axis::ALL.map(|axis| {
             let mut lane = Vec::new();
-            let mut prev_end = song.home_pose.get(axis);
+            let mut prev_end = rest[axis.index()];
             for &i in &order {
                 let c = &song.motion[i];
                 if !c.has_axis(axis) {
@@ -195,7 +204,7 @@ impl<'a> Evaluator<'a> {
             }
             lane
         });
-        Evaluator { song, lanes }
+        Evaluator { song, lanes, rest }
     }
 
     fn seg_at(&self, axis: Axis, frame: f64) -> Option<&Seg<'a>> {
@@ -210,7 +219,7 @@ impl<'a> Evaluator<'a> {
 
     pub fn axis_at(&self, axis: Axis, frame: f64) -> f64 {
         match self.seg_at(axis, frame) {
-            None => self.song.home_pose.get(axis),
+            None => self.rest[axis.index()],
             Some(s) => {
                 let local = frame - s.start as f64;
                 if local >= s.duration as f64 {
@@ -389,6 +398,43 @@ mod tests {
         assert_eq!(pose_at(&song, CAM, 150).pan, 30.0);
         assert_eq!(pose_at(&song, CAM, 900).pan, 30.0);
         assert_eq!(pose_at(&song, CAM, 900).focus, 0.5);
+    }
+
+    fn keyed(id: &str, start: i64, pan: [f64; 2], pass: Option<&str>) -> MotionClip {
+        let keys = vec![Key::new(0, pan[0], Interp::Linear), Key::new(100, pan[1], Interp::Linear)];
+        MotionClip {
+            id: id.into(),
+            camera: CAM.into(),
+            start_frame: start,
+            duration_frames: 100,
+            axes: vec![Axis::Pan],
+            body: ClipBody::Keys { curves: [(Axis::Pan, keys)].into() },
+            accepted: None,
+            recorded_pass: pass.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn a_camera_stands_where_its_first_recorded_move_starts() {
+        // A pass recorded from frame 200 with the head already at 25 degrees.
+        let mut song = Song::new("s", "S", "01:00:00:00", 1000);
+        song.motion.push(keyed("take", 200, [25.0, 40.0], Some("pass-0001")));
+        assert_eq!(pose_at(&song, CAM, 0).pan, 25.0, "the camera waits at the start of the take, not at home");
+        assert_eq!(pose_at(&song, CAM, 199).pan, 25.0);
+        assert_eq!(pose_at(&song, CAM, 0).tilt, 0.0, "an axis the take does not drive stays at home");
+        let ev = Evaluator::new(&song, CAM);
+        assert!(ev.jumps(Axis::Pan).is_empty());
+        assert_eq!(ev.value_before(&song.motion[0], Axis::Pan), 25.0);
+
+        // A second take that starts somewhere else is still a step in the middle of the song.
+        song.motion.push(keyed("later", 500, [-10.0, 0.0], Some("pass-0002")));
+        assert_eq!(Evaluator::new(&song, CAM).jumps(Axis::Pan), vec![(1, 500, 50.0)]);
+
+        // Keys made by hand say where the camera goes, not where it was: before them it is at home.
+        let mut by_hand = Song::new("s", "S", "01:00:00:00", 1000);
+        by_hand.motion.push(keyed("keys", 200, [25.0, 40.0], None));
+        assert_eq!(pose_at(&by_hand, CAM, 199).pan, 0.0);
+        assert_eq!(Evaluator::new(&by_hand, CAM).jumps(Axis::Pan), vec![(0, 200, 25.0)]);
     }
 
     #[test]

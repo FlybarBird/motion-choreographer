@@ -457,6 +457,7 @@ fn inspect_move(ui: &mut Ui, s: &mut Session, id: &str) {
                         }
                     }
                 });
+                smooth_button(ui, s, "Smooth this camera's moves", Some(clip.camera.clone()));
                 ui.label(RichText::new(format!("Raw samples: {pass}")).small().color(MUTED));
             }
         }
@@ -492,6 +493,22 @@ fn inspect_move(ui: &mut Ui, s: &mut Session, id: &str) {
         {
             s.edit(|song, project| edit::convert_to_keys(song, project, id));
         }
+    }
+}
+
+/// Smooth recorded moves to the rigs' limits: one camera's, or every camera's in the song.
+fn smooth_button(ui: &mut Ui, s: &mut Session, label: &str, camera: Option<String>) {
+    let can = s.can_edit();
+    let b = ui.add_enabled(can.is_ok(), egui::Button::new(label));
+    let b = match &can {
+        Err(why) => b.on_disabled_hover_text(why.clone()),
+        Ok(()) => b.on_hover_text(
+            "Smooth each recorded move that is over a speed or acceleration limit until the rig can make it, and accept \
+             what is still over. The limits are not changed, the raw samples are kept, and one undo puts the song back",
+        ),
+    };
+    if b.clicked() {
+        s.link.send(Cmd::Smooth { camera });
     }
 }
 
@@ -762,6 +779,15 @@ fn inspect_song(ui: &mut Ui, s: &mut Session) {
         }
     }
 
+    if song.motion.iter().any(|c| c.recorded_pass.is_some()) {
+        section(ui, "Recorded moves");
+        note(ui, "A take is as jumpy as the readings it was made from. Smoothing fits it to what each rig can do.");
+        smooth_button(ui, s, "Smooth recorded moves", None);
+        if let Some((said, left)) = &s.smoothed {
+            ui.label(RichText::new(said).small().color(if *left { AMBER } else { MUTED }));
+        }
+    }
+
     section(ui, "The whole show");
     note(ui, "Cameras, rigs, lenses, the stage, audio output and timecode inputs are in Show settings.");
     if icon_button(ui, true, icon::GEAR_SIX, "Open Show settings", Look::Plain, egui::vec2(0.0, CONTROL_H)).clicked() {
@@ -890,6 +916,17 @@ fn log_text(kind: &str, data: &serde_json::Value, units: Units) -> String {
         "issue_accepted" => {
             let issues = data.get("issues").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
             format!("{} accepted {issues} issue(s) on {} as programmed", text("by"), text("clip"))
+        }
+        "record_smooth" => {
+            let count = |k: &str| data.get(k).and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+            let left = data.get("left").and_then(|v| v.as_u64()).unwrap_or(0);
+            format!(
+                "{} smoothed {} recorded move(s) and accepted {}; {left} issue(s) left  ({})",
+                text("song"),
+                count("smoothed"),
+                count("accepted"),
+                text("by")
+            )
         }
         _ => {
             let mut parts = Vec::new();

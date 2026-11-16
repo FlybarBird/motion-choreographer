@@ -59,6 +59,10 @@ pub enum Cmd {
         clip: String,
         scale: f64,
     },
+    /// Smooth the loaded song's recorded moves to the rigs' limits: one camera's, or every camera's.
+    Smooth {
+        camera: Option<String>,
+    },
     FetchPeaks {
         media: String,
         /// Samples per pixel at the current zoom.
@@ -127,6 +131,8 @@ pub enum Event {
     /// The server took a preset sync. On hardware it has only begun: the list arrives when it ends.
     SyncAccepted(Vec<Preset>),
     Committed(RevisionInfo),
+    /// The server smoothed the song's recorded moves: what it did.
+    Smoothed(SmoothReport),
     Uploaded(MediaInfo),
     /// The stage model of a revision, read from the server or just uploaded to it.
     StageModel {
@@ -580,6 +586,14 @@ impl Worker {
                     Err(e) => self.refused("Refit", e),
                 }
             }
+            Cmd::Smooth { camera } => match self.api.post::<_, Smoothed>("/record/smooth", &Smooth { camera }) {
+                Ok(done) => {
+                    self.counters.insert(done.working.song.id.clone(), done.working.edit_counter);
+                    self.emit(Event::Working(Box::new(done.working), Why::Reload));
+                    self.emit(Event::Smoothed(done.report));
+                }
+                Err(e) => self.refused("Smooth recorded moves", e),
+            },
             Cmd::FetchPeaks { media, spp } => {
                 if let Ok(level) = self.api.peaks(&media, spp) {
                     self.emit(Event::Peaks { media, level });

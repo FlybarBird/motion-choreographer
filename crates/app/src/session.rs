@@ -61,6 +61,8 @@ pub struct Session {
     pub fit_requested: bool,
     scrub: Option<(i64, Instant)>,
     pub toasts: Vec<Toast>,
+    /// What the last smoothing of this song's recorded moves did, in words, and whether issues are left.
+    pub smoothed: Option<(String, bool)>,
     pub log: Vec<LogRecord>,
     /// Waveform overview per media id, at the level last asked for.
     pub peaks: HashMap<String, PeakLevel>,
@@ -155,6 +157,7 @@ impl Session {
             fit_requested: true,
             scrub: None,
             toasts: Vec::new(),
+            smoothed: None,
             log: hello.log,
             peaks: HashMap::new(),
             peaks_requested: Default::default(),
@@ -212,6 +215,7 @@ impl Session {
         self.song = Some(w.song);
         self.undo.clear();
         self.redo.clear();
+        self.smoothed = None;
         let view = self.timeline.view;
         self.timeline = Timeline::default();
         self.timeline.view = view;
@@ -421,6 +425,11 @@ impl Session {
                 self.preset_pictures.insert(id, PresetPicture::Decoded(image));
             }
             Event::Committed(info) => self.toast(format!("Committed revision {}", info.number), false),
+            Event::Smoothed(report) => {
+                let (text, left) = (report.text(self.project.units), !report.left.is_empty());
+                self.toast(text.clone(), left);
+                self.smoothed = Some((text, left));
+            }
             Event::Uploaded(info) => {
                 self.toast(format!("Imported {}", info.name), false);
                 self.link.send(Cmd::RefreshMedia);
@@ -538,6 +547,8 @@ impl Session {
         self.put_seq += 1;
         self.link.send(Cmd::PutWorking { seq: self.put_seq, song: song.clone() });
         self.song = Some(song);
+        // The song has changed since it was smoothed: what was said about it then is no longer so.
+        self.smoothed = None;
     }
 
     /// Like `edit`, but repeated edits with the same key inside a second share one undo step.

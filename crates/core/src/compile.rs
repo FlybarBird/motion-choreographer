@@ -396,7 +396,7 @@ pub fn speed_profile(poses: &[Pose], axis: Axis, rate: FrameRate) -> Vec<f64> {
 mod tests {
     use super::*;
     use crate::pose::{Cmp, KeepOutRule};
-    use crate::song::{LinkedTag, PresetRef};
+    use crate::song::{Interp, Key, LinkedTag, PresetRef};
 
     use crate::camera::{CameraConfig, FIRST_CAMERA};
 
@@ -573,6 +573,34 @@ mod tests {
         });
         let c = compile(&song, &p);
         assert!(c.issues.iter().any(|i| matches!(i, Issue::KeepOut { .. })));
+    }
+
+    #[test]
+    fn a_recorded_pass_that_starts_away_from_home_is_not_a_step_and_keys_made_by_hand_still_are() {
+        let p = project();
+        let take = |pass: Option<&str>| {
+            let keys = vec![Key::new(0, -25.0, Interp::Bezier), Key::new(200, -25.0, Interp::Bezier)];
+            let mut song = Song::new("s", "S", "01:00:00:00", 500);
+            song.motion.push(MotionClip {
+                id: "take".into(),
+                camera: FIRST_CAMERA.into(),
+                start_frame: 34,
+                duration_frames: 200,
+                axes: vec![Axis::Pan],
+                body: ClipBody::Keys { curves: [(Axis::Pan, keys)].into() },
+                accepted: None,
+                recorded_pass: pass.map(str::to_string),
+            });
+            song
+        };
+        // Recorded: the camera is where the take starts from the first frame, so Arm takes it there.
+        let recorded = compile(&take(Some("pass-0001")), &p);
+        assert!(recorded.issues.is_empty(), "{:?}", recorded.issues);
+        assert!(recorded.poses(FIRST_CAMERA).iter().all(|pose| (pose.pan + 25.0).abs() < 1e-9));
+        // Made by hand: the same keys are a step from home, and that cannot be accepted.
+        let by_hand = compile(&take(None), &p);
+        assert!(matches!(&by_hand.issues[..], [Issue::Jump { frame: 34, distance, .. }] if *distance == 25.0));
+        assert!(!by_hand.issues[0].acceptable());
     }
 
     #[test]
