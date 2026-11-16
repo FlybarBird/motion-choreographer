@@ -47,7 +47,7 @@ async function answer(request, env, url) {
     return problem(405, "Only GET is answered");
   }
   if (url.pathname === "/") {
-    return new Response("PTZ Programmer update service\n", { headers: { "content-type": "text/plain; charset=utf-8" } });
+    return new Response("Motion Choreographer update service\n", { headers: { "content-type": "text/plain; charset=utf-8" } });
   }
   if (!env.GITHUB_TOKEN || !env.UPDATE_KEY) {
     return problem(503, "The update service is not set up yet: its secrets are missing");

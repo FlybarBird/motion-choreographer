@@ -238,8 +238,10 @@ PLIST
   cat >"$STAGE/app-scripts/postinstall" <<SCRIPT
 #!/bin/sh
 old="/Applications/$OLD_APP_NAME.app"
-if [ -d "\$old" ] && [ "\$(defaults read "\$old/Contents/Info" CFBundleIdentifier 2>/dev/null)" = "$APP_ID" ]; then
+if [ -d "\$old" ] && [ ! -L "\$old" ] && [ "\$(defaults read "\$old/Contents/Info" CFBundleIdentifier 2>/dev/null)" = "$APP_ID" ]; then
   rm -rf "\$old"
+  # A copy that updated itself under the old name reopens itself from there: the name leads to the new app.
+  ln -s "/Applications/$APP_NAME.app" "\$old"
 fi
 exit 0
 SCRIPT

@@ -201,6 +201,7 @@ check grep -q '<string>Motion Choreographer.app</string>' "$CALLS/pkgbuild-app.c
 check test -x "$CALLS/pkgbuild-app.scripts/postinstall"
 check grep -qF '/Applications/PTZ Programmer.app' "$CALLS/pkgbuild-app.scripts/postinstall"
 check grep -qF '= "com.ptzprogrammer.app"' "$CALLS/pkgbuild-app.scripts/postinstall"
+check grep -qF 'ln -s "/Applications/Motion Choreographer.app"' "$CALLS/pkgbuild-app.scripts/postinstall"
 check sh -n "$CALLS/pkgbuild-app.scripts/postinstall"
 grep -A1 'BundleIsRelocatable' "$CALLS/pkgbuild-app.component.plist" >"$WORK/relocatable.txt"
 check grep -q '<false/>' "$WORK/relocatable.txt"
