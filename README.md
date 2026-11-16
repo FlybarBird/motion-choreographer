@@ -347,7 +347,16 @@ Each output channel is routed in Show settings, under **Audio output**, to one o
 - **LTC timecode**: the song's timecode, generated while it plays.
 - **Silent**.
 
-The default is Program on the left and Silent on the right. The transport bar
+The default is Program on the left and Silent on the right. Two things change
+what is heard:
+
+- While the song plays a file whose LTC channel is read (see below), Program
+  goes to both outputs: the one set to Silent carries it too. An output set to
+  LTC timecode keeps its timecode.
+- While the playhead is locked to LTC, MTC or Art-Net from outside, the song's
+  files are not played: the sound comes from where the timecode does.
+
+The transport bar
 shows a meter for each channel and the output device. If no device can be
 opened the server runs silent on the system clock and the bar says why.
 
@@ -441,7 +450,8 @@ listen on. They are devices on the server machine.
 On import the server looks for the file's start timecode: the `bext` chunk of a
 broadcast WAV, or the timecode track of a QuickTime or MP4 file. If there is
 none, the Inspector takes a typed start, or **Read LTC from channel** decodes it
-from one channel of the file itself. The media card shows `starts 01:00:10:00`
+from one channel of the file itself. That channel is then only read, never
+played, and the rest of the file plays on both outputs. The media card shows `starts 01:00:10:00`
 once a file has one.
 
 A stamped file dropped on the timeline lands on its own timecode wherever the

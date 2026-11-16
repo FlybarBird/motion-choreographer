@@ -456,7 +456,9 @@ The file's sound comes in with it. Video needs `ffmpeg` on the server machine.
 On import the server looks for a start timecode in the file: a broadcast WAV's
 `bext` chunk, or a QuickTime or MP4 timecode track. If there is none, select
 the clip and type a start in the Inspector, or use **Read LTC** to decode it
-from one channel of the file. The media card then shows `starts 01:00:10:00`.
+from one channel of the file. That channel is then only read, never played,
+and the rest of the file plays on both the left and the right output. The
+media card then shows `starts 01:00:10:00`.
 
 A stamped file dropped on the timeline lands on its own timecode wherever the
 pointer is; the ghost says so. Hold **Alt** to place it by hand. If its code is

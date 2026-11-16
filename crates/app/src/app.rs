@@ -912,6 +912,26 @@ impl Shell {
             }
             let song_from = ui.cursor().left();
 
+            // The timecode arriving from outside, as it arrives, while the playhead is locked to it.
+            if let Some(source) = s.status.lock.source.clone().filter(|id| matches!(id.as_str(), "ltc" | "mtc" | "artnet")) {
+                use ptz_core::chase::ChaseState;
+                let lock = &s.status.lock;
+                let (ink, state) = match lock.chase {
+                    ChaseState::Locked => (PAPER, "arriving"),
+                    ChaseState::Freewheel => (AMBER, "dropped out: carrying on without it"),
+                    _ => (MUTED, "not arriving"),
+                };
+                ui.label(caps("TC in").color(MUTED));
+                let font = mono(TITLE);
+                let code = lock.last_code.clone().unwrap_or_else(|| "--:--:--:--".into());
+                let room = ui.painter().layout_no_wrap("00:00:00:00".into(), font.clone(), ink).size();
+                let (rect, r) = ui.allocate_exact_size(room, egui::Sense::hover());
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, format!("Timecode in {code}")));
+                figures(ui.painter(), rect.left_center(), egui::Align2::LEFT_CENTER, &code, font, ink);
+                r.on_hover_text(format!("{}: {state}", crate::lock_ui::source_name(s, &source)));
+                ui.separator();
+            }
+
             match &s.song {
                 Some(song) => {
                     let (name, start) = (song.name.clone(), song.start_tc.clone());

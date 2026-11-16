@@ -534,6 +534,15 @@ fn inspect_media(ui: &mut Ui, s: &mut Session, id: &str) {
     if ui.checkbox(&mut muted, "Mute in Program").changed() {
         s.edit(|song, project| edit::set_media_muted(song, project, id, muted));
     }
+    if matches!(s.status.lock.source.as_deref(), Some("ltc" | "mtc" | "artnet")) {
+        ui.label(
+            RichText::new(
+                "Not played while the playhead follows timecode from outside: the sound comes from where the timecode does.",
+            )
+            .color(MUTED)
+            .small(),
+        );
+    }
     if let Some(info) = s.media.iter().find(|m| m.id == clip.media_id).cloned() {
         file_timecode(ui, s, &song, &clip, &info);
         lock_to_file(ui, s, &clip, &info);
@@ -594,11 +603,14 @@ fn file_timecode(
                     }
                 });
                 if info.ltc_channel.is_some() {
-                    ui.label(RichText::new("kept out of Program").color(MUTED).small());
+                    ui.label(RichText::new("sync only, never played").color(MUTED).small());
                 }
             });
             ui.end_row();
         });
+        if info.ltc_channel.is_some() {
+            ui.label(RichText::new("The file's sound plays on both the left and the right output.").color(MUTED).small());
+        }
     });
 
     // The clip against its stamp.

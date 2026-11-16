@@ -55,6 +55,8 @@ pub struct AudioStatus {
     pub output: Option<String>,
     pub silent_reason: Option<String>,
     pub device_rate: u32,
+    /// The routing in use: the project's, with Program on both outputs while the song plays a
+    /// file whose timecode channel is read.
     pub routing: Routing,
     /// Device callbacks so far. Rising proves the device is pulling audio.
     pub callbacks: u64,

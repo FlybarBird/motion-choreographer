@@ -235,6 +235,46 @@ fn art_net_code_is_chased_through_dropouts_a_jump_a_stop_and_the_end_of_the_song
 }
 
 #[test]
+fn the_songs_files_are_silent_while_the_playhead_follows_code_from_outside() {
+    use ptz_core::edit;
+    use ptz_core::song::Track;
+    use ptz_server::media::wav;
+    let (t, api, song) = server_with_song("lock-mute");
+    let addr = art_net_port(&api);
+    let project = api.project().unwrap();
+    let tone: Vec<f32> = (0..48_000 * 20).map(|i| (i as f32 * 0.05).sin() * 0.8).collect();
+    let info = import(&api, &t, "Tone.wav", &wav::bytes(48_000, 1, &tone, None)).unwrap();
+    let now = api.working(&song).unwrap();
+    let (placed, _clip) =
+        edit::add_media_clip(&now.song, &project, &info.id, &info.name, Track::Audio, info.duration_frames, 0).unwrap();
+    api.put_working(&PutWorking { expected_counter: now.edit_counter, song: placed }).unwrap();
+
+    // On the server's own clock the file is heard.
+    do_act(&api, Action::Play);
+    wait_for(&api, |s| s.audio.peak_left > 0.5);
+    do_act(&api, Action::Stop);
+    wait_for(&api, |s| s.audio.peak_left < 0.01);
+
+    // Following Art-Net it plays in step and makes no sound.
+    lock_to(&api, "artnet").unwrap();
+    do_act(&api, Action::Play);
+    let desk = ArtNetDesk::start(addr, CodeRate::F25);
+    desk.roll_from("01:00:01:00");
+    wait_for(&api, |s| s.transport.run == Run::Playing && s.frame_f > 40.0);
+    for _ in 0..15 {
+        let st = api.status().unwrap();
+        assert_eq!(st.transport.run, Run::Playing);
+        assert!(st.audio.peak_left < 0.01 && st.audio.peak_right < 0.01, "the file is heard under the lock: {:?}", st.audio);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    // Unlocked, the server is the one playing again.
+    do_act(&api, Action::Unlock);
+    wait_for(&api, |s| s.audio.peak_left > 0.5);
+    drop(desk);
+}
+
+#[test]
 fn unlock_while_playing_carries_on_in_free_run() {
     let (_t, api, _song) = server_with_song("lock-unlock");
     let addr = art_net_port(&api);

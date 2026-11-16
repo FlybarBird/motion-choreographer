@@ -466,7 +466,10 @@ Under **Audio output**, route each channel:
 | LTC timecode | The song's timecode, generated while it plays. **LTC level** sets how loud. |
 | Silent | Nothing |
 
-The default is Program on the left and Silent on the right. The transport bar
+The default is Program on the left and Silent on the right. While a song plays
+a file whose LTC channel is read, Program goes to both outputs, and while the
+playhead is locked to timecode from outside, the song's files are not played at
+all: the sound comes from where the timecode does. The transport bar
 shows a meter for each channel and names the device. If no device can be
 opened the server runs silent on the system clock, and the bar says why.
 

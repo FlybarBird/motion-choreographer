@@ -120,6 +120,78 @@ fn a_stamp_can_be_typed_or_read_from_an_ltc_channel() {
     );
 }
 
+#[test]
+fn a_timecode_channel_is_never_played_and_the_sound_goes_to_both_outputs() {
+    use ptz_core::pose::{ChannelRoute, Routing};
+    let t = TestServer::start("stamp-mirror");
+    let api = t.client("a");
+    api.take_lease("Luke-MacBook", false).unwrap();
+    let project = api.project().unwrap();
+    let rate = project.rate;
+
+    // Left: one second of tone, then nothing. Right: LTC all the way through.
+    let sr = 48_000u32;
+    let code = Timecode::parse_at("01:00:10:00", rate).unwrap().to_frames(rate);
+    let ltc = ptz_core::ltc::encode(code, 100, rate, sr, 0.5, 1.0);
+    let samples: Vec<f32> = ltc
+        .iter()
+        .enumerate()
+        .flat_map(|(i, c)| {
+            let tone =
+                if i < sr as usize { (i as f32 * 2.0 * std::f32::consts::PI * 440.0 / sr as f32).sin() * 0.8 } else { 0.0 };
+            [tone, *c]
+        })
+        .collect();
+    let info = import(&api, &t, "Band and code.wav", &wav::bytes(sr, 2, &samples, None)).unwrap();
+    let song = api.new_song("Mirror", Some("01:00:00:00")).unwrap();
+    api.load_song(&song.song.id).unwrap();
+    let (placed, clip) =
+        edit::add_media_clip(&song.song, &project, &info.id, &info.name, Track::Audio, info.duration_frames, 0).unwrap();
+    put(&api, placed);
+    let play_from = |frame: i64| {
+        // Refused when it is stopped already, which is as good.
+        let _ = api.act(Action::Stop, &TransportRequest::default());
+        wait_for(&api, |s| s.audio.peak_left < 0.01 && s.audio.peak_right < 0.01);
+        api.act(Action::Seek, &TransportRequest { frame: Some(frame), ..Default::default() }).unwrap();
+        do_act(&api, Action::Play);
+    };
+
+    // As imported, the timecode is in the mix, and the mix is on the left alone.
+    play_from(40);
+    let st = wait_for(&api, |s| s.audio.peak_left > 0.2 || s.frame > 70);
+    assert!(st.audio.peak_left > 0.2 && st.audio.peak_right == 0.0, "{:?}", st.audio);
+
+    // Read the code from channel 2: Program goes to both outputs.
+    stamp(&api, &info.id, "ltc:2").unwrap();
+    let both = Routing { left: ChannelRoute::Program, right: ChannelRoute::Program };
+    assert_eq!(api.status().unwrap().audio.routing, both);
+    assert_eq!(api.project().unwrap().routing, Routing::default(), "the project's own routing is not rewritten");
+    play_from(0);
+    let st = wait_for(&api, |s| (s.audio.peak_left > 0.7 && s.audio.peak_right > 0.7) || s.frame > 24);
+    assert!(st.audio.peak_left > 0.7 && st.audio.peak_right > 0.7, "the tone, whole, on both sides: {:?}", st.audio);
+    // Past the tone only the timecode is left in the file, and none of it is played.
+    play_from(40);
+    for _ in 0..20 {
+        let st = api.status().unwrap();
+        assert_eq!(st.transport.run, Run::Playing);
+        assert!(st.audio.peak_left < 0.01 && st.audio.peak_right < 0.01, "timecode reached an output: {:?}", st.audio);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(api.status().unwrap().frame > 45, "it was playing all the while");
+    do_act(&api, Action::Stop);
+
+    // An output that carries generated timecode keeps it; and a muted file changes nothing.
+    let mut generating = project.clone();
+    generating.routing = Routing { left: ChannelRoute::Program, right: ChannelRoute::Ltc };
+    api.put_project(&generating).unwrap();
+    assert_eq!(api.status().unwrap().audio.routing, generating.routing);
+    api.put_project(&project).unwrap();
+    assert_eq!(api.status().unwrap().audio.routing, both);
+    let muted = edit::set_media_muted(&working(&api, &song.song.id), &project, &clip, true).unwrap();
+    put(&api, muted);
+    assert_eq!(api.status().unwrap().audio.routing, Routing::default());
+}
+
 fn working(api: &Api, id: &str) -> Song {
     api.working(id).unwrap().song
 }

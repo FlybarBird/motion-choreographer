@@ -15,7 +15,7 @@ use ptz_core::chase::{Chase, ChaseState};
 use ptz_core::codes::CodeRate;
 use ptz_core::compile::{compile, Compiled};
 use ptz_core::edit;
-use ptz_core::pose::{Axis, Pose, Preset, Project};
+use ptz_core::pose::{Axis, Pose, Preset, Project, Routing};
 use ptz_core::song::{ClipBody, Song};
 use ptz_core::time::{frame_to_sample, FrameRate, Timecode};
 use ptz_core::transport::{self, Action, Context, Event, Output, Run, TimeMode, TransportState};
@@ -157,6 +157,9 @@ pub enum Stamp {
     },
 }
 
+/// A file's sound read for playing: the file, the channel that was left out as timecode, and the mono sound.
+type LoadedAudio = (String, Option<u32>, Result<Vec<f32>, String>);
+
 struct Lease {
     client: String,
     name: String,
@@ -178,8 +181,8 @@ pub struct Show {
     audio_cache: HashMap<String, Arc<Vec<f32>>>,
     audio_loading: HashSet<String>,
     audio_failed: HashSet<String>,
-    loaded_tx: mpsc::Sender<(String, Result<Vec<f32>, String>)>,
-    loaded_rx: mpsc::Receiver<(String, Result<Vec<f32>, String>)>,
+    loaded_tx: mpsc::Sender<LoadedAudio>,
+    loaded_rx: mpsc::Receiver<LoadedAudio>,
     audio_drift: f64,
     clock: SteadyClock,
     frame_f: f64,
@@ -1388,23 +1391,34 @@ impl Show {
             return;
         }
         let Some(dir) = self.storage.media_dir(id) else { return };
-        let exclude = self.media.iter().find(|m| m.id == id).and_then(|m| m.ltc_channel);
+        let exclude = self.timecode_channel(id);
         let (tx, id, device_rate) = (self.loaded_tx.clone(), id.to_string(), self.audio.rate());
         self.audio_loading.insert(id.clone());
         let spawned = std::thread::Builder::new().name("audio-load".into()).spawn(move || {
             let result = media::read_audio(&dir.join("audio.f32"))
                 .and_then(|d| crate::audio::resample(&d.mono(exclude), d.rate, device_rate));
-            let _ = tx.send((id, result));
+            let _ = tx.send((id, exclude, result));
         });
         if spawned.is_err() {
             self.audio_loading.clear();
         }
     }
 
+    /// The channel of a file that is read for its timecode, and so is never played.
+    fn timecode_channel(&self, id: &str) -> Option<u32> {
+        self.media.iter().find(|m| m.id == id).and_then(|m| m.ltc_channel)
+    }
+
     fn collect_loaded_audio(&mut self) {
         let mut changed = false;
-        while let Ok((id, result)) = self.loaded_rx.try_recv() {
+        while let Ok((id, excluded, result)) = self.loaded_rx.try_recv() {
             self.audio_loading.remove(&id);
+            changed = true;
+            // The timecode channel was chosen while the file was being read: what was read still has
+            // the timecode in it, and is read again without.
+            if excluded != self.timecode_channel(&id) {
+                continue;
+            }
             match result {
                 Ok(mono) => {
                     self.audio_cache.insert(id, Arc::new(mono));
@@ -1414,7 +1428,6 @@ impl Show {
                     self.log("media_error", json!({ "media": id, "error": e }));
                 }
             }
-            changed = true;
         }
         if changed {
             self.rebuild_mix();
@@ -1435,8 +1448,11 @@ impl Show {
         let mut clips = Vec::new();
         let mut missing = Vec::new();
         let mut ltc = None;
+        // Following timecode from outside, the sound is played where the timecode comes from: the
+        // files here stay silent, or the room would hear the song twice.
+        let outside = self.external.is_some();
         if let Some(e) = self.entry() {
-            for c in e.song.media.iter().filter(|c| !c.muted) {
+            for c in e.song.media.iter().filter(|c| !c.muted && !outside) {
                 let Some(data) = self.audio_cache.get(&c.media_id) else {
                     missing.push(c.media_id.clone());
                     continue;
@@ -1455,9 +1471,22 @@ impl Show {
             let start_code = Timecode::parse_at(&e.song.start_tc, rate).map(|tc| tc.to_frames(rate)).unwrap_or(0);
             ltc = Some(LtcOut { rate, start_code, level: self.project.ltc_level });
         }
-        self.audio.set_mix(Mix { clips, routing: self.project.routing, ltc });
+        self.audio.set_mix(Mix { clips, routing: self.routing(), ltc });
         for id in missing {
             self.load_audio(&id);
+        }
+    }
+
+    /// Where Program and the generated timecode go. A file that gives up a channel to timecode is
+    /// most often a stereo file with the sound on one side only: while the song plays such a file,
+    /// Program goes to both outputs and not to one alone.
+    fn routing(&self) -> Routing {
+        let plays_one =
+            self.entry().is_some_and(|e| e.song.media.iter().any(|c| !c.muted && self.timecode_channel(&c.media_id).is_some()));
+        if plays_one {
+            self.project.routing.mirrored()
+        } else {
+            self.project.routing
         }
     }
 
@@ -1468,7 +1497,7 @@ impl Show {
             output: info.name,
             silent_reason: info.silent_reason,
             device_rate: self.audio.rate(),
-            routing: self.project.routing,
+            routing: self.routing(),
             callbacks: self.audio.callbacks(),
             position_frame: if self.audio.is_playing() { self.audio.position(self.rate()) } else { self.frame_f },
             drift_frames: self.audio_drift,
@@ -1590,10 +1619,12 @@ impl Show {
                     return Err(Fail::bad("Lock needs a source: ltc, mtc, artnet or file:<clip id>"));
                 }
                 self.lock_source = Some(source);
+                self.rebuild_mix();
             }
             Action::Unlock => {
                 self.lock_source = None;
                 self.external = None;
+                self.rebuild_mix();
                 // Playing carries on in free-run from where it is.
                 if self.transport.run == Run::Playing && !self.audio.is_playing() {
                     self.audio.play(self.frame_f, rate);
@@ -2018,6 +2049,7 @@ impl Show {
     fn release_lock(&mut self, why: String) {
         let source = self.lock_source.take();
         self.external = None;
+        self.rebuild_mix();
         let mut after = transport::apply(&self.transport, Action::Unlock, false);
         if after.run != Run::Stopped {
             after = transport::apply(&after, Action::Stop, false);

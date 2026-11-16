@@ -277,6 +277,18 @@ impl Default for Routing {
     }
 }
 
+impl Routing {
+    /// Program on both outputs, where it was on one and the other was silent. An output that
+    /// carries generated timecode keeps it, and two silent outputs stay silent.
+    pub fn mirrored(self) -> Routing {
+        use ChannelRoute::{Program, Silent};
+        match (self.left, self.right) {
+            (Program, Silent) | (Silent, Program) => Routing { left: Program, right: Program },
+            _ => self,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum Cmp {
@@ -804,6 +816,24 @@ mod tests {
         assert_eq!(bad.validate().unwrap_err(), "The preset range for tilt must be zero or more");
         bad.preset_match.range.tilt = f64::NAN;
         assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn mirroring_fills_a_silent_output_and_nothing_else() {
+        use ChannelRoute::{Ltc, Program, Silent};
+        let both = Routing { left: Program, right: Program };
+        assert_eq!(Routing { left: Program, right: Silent }.mirrored(), both);
+        assert_eq!(Routing { left: Silent, right: Program }.mirrored(), both);
+        // Generated timecode keeps its output, and an output that was turned off on both sides stays off.
+        for kept in [
+            Routing { left: Program, right: Ltc },
+            Routing { left: Ltc, right: Program },
+            Routing { left: Silent, right: Silent },
+            Routing { left: Silent, right: Ltc },
+            both,
+        ] {
+            assert_eq!(kept.mirrored(), kept);
+        }
     }
 
     /// `project.json` as stage 5 wrote it: one rig at the top level.

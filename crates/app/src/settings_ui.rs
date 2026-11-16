@@ -658,6 +658,8 @@ fn audio_output(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::Proj
         (None, None) => "No output".to_string(),
     };
     ui.label(RichText::new(device).color(MUTED).small());
+    // What is set here is not all of it while a file gives up a channel to timecode.
+    let mirrored = s.status.audio.routing != s.project.routing;
     ui.add_enabled_ui(editable, |ui| {
         egui::Grid::new("routing_grid").num_columns(2).spacing([4.0 * U, GAP]).show(ui, |ui| {
             route_combo(ui, "Left", &mut project.routing.left);
@@ -674,6 +676,16 @@ fn audio_output(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::Proj
             .color(MUTED)
             .small(),
     );
+    if mirrored {
+        ui.label(
+            RichText::new(
+                "This song has a file whose LTC channel is read, so Program plays on both outputs while it is open: \
+                 the output set to Silent carries it too.",
+            )
+            .color(MUTED)
+            .small(),
+        );
+    }
 }
 
 /// What the server says about the control panel, and whether that is good news.
