@@ -300,25 +300,34 @@ fn an_absolute_move_is_one_command_and_the_head_runs_its_own_ramp() {
     wait_until("the camera answers", || rig.problem().is_none());
     fr7.settle_after_connect();
 
-    let ride = Ride { pan: 30.0, tilt: -10.0, seconds: 2.0 };
+    // The step for each axis is the slowest that covers its distance in the time left when the
+    // adapter first acts on the move, which is up to one of its turns after the move began. These
+    // distances call for the same steps with 0.3 s of the two already gone, so which step is sent
+    // does not hang on when that turn falls.
+    let (pan_to, tilt_to) = (25.5, -8.25);
+    let table = visca::speed_table();
+    let steps = |seconds: f64| (visca::step_at_least(&table, pan_to / seconds), visca::step_at_least(&table, -tilt_to / seconds));
+    let (pan_step, tilt_step) = steps(2.0);
+    assert_eq!(steps(1.7), (pan_step, tilt_step), "the move sits too near a speed step to make a steady test");
+
+    let ride = Ride { pan: pan_to, tilt: tilt_to, seconds: 2.0 };
     let began = Instant::now();
     while began.elapsed() < Duration::from_millis(2600) {
-        let target = Pose { pan: 30.0 * (began.elapsed().as_secs_f64() / 2.0).min(1.0), ..Pose::home() };
+        let target = Pose { pan: pan_to * (began.elapsed().as_secs_f64() / 2.0).min(1.0), ..Pose::home() };
         // The time left shrinks every tick; it is still the same move.
         let left = (2.0 - began.elapsed().as_secs_f64()).max(0.0);
         rig.drive(&Drive { target, velocity: Pose::default(), scale: 1.0, ride: Some(Ride { seconds: left, ..ride }) });
         std::thread::sleep(Duration::from_millis(16));
     }
     let absolute: Vec<Vec<u8>> = fr7.commands().into_iter().filter(|c| c[..4] == [0x81, 0x01, 0x06, 0x02]).collect();
-    let table = visca::speed_table();
-    let (pan_step, tilt_step) = (visca::step_at_least(&table, 15.0), visca::step_at_least(&table, 5.0));
+    // 25.5 degrees is 6018 counts, 0x01782; 8.25 degrees down is -1947, 0xFF865 in twenty bits.
     assert_eq!(
         absolute,
-        vec![vec![0x81, 0x01, 0x06, 0x02, pan_step, tilt_step, 0x00, 0x01, 0x0B, 0x0A, 0x08, 0x0F, 0x0F, 0x06, 0x0C, 0x08, 0xFF]]
+        vec![vec![0x81, 0x01, 0x06, 0x02, pan_step, tilt_step, 0x00, 0x01, 0x07, 0x08, 0x02, 0x0F, 0x0F, 0x08, 0x06, 0x05, 0xFF]]
     );
     assert!(!fr7.commands().iter().any(|c| c[..4] == [0x81, 0x01, 0x06, 0x01]), "no velocity commands during the move");
     let (pan, tilt, _, _) = fr7.pose();
-    assert!((pan - 30.0).abs() < 0.01 && (tilt + 10.0).abs() < 0.01, "ended at {pan}, {tilt}");
+    assert!((pan - pan_to).abs() < 0.01 && (tilt - tilt_to).abs() < 0.01, "ended at {pan}, {tilt}");
 }
 
 #[test]
