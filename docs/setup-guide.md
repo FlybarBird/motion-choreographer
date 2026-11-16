@@ -417,6 +417,12 @@ stage to it. In the flat views **Cut** hides a ceiling or a near wall.
 Right-drag or Shift-drag slides the view; the scroll wheel zooms. Escape
 cancels a drag and **Undo move** puts the last camera back.
 
+The pad at the top right of the picture does the same with plain clicks, for a
+mouse with no wheel: **+** and **-** zoom, the arrows turn the view or slide
+it, and the middle button shows everything. The two buttons at its top corners
+choose whether the arrows, and a plain drag on the picture, turn the view or
+slide it. Hold a button to keep going.
+
 A practical order for each camera:
 
 1. Switch to **Top**, choose **Place**, and click where the pedestal stands.

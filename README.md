@@ -244,6 +244,12 @@ stage to it; **Fit** does so again. In the flat views **Cut** hides a ceiling or
 a near wall. Right-drag or Shift-drag slides the view and the scroll wheel
 zooms. Escape cancels a drag, and **Undo move** puts the last camera moved back.
 
+The pad at the top right of the picture does all of that with plain clicks, for
+a mouse with no wheel: **+** and **-** zoom, the arrows turn the view or slide
+it, and the middle button shows everything. The two buttons at its top corners
+choose whether the arrows, and a plain drag on the picture, turn the view or
+slide it. Hold a button to keep going.
+
 The same numbers are in Show settings under **Position on the stage**: floor
 position, heading, and the height of the lens above the floor with the column
 down. **Face the stage** turns the camera to the middle of the model and **Drop

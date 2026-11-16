@@ -1888,6 +1888,60 @@ fn the_set_list_tab_arranges_the_show_and_loads_a_song_at_a_click() {
     assert_eq!(loads, ["opener", "closer"]);
 }
 
+#[test]
+fn the_stage_view_is_turned_slid_and_zoomed_from_its_pad_with_no_wheel() {
+    use crate::stage_ui::{Angle, Nav};
+    let (project, presets) = three_cameras();
+    let mut r = rig_with(project, presets, Song::new("s", "Test Song", "01:00:00:00", 1500));
+    r.harness.state_mut().show_tab(Tab::Stage);
+    r.harness.run_steps(4);
+    let view = |r: &Rig| {
+        let v = &r.harness.state().session.stage_view;
+        (v.yaw, v.pitch, v.distance, v.target)
+    };
+    let (yaw, pitch, distance, target) = view(&r);
+
+    // Zoom: one press comes a fifth nearer, and the other button goes back.
+    r.press("Zoom in");
+    assert!((view(&r).2 / distance - 0.8).abs() < 1e-3, "{} from {distance}", view(&r).2);
+    r.press("Zoom out");
+    assert!((view(&r).2 / distance - 1.0).abs() < 1e-3);
+
+    // The arrows turn the view to start with, and leave what it looks at alone.
+    assert_eq!(r.harness.state().session.stage_view.nav, Nav::Turn);
+    r.press("View right");
+    r.press("View up");
+    let turned = view(&r);
+    assert!(((turned.0 - yaw).rem_euclid(360.0) - 15.0).abs() < 1e-3, "{} from {yaw}", turned.0);
+    assert!((turned.1 - (pitch - 15.0).max(-89.0)).abs() < 1e-3, "{} from {pitch}", turned.1);
+    assert_eq!(turned.3, target);
+
+    // Set to slide, the arrows move it across the stage, and so does a plain drag on the picture.
+    r.press("Slide the view");
+    assert_eq!(r.harness.state().session.stage_view.nav, Nav::Slide);
+    r.press("View left");
+    let slid = view(&r);
+    assert_eq!((slid.0, slid.1, slid.2), (turned.0, turned.1, turned.2), "sliding does not turn or zoom");
+    assert_ne!(slid.3, target);
+    let rect = r.harness.state().session.stage_view.probe.unwrap().rect;
+    let from = rect.left_bottom() + vec2(rect.width() * 0.3, -rect.height() * 0.3);
+    r.drag(from, from + vec2(60.0, 0.0));
+    let dragged = view(&r);
+    assert_eq!((dragged.0, dragged.1), (slid.0, slid.1), "a drag slides while the pad is set to slide");
+    assert_ne!(dragged.3, slid.3);
+
+    // A press on the pad is not a press on the picture under it: no camera is selected or moved by it.
+    assert!(r.projects().is_empty());
+
+    // The middle button shows everything again, and the flat views still answer to the pad.
+    r.press("Top");
+    r.press("Show everything");
+    r.press("Turn the view");
+    assert_eq!(r.harness.state().session.stage_view.angle, Angle::Top);
+    r.press("View right");
+    assert_eq!(r.harness.state().session.stage_view.angle, Angle::Perspective);
+}
+
 mod picture;
 mod safety;
 mod settings;

@@ -36,7 +36,7 @@ impl Tool {
 
     pub fn hint(self) -> &'static str {
         match self {
-            Tool::Select => "Click a camera to select it. Drag to look around",
+            Tool::Select => "Click a camera to select it. Drag to move the view",
             Tool::Move => "Drag a camera across the floor",
             Tool::Rotate => "Drag around a camera to turn where its pan 0 points. Shift steps by 5°",
             Tool::Place => "Click where the selected camera should stand",
@@ -77,11 +77,31 @@ impl Angle {
     }
 }
 
+/// What dragging the picture, and the arrows of the view pad, do to the view.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Nav {
+    /// Turn the view about the point it looks at.
+    Turn,
+    /// Slide the view across the stage.
+    Slide,
+}
+
 /// The lens of the free viewpoint, and the long lens that stands in for a flat projection.
 const LENS_DEG: f32 = 50.0;
 const FLAT_LENS_DEG: f32 = 2.0;
 /// How near the pointer must be to a camera to take hold of it, in points.
 const REACH: f32 = 26.0;
+/// The nearest and the furthest the viewer comes to what it looks at, in metres.
+const NEAREST_M: f32 = 0.3;
+const FURTHEST_M: f32 = 4000.0;
+/// One press on the view pad turns the view this many degrees, slides it this share of its width,
+/// or brings it this much nearer.
+const PAD_TURN_DEG: f32 = 15.0;
+const PAD_SLIDE_SHARE: f32 = 0.15;
+const PAD_ZOOM: f32 = 0.8;
+/// A pad button held this long repeats, this many presses a second.
+const PAD_HOLD_S: f64 = 0.35;
+const PAD_REPEAT_PER_S: f32 = 4.0;
 
 enum Drag {
     Orbit,
@@ -119,6 +139,10 @@ fn size_of(rect: Rect) -> (usize, usize) {
 pub struct View {
     pub tool: Tool,
     pub angle: Angle,
+    /// What dragging the picture does, and the arrows of the view pad.
+    pub nav: Nav,
+    /// A pad button has been held long enough to repeat, so letting go of it is not one more press.
+    pad_held: bool,
     /// The point the view turns about.
     pub target: [f32; 3],
     /// Degrees. The direction the viewer looks: 0 toward +Y, positive to the left.
@@ -149,6 +173,8 @@ impl Default for View {
         View {
             tool: Tool::Select,
             angle: Angle::Perspective,
+            nav: Nav::Turn,
+            pad_held: false,
             target: [0.0, 6.0, 1.0],
             yaw: -28.0,
             pitch: -32.0,
@@ -220,6 +246,29 @@ impl View {
         }
         self.distance = far;
         self.cut = cut;
+    }
+
+    /// Turn the view about its target, in degrees: the viewpoint goes round to the right and up.
+    /// Turned, a flat view becomes the free one.
+    pub fn turn(&mut self, right: f32, up: f32) {
+        if let Some((yaw, pitch)) = self.angle.direction() {
+            (self.yaw, self.pitch, self.angle) = (yaw, pitch.max(-89.0), Angle::Perspective);
+        }
+        self.yaw = (self.yaw + right).rem_euclid(360.0);
+        self.pitch = (self.pitch - up).clamp(-89.0, 30.0);
+    }
+
+    /// Slide the viewpoint and what it looks at to the right and up the picture, in metres.
+    pub fn slide(&mut self, right: f32, up: f32) {
+        let camera = self.camera();
+        for k in 0..3 {
+            self.target[k] += camera.right[k] * right + camera.up[k] * up;
+        }
+    }
+
+    /// Stand `ratio` times as far from the target: below 1 comes nearer.
+    pub fn zoom(&mut self, ratio: f32) {
+        self.distance = (self.distance * ratio).clamp(NEAREST_M, FURTHEST_M);
     }
 
     pub fn is_dragging_a_camera(&self) -> bool {
@@ -430,8 +479,7 @@ fn interact(ui: &Ui, s: &mut Session, resp: &egui::Response, poses: &[Pose]) {
     });
 
     if resp.hovered() && (scroll != 0.0 || pinch != 1.0) {
-        let v = &mut s.stage_view;
-        v.distance = (v.distance * (-scroll * 0.0025).exp() / pinch).clamp(0.3, 4000.0);
+        s.stage_view.zoom((-scroll * 0.0025).exp() / pinch);
     }
 
     if escape {
@@ -472,6 +520,7 @@ fn interact(ui: &Ui, s: &mut Session, resp: &egui::Response, poses: &[Pose]) {
                     s.select_camera(&id);
                     Drag::Rotate { index, from, start }
                 }
+                _ if s.stage_view.nav == Nav::Slide => Drag::Pan,
                 _ => Drag::Orbit,
             }
         };
@@ -482,20 +531,11 @@ fn interact(ui: &Ui, s: &mut Session, resp: &egui::Response, poses: &[Pose]) {
         let delta = resp.drag_delta();
         let at = resp.interact_pointer_pos();
         match &s.stage_view.drag {
-            Some(Drag::Orbit) => {
-                let v = &mut s.stage_view;
-                if let Some((yaw, pitch)) = v.angle.direction() {
-                    (v.yaw, v.pitch, v.angle) = (yaw, pitch.max(-89.0), Angle::Perspective);
-                }
-                v.yaw = (v.yaw - delta.x * 0.35).rem_euclid(360.0);
-                v.pitch = (v.pitch - delta.y * 0.35).clamp(-89.0, 30.0);
-            }
+            // The picture is taken hold of: it goes with the pointer, so the viewpoint goes the other way.
+            Some(Drag::Orbit) => s.stage_view.turn(-delta.x * 0.35, delta.y * 0.35),
             Some(Drag::Pan) => {
                 let scale = s.stage_view.metres_per_point(rect);
-                let v = &mut s.stage_view;
-                for k in 0..3 {
-                    v.target[k] += (-probe.camera.right[k] * delta.x + probe.camera.up[k] * delta.y) * scale;
-                }
+                s.stage_view.slide(-delta.x * scale, delta.y * scale);
             }
             Some(Drag::Move { index, from, grab }) => {
                 let (index, from, grab) = (*index, *from, *grab);
@@ -581,6 +621,158 @@ fn interact(ui: &Ui, s: &mut Session, resp: &egui::Response, poses: &[Pose]) {
     }
 }
 
+/// One button of the view pad.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum PadKey {
+    Mode(Nav),
+    /// Move the viewpoint right and up by this many presses' worth.
+    Arrow(f32, f32),
+    /// Come nearer, or go further away.
+    Zoom(bool),
+    Fit,
+}
+
+impl PadKey {
+    /// The pad as it is laid out: three rows of three.
+    const ALL: [PadKey; 9] = [
+        PadKey::Mode(Nav::Turn),
+        PadKey::Arrow(0.0, 1.0),
+        PadKey::Mode(Nav::Slide),
+        PadKey::Arrow(-1.0, 0.0),
+        PadKey::Fit,
+        PadKey::Arrow(1.0, 0.0),
+        PadKey::Zoom(false),
+        PadKey::Arrow(0.0, -1.0),
+        PadKey::Zoom(true),
+    ];
+
+    fn glyph(self) -> &'static str {
+        match self {
+            PadKey::Mode(Nav::Turn) => icon::ARROWS_CLOCKWISE,
+            PadKey::Mode(Nav::Slide) => icon::ARROWS_OUT_CARDINAL,
+            PadKey::Arrow(x, y) => match (x < 0.0, x > 0.0, y > 0.0) {
+                (true, _, _) => icon::CARET_LEFT,
+                (_, true, _) => icon::CARET_RIGHT,
+                (_, _, true) => icon::CARET_UP,
+                _ => icon::CARET_DOWN,
+            },
+            PadKey::Zoom(true) => icon::PLUS,
+            PadKey::Zoom(false) => icon::MINUS,
+            PadKey::Fit => icon::CORNERS_OUT,
+        }
+    }
+
+    /// What a screen reader, and a test, finds the button by.
+    fn name(self) -> &'static str {
+        match self {
+            PadKey::Mode(Nav::Turn) => "Turn the view",
+            PadKey::Mode(Nav::Slide) => "Slide the view",
+            PadKey::Arrow(x, y) => match (x < 0.0, x > 0.0, y > 0.0) {
+                (true, _, _) => "View left",
+                (_, true, _) => "View right",
+                (_, _, true) => "View up",
+                _ => "View down",
+            },
+            PadKey::Zoom(true) => "Zoom in",
+            PadKey::Zoom(false) => "Zoom out",
+            PadKey::Fit => "Show everything",
+        }
+    }
+
+    fn tip(self, nav: Nav) -> String {
+        let way = |x: f32, y: f32, words: [&'static str; 4]| match (x < 0.0, x > 0.0, y > 0.0) {
+            (true, _, _) => words[0],
+            (_, true, _) => words[1],
+            (_, _, true) => words[2],
+            _ => words[3],
+        };
+        match (self, nav) {
+            (PadKey::Mode(Nav::Turn), _) => "Dragging the picture, and the arrows here, turn the view about the stage".into(),
+            (PadKey::Mode(Nav::Slide), _) => "Dragging the picture, and the arrows here, slide the view across the stage".into(),
+            (PadKey::Arrow(x, y), Nav::Turn) => {
+                format!("Look from further {}. Hold to keep turning", way(x, y, ["left", "right", "up", "down"]))
+            }
+            (PadKey::Arrow(x, y), Nav::Slide) => {
+                format!("Slide the view {}. Hold to keep going", way(x, y, ["left", "right", "up", "down"]))
+            }
+            (PadKey::Zoom(true), _) => "Come nearer. Hold to keep going".into(),
+            (PadKey::Zoom(false), _) => "Go further away. Hold to keep going".into(),
+            (PadKey::Fit, _) => "Show the whole stage and every camera".into(),
+        }
+    }
+}
+
+/// The view pad, at the top right of the picture: every way of moving the view as a button, for a
+/// mouse with no wheel and for a ball that is awkward to drag. Acts on what was pressed, and gives
+/// the buttons to be drawn once the picture is.
+fn view_pad(ui: &mut Ui, s: &mut Session, view: Rect) -> Vec<(PadKey, egui::Response)> {
+    const STEP: f32 = CONTROL_H + U / 2.0;
+    let side = 3.0 * STEP - U / 2.0;
+    if view.width() < side + 4.0 * GAP || view.height() < side + 4.0 * GAP {
+        return Vec::new();
+    }
+    let corner = view.right_top() + vec2(-GAP - side, GAP);
+    let (now, pressed_at, dt, any_down) =
+        ui.input(|i| (i.time, i.pointer.press_start_time(), i.stable_dt.min(0.1), i.pointer.any_down()));
+    let nav = s.stage_view.nav;
+    let mut buttons = Vec::with_capacity(PadKey::ALL.len());
+    for (n, key) in PadKey::ALL.into_iter().enumerate() {
+        let at = corner + vec2((n % 3) as f32 * STEP, (n / 3) as f32 * STEP);
+        let rect = Rect::from_min_size(at, vec2(CONTROL_H, CONTROL_H));
+        // The button takes a drag as well as a click, so one begun on it does not move the view under it.
+        let resp = ui.interact(rect, ui.id().with(("view_pad", n)), Sense::click_and_drag());
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, key.name()));
+        let resp = resp.on_hover_text(key.tip(nav));
+        // A ball that rolls a little under the finger makes a click a short drag: both are a press.
+        let let_go = resp.clicked() || resp.drag_stopped();
+        let presses = if resp.is_pointer_button_down_on() && pressed_at.is_some_and(|t| now - t >= PAD_HOLD_S) {
+            s.stage_view.pad_held = true;
+            ui.ctx().request_repaint();
+            PAD_REPEAT_PER_S * dt
+        } else if let_go && !s.stage_view.pad_held {
+            1.0
+        } else {
+            0.0
+        };
+        let v = &mut s.stage_view;
+        match key {
+            PadKey::Mode(to) if let_go => v.nav = to,
+            PadKey::Fit if let_go => v.fit_requested = true,
+            PadKey::Arrow(x, y) if presses > 0.0 => match v.nav {
+                Nav::Turn => v.turn(x * PAD_TURN_DEG * presses, y * PAD_TURN_DEG * presses),
+                Nav::Slide => {
+                    let metres = v.metres_per_point(view) * view.width() * PAD_SLIDE_SHARE * presses;
+                    v.slide(x * metres, y * metres);
+                }
+            },
+            PadKey::Zoom(nearer) if presses > 0.0 => v.zoom(if nearer { PAD_ZOOM } else { 1.0 / PAD_ZOOM }.powf(presses)),
+            _ => {}
+        }
+        buttons.push((key, resp));
+    }
+    if !any_down {
+        s.stage_view.pad_held = false;
+    }
+    buttons
+}
+
+fn paint_pad(painter: &egui::Painter, nav: Nav, buttons: &[(PadKey, egui::Response)]) {
+    let Some(around) = buttons.iter().map(|(_, r)| r.rect).reduce(|a, b| a.union(b)) else { return };
+    painter.rect_filled(around.expand(U / 2.0), RADIUS, plate_fill());
+    for (key, resp) in buttons {
+        let on = matches!(key, PadKey::Mode(mode) if *mode == nav);
+        let fill = match (on, resp.is_pointer_button_down_on(), resp.hovered()) {
+            (true, _, _) => ACCENT,
+            (_, true, _) => CONTROL_LINE,
+            (_, _, true) => CONTROL_HOVER,
+            _ => CONTROL,
+        };
+        painter.rect_filled(resp.rect, RADIUS, fill);
+        let ink = if on { ink_on(ACCENT) } else { OFF_WHITE };
+        painter.text(resp.rect.center(), Align2::CENTER_CENTER, key.glyph(), icon_font(BODY + 3.0), ink);
+    }
+}
+
 /// The distance between two measured points, in words.
 pub fn measured(a: [f32; 3], b: [f32; 3], units: Units) -> String {
     let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
@@ -605,6 +797,7 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
     }
     let poses = s.poses();
     let (min, max) = extent(s, &poses);
+    let pad = view_pad(ui, s, rect);
     // Fitting waits for the stage to be what the project asks for, so a model still on its way is not missed.
     if s.stage_view.fit_requested && !s.world.is_busy(&s.project.stage) {
         s.stage_view.fit(min, max, rect.width() / rect.height());
@@ -687,7 +880,8 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
     let hint = match (&s.stage_view.measure[..], s.stage_view.tool) {
         ([a, b], Tool::Measure) => format!("Measured {}", measured(*a, *b, units)),
         ([_], Tool::Measure) => "Click the second point".to_string(),
-        (_, tool) => format!("{}. Right-drag or Shift-drag slides the view; scroll zooms", tool.hint()),
+        (_, tool) if s.stage_view.nav == Nav::Slide => format!("{}. Dragging slides; scroll or the pad zooms", tool.hint()),
+        (_, tool) => format!("{}. Shift-drag slides; scroll or the pad zooms", tool.hint()),
     };
     let hint = text(rect.left_bottom() + vec2(GAP, -GAP), Align2::LEFT_BOTTOM, hint, OFF_WHITE);
     let ms = s.world.timings.get("stage").copied().unwrap_or(0.0);
@@ -700,6 +894,7 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
     if let Some(wait) = crate::monitor::stage_wait(s) {
         text(rect.center_top() + vec2(0.0, GAP), Align2::CENTER_TOP, wait.to_string(), AMBER);
     }
+    paint_pad(&painter, s.stage_view.nav, &pad);
 }
 
 #[cfg(test)]
@@ -800,5 +995,44 @@ mod tests {
         assert!(lines.len() < 120, "{}", lines.len());
         let (_, step) = grid_lines([-900.0, -900.0, 0.0], [900.0, 900.0, 20.0]);
         assert_eq!(step, 50.0);
+    }
+
+    #[test]
+    fn the_view_turns_slides_and_zooms_about_what_it_looks_at() {
+        let mut v = View { target: [0.0, 0.0, 0.0], yaw: 0.0, pitch: 0.0, distance: 10.0, ..View::default() };
+        let eye = |v: &View| v.camera().eye;
+
+        // Level and looking up the stage, the viewer stands 10 m down it. Turned right, it goes round to stage right.
+        assert!(eye(&v)[1] < -9.9);
+        v.turn(90.0, 0.0);
+        assert!((eye(&v)[0] - 10.0).abs() < 1e-3 && eye(&v)[1].abs() < 1e-3, "{:?}", eye(&v));
+        assert_eq!(v.target, [0.0, 0.0, 0.0], "turning leaves what is looked at where it is");
+        // Up is over the top, and stops short of straight down; down stops a little under level.
+        v.turn(0.0, 45.0);
+        assert!((eye(&v)[2] - 10.0 * 45f32.to_radians().sin()).abs() < 1e-3);
+        v.turn(0.0, 400.0);
+        assert_eq!(v.pitch, -89.0);
+        v.turn(0.0, -400.0);
+        assert_eq!(v.pitch, 30.0);
+
+        // Turning a flat view makes it the free one, from where the flat one looked.
+        let mut top = View { angle: Angle::Top, ..View::default() };
+        top.turn(15.0, 0.0);
+        assert_eq!(top.angle, Angle::Perspective);
+        assert_eq!(top.pitch, -89.0);
+
+        // Sliding takes the viewer and what it looks at the same way, across the picture.
+        let mut v = View { target: [0.0, 0.0, 0.0], yaw: 0.0, pitch: 0.0, distance: 10.0, ..View::default() };
+        v.slide(2.0, 1.0);
+        assert!((v.target[0] - 2.0).abs() < 1e-4 && v.target[1].abs() < 1e-4 && (v.target[2] - 1.0).abs() < 1e-4);
+        assert!((eye(&v)[0] - 2.0).abs() < 1e-3 && (eye(&v)[2] - 1.0).abs() < 1e-3);
+
+        // Zoom comes nearer and goes away, between its two ends.
+        v.zoom(0.5);
+        assert_eq!(v.distance, 5.0);
+        v.zoom(1e-6);
+        assert_eq!(v.distance, NEAREST_M);
+        v.zoom(1e9);
+        assert_eq!(v.distance, FURTHEST_M);
     }
 }
