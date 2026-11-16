@@ -75,11 +75,11 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
         let color = camera_color(i);
         stage::paint_picture(&painter, *rect, textures[i]);
         let on = i == selected;
-        // A tile is framed in its camera's state, as the Program monitor is: red when it is held or has
-        // faulted, green while output reaches it. The camera in hand is framed in the accent otherwise.
+        // A tile is framed in its camera's state, as the Program monitor is: yellow when it is held or has
+        // faulted, red while output reaches it. The camera in hand is framed in the accent otherwise.
         let (word, ink) = crate::camera_ui::state(status, output);
         let frame = match word {
-            "held" | "fault" | "stopping" => Some(RED),
+            "held" | "fault" | "stopping" => Some(FAULT),
             "live" => Some(ink),
             _ if on => Some(ACCENT),
             _ => None,

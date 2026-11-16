@@ -11,7 +11,7 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::Duration;
 
 const HELP: &str = "\
-ptz-panel: run PTZ Programmer from a SKAARHOJ panel over the Raw Panel protocol
+ptz-panel: run Motion Choreographer from a SKAARHOJ panel over the Raw Panel protocol
 
 Usage:
   ptz-panel --panel <address> [options]     connect to the panel and run

@@ -1,4 +1,4 @@
-# PTZ Programmer: Setup Guide
+# Motion Choreographer: Setup Guide
 
 This guide takes a new installation from nothing to a system that is ready to
 program: software installed, the show server running, the project describing
@@ -101,8 +101,8 @@ That writes two installers into `dist/`, for the kind of machine it was run on:
 
 | Installer | On a Mac | On Linux | Use it on |
 | --- | --- | --- | --- |
-| The app, with the show server as an option | `PTZ-Programmer-<version>-macos-<arch>.pkg` | `ptz-programmer-<version>-linux-<arch>.run` | Every station with a screen |
-| The show server alone | `PTZ-Server-<version>-macos-<arch>.pkg` | `ptz-server-<version>-linux-<arch>.run` | A machine that only runs the show |
+| The app, with the show server as an option | `Motion-Choreographer-<version>-macos-<arch>.pkg` | `motion-choreographer-<version>-linux-<arch>.run` | Every station with a screen |
+| The show server alone | `Motion-Choreographer-Server-<version>-macos-<arch>.pkg` | `motion-choreographer-server-<version>-linux-<arch>.run` | A machine that only runs the show |
 
 A Mac installer has to be built on a Mac, because macOS programs cannot be
 compiled anywhere else. It is built once; the machines you install on need
@@ -132,23 +132,23 @@ needs the app. So:
   installer *without* the server on each remote station.
 
 **On a Mac**, double-click the `.pkg`. The **Installation Type** step lists
-two parts: *PTZ Programmer*, which is always installed, and *Show server and
+two parts: *Motion Choreographer*, which is always installed, and *Show server and
 tools*, which is ticked to start with. Clear it for a station that only
 connects to a server elsewhere.
 
 - The installers are not signed with an Apple Developer ID, so the first time
   macOS will not open one on a double-click. Right-click it and choose
   **Open**, or run `sudo installer -pkg <file> -target /`.
-- The app goes to `/Applications/PTZ Programmer.app`.
+- The app goes to `/Applications/Motion Choreographer.app`.
 - The server and tools (`ptz-server`, `ptz-probe`, `ptz-bringup`, `ptz-panel`) go to
   `/usr/local/ptz-programmer/bin`. New terminal windows find them by name.
 
 **On Linux**, run the installer:
 
 ```sh
-sh ptz-programmer-<version>-linux-<arch>.run        # asks whether to install the server too
-sh ptz-programmer-<version>-linux-<arch>.run --no-server
-sh ptz-server-<version>-linux-<arch>.run
+sh motion-choreographer-<version>-linux-<arch>.run        # asks whether to install the server too
+sh motion-choreographer-<version>-linux-<arch>.run --no-server
+sh motion-choreographer-server-<version>-linux-<arch>.run
 ```
 
 It installs under `~/.local` (`--prefix` chooses somewhere else), adds PTZ
@@ -171,7 +171,7 @@ It builds for the Mac it runs on, Apple Silicon or Intel, and stops with the
 command to run if Rust is missing or older than 1.95. The first build takes
 several minutes. When it finishes you have:
 
-- `~/Applications/PTZ Programmer.app`, the desktop app, with the command-line
+- `~/Applications/Motion Choreographer.app`, the desktop app, with the command-line
   tools inside it;
 - `ptz-server`, `ptz-probe`, `ptz-bringup` and `ptz-panel` linked into `~/.local/bin`.
 
@@ -256,7 +256,7 @@ something to look at. Use `--no-seed` for a clean start.
 
 ### Open the app
 
-Open **PTZ Programmer**. It tries the server it last used straight away
+Open **Motion Choreographer**. It tries the server it last used straight away
 (`http://127.0.0.1:8787` the first time). If no server answers, the connect
 screen appears:
 
@@ -698,7 +698,7 @@ remembered.
   who took it, and its header then reads *Watching* and names the new holder.
 - A station that goes silent for ten seconds loses the lease by itself.
 - **E-STOP works from every station**, with or without the lease.
-- If a station loses the server, a red banner says so. The show keeps running
+- If a station loses the server, an amber banner says so. The show keeps running
   on the server; that window is simply not in control until it reconnects.
 
 The sound comes out of the server machine, not the stations.
@@ -1037,7 +1037,7 @@ folder and the app's settings file stay until you delete them.
 
 | Installed with | Remove with |
 | --- | --- |
-| The Mac installers | `sudo rm -rf "/Applications/PTZ Programmer.app" /usr/local/ptz-programmer /etc/paths.d/ptz-programmer`, then `sudo pkgutil --forget com.ptzprogrammer.app` and `sudo pkgutil --forget com.ptzprogrammer.server` |
+| The Mac installers | `sudo rm -rf "/Applications/Motion Choreographer.app" /usr/local/ptz-programmer /etc/paths.d/ptz-programmer`, then `sudo pkgutil --forget com.ptzprogrammer.app` and `sudo pkgutil --forget com.ptzprogrammer.server` |
 | The Linux installers | The same installer with `--uninstall` (the app installer also takes `--with-server` to remove the server with it) |
 | `make install-mac` | `make uninstall-mac` |
 
@@ -1049,7 +1049,7 @@ folder and the app's settings file stay until you delete them.
 | --- | --- | --- |
 | The connect screen: *Could not reach ...* | No server is answering at that address | Start the server, or check the address and port. For another machine, check that the server was started with `--bind` and that the access key matches. |
 | The server will not start with `--bind 0.0.0.0:8787` | It refuses to listen beyond this machine without a key | Add `--access-key` |
-| A red banner: the server is not reachable | This station lost the server | The show keeps running on the server. Check the network; the app reconnects by itself. |
+| An amber banner: the server is not reachable | This station lost the server | The show keeps running on the server. Check the network; the app reconnects by itself. |
 | *Watching. ... holds the edit lease* | Another station is editing | **Take over** if it should be you |
 | A button is disabled | The server will not allow that action now | Hover it. It says why. |
 | *No audio output*, or the bar says the device could not be opened | The server found no output | `ptz-server --list-audio`, then start with `--audio-device`. Until then the show runs silent on the system clock. |
@@ -1064,7 +1064,7 @@ folder and the app's settings file stay until you delete them.
 | Arm is refused: *The AutoPod+ is in standby* | The leg box is switched to standby. The program never switches it on by itself. | Switch it on at the leg box |
 | Arm is refused: *Commit the song first* | Only a committed revision with no unsaved edits can be armed | Save, then Commit |
 | Arm is refused: *Fix or accept N timeline issues first* | Moves break a limit | Click the issue count in the header to go to the first one |
-| A camera is held, with a reason in red | It strayed from the timeline, would have crossed a limit, or stopped answering | The others carry on. Disarm and Arm again to bring it back, after finding out why. |
+| A camera is held, with a reason in amber | It strayed from the timeline, would have crossed a limit, or stopped answering | The others carry on. Disarm and Arm again to bring it back, after finding out why. |
 | *E-STOP LATCHED* | E-Stop was pressed | Make sure it is safe, then **Reset E-Stop** |
 | `ptz-panel`: *No panel answers at ...* | Nothing is listening on the panel's address and port | Check the address, the cable, and that the panel is in Raw Panel mode |
 | `ptz-panel`: *... took the connection but said nothing* | Something answers, but not as a Raw Panel | Switch on Raw Panel mode on the panel; make sure nothing else is connected to it |

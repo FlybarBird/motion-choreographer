@@ -2,7 +2,7 @@
   "name": "ptz-updates",
   "private": true,
   "type": "module",
-  "description": "The update service for PTZ Programmer: a Cloudflare Worker in front of the private GitHub releases.",
+  "description": "The update service for Motion Choreographer: a Cloudflare Worker in front of the private GitHub releases.",
   "scripts": {
     "test": "node --test",
     "deploy": "wrangler deploy",

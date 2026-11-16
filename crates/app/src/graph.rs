@@ -859,9 +859,39 @@ fn nice_step(span: f64, lines: f64) -> f64 {
     }
 }
 
-fn diamond(painter: &Painter, c: Pos2, half: f32, fill: Color32, stroke: Stroke) {
-    let pts = vec![pos2(c.x, c.y - half), pos2(c.x + half, c.y), pos2(c.x, c.y + half), pos2(c.x - half, c.y)];
-    painter.add(egui::Shape::convex_polygon(pts, fill, stroke));
+/// The ink of a curve: white for the axis the value ruler measures, grey for the others.
+fn curve_ink(active: bool) -> Color32 {
+    if active {
+        PAPER
+    } else {
+        GREY_400
+    }
+}
+
+/// Name each curve where it leaves the plot. The curves are told apart by name, not by colour, so
+/// names that would fall on each other are moved apart.
+fn name_curves(
+    painter: &Painter,
+    plot: &Plot,
+    order: &[Axis],
+    active: Axis,
+    visible: &[bool],
+    value: impl Fn(Axis, f64) -> f64,
+    length: f64,
+) {
+    const ROW: f32 = 12.0;
+    let x = plot.x_of(length).min(plot.body.right());
+    let frame = plot.frame_at(x).clamp(0.0, length);
+    let mut names: Vec<(f32, Axis)> =
+        order.iter().filter(|a| visible[a.index()]).map(|a| (plot.y_of(*a, value(*a, frame)), *a)).collect();
+    names.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut next = plot.body.top() + ROW;
+    for (y, axis) in names {
+        let y = y.max(next);
+        next = y + ROW;
+        let name = axis.label().to_uppercase();
+        painter.text(pos2(x - GAP, y - 2.0), Align2::RIGHT_BOTTOM, name, bold(MICRO), curve_ink(axis == active));
+    }
 }
 
 fn paint(painter: &Painter, plot: &Plot, song: &Song, clip: Option<&MotionClip>, s: &Session, playhead: f64) {
@@ -934,7 +964,7 @@ fn paint(painter: &Painter, plot: &Plot, song: &Song, clip: Option<&MotionClip>,
         let ev = Evaluator::new(song, &g.camera);
         let order = axis_order(active);
         for axis in order.iter().rev().filter(|a| g.visible[a.index()]) {
-            let color = axis_color(*axis);
+            let color = curve_ink(*axis == active);
             let in_clip = clip.is_some_and(|c| c.has_axis(*axis));
             let mut inside: Vec<Pos2> = Vec::new();
             let mut outside: Vec<Vec<Pos2>> = vec![Vec::new()];
@@ -962,11 +992,12 @@ fn paint(painter: &Painter, plot: &Plot, song: &Song, clip: Option<&MotionClip>,
                 pb.line(inside, Stroke::new(if *axis == active { 2.0 } else { 1.5 }, color));
             }
         }
+        name_curves(&pb, plot, &order, active, &g.visible, |axis, frame| ev.axis_at(axis, frame), song.length_frames as f64);
 
         // Keys and handles of the clip being edited.
         if let Some(c) = clip.filter(|c| c.is_keys()) {
             for axis in order.iter().rev().filter(|a| g.visible[a.index()] && c.has_axis(**a)) {
-                let color = axis_color(*axis);
+                let color = curve_ink(*axis == active);
                 let keys = c.keys(*axis);
                 for (index, key) in keys.iter().enumerate() {
                     let at = plot.key_pos(c, *axis, key);
@@ -983,8 +1014,7 @@ fn paint(painter: &Painter, plot: &Plot, song: &Song, clip: Option<&MotionClip>,
                             }
                         }
                     }
-                    let fill = if selected { OFF_WHITE } else { color };
-                    diamond(&pb, at, 5.0, fill, Stroke::new(RULE, if selected { color } else { PANEL_DARK }));
+                    crate::timeline_ui::key_mark(&pb, at, selected, color);
                 }
             }
         } else if clip.is_none() {
@@ -1051,7 +1081,7 @@ fn paint_speed(painter: &Painter, plot: &Plot, s: &Session, gutter: &Painter) {
         if speeds.is_empty() {
             continue;
         }
-        let color = axis_color(*axis);
+        let color = curve_ink(*axis == active);
         let mut line: Vec<Pos2> = Vec::new();
         let mut x = plot.body.left();
         while x <= plot.body.right() {

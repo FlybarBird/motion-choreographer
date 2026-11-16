@@ -611,11 +611,11 @@ fn transport_key(ctx: &egui::Context, s: &mut Session) {
     }
 }
 
-/// The colour of the rule under the transport bar: the machine's state, red as well while a rig has
+/// The colour of the rule under the transport bar: the machine's state, yellow while a rig has
 /// faulted, and a plain hairline in rehearsal. The chips beside the buttons say the same in words.
 fn machine_rule(s: &Session) -> egui::Color32 {
     if s.status.telemetry.fault.is_some() {
-        RED
+        FAULT
     } else {
         machine_ink(&s.status.transport, s.status.hardware_live).unwrap_or(LINE)
     }
@@ -676,14 +676,14 @@ impl Shell {
         ui.painter().rect_filled(rail, 0.0, machine_rule(&self.session));
         egui::Panel::top("camera_bar").frame(bar(PANEL_DARK, U)).show(ui, |ui| crate::camera_ui::bar(ui, &mut self.session));
         if let Some(lost) = self.session.lost.clone() {
-            egui::Panel::top("lost_banner").show_separator_line(false).frame(bar(RED, U + 2.0)).show(ui, |ui| {
+            egui::Panel::top("lost_banner").show_separator_line(false).frame(bar(FAULT, U + 2.0)).show(ui, |ui| {
                 ui.label(
                     RichText::new(format!(
                         "{}  {lost}. The show keeps running on the server; this window is not in control.",
                         icon::PLUGS
                     ))
-                    .font(semibold(BODY))
-                    .color(egui::Color32::WHITE),
+                    .font(bold(BODY))
+                    .color(ink_on(FAULT)),
                 );
             });
         }
@@ -738,8 +738,8 @@ impl Shell {
         ui.horizontal_wrapped(|ui| {
             let row = ui.cursor().top();
             ui.spacing_mut().item_spacing.x = U;
-            ui.label(RichText::new(icon::VIDEO_CAMERA).font(icon_font(TITLE)));
-            ui.label(RichText::new("PTZ Programmer").font(semibold(BODY)));
+            // The mark alone: the name is on the window's title bar.
+            crate::brand::mark(ui, 5.0 * U).on_hover_text(format!("{} {}", crate::brand::NAME, update::VERSION));
             ui.add_space(U);
             ui.separator();
             let parked = s.status.transport.run == Run::Stopped && s.status.transport.output == Output::Rehearse;
@@ -863,9 +863,8 @@ impl Shell {
                         let blocking = s.song.as_ref().map(|song| s.compiled.blocking_count(song)).unwrap_or(0);
                         let text = format!("{n} issue{}", if n == 1 { "" } else { "s" });
                         ui.label(RichText::new(icon::WARNING).font(icon_font(TITLE)).color(AMBER));
-                        let r = ui.add(
-                            egui::Label::new(RichText::new(text).color(AMBER).font(semibold(BODY))).sense(egui::Sense::click()),
-                        );
+                        let r = ui
+                            .add(egui::Label::new(RichText::new(text).color(AMBER).font(bold(BODY))).sense(egui::Sense::click()));
                         let tip = if blocking > 0 {
                             "Arm is blocked until these are fixed or accepted. Click to go to the first"
                         } else {
@@ -1011,7 +1010,9 @@ impl Shell {
                         match primary {
                             Some(action) => {
                                 let look = match action {
-                                    Action::Play if live => Look::Solid(GREEN),
+                                    // Red when it moves the rig, green when it previews the show.
+                                    Action::Play if live => Look::Solid(RED),
+                                    Action::Play => Look::Solid(GREEN),
                                     Action::Stop => Look::Solid(OFF_WHITE),
                                     _ => Look::Solid(ACCENT),
                                 };
@@ -1036,7 +1037,7 @@ impl Shell {
                             crate::lock_ui::lock_menu(ui, s);
                         }
                         if t.output == Output::Rehearse {
-                            action_button(ui, s, Action::Arm, icon::POWER, ARM_LABEL, Look::Outline(GREEN), 0.0);
+                            action_button(ui, s, Action::Arm, icon::POWER, ARM_LABEL, Look::Outline(RED), 0.0);
                         } else {
                             action_button(ui, s, Action::Disarm, icon::PROHIBIT, "Disarm", Look::Outline(AMBER), 0.0);
                         }
@@ -1054,7 +1055,7 @@ impl Shell {
                         flow.sentence(ui, RichText::new(problem).color(AMBER));
                     }
                     if let Some(fault) = &s.status.telemetry.fault {
-                        flow.sentence(ui, RichText::new(fault).color(RED).strong());
+                        flow.sentence(ui, RichText::new(fault).color(FAULT).strong());
                     }
                     flow.hint(ui, &g.hint);
                 });
@@ -1247,7 +1248,7 @@ impl Shell {
                                     None => "draft".into(),
                                 });
                                 if song.loaded {
-                                    ui.label(RichText::new("open").color(GREEN));
+                                    ui.label(RichText::new("open").font(bold(BODY)));
                                 } else if song.dirty {
                                     ui.label(RichText::new("unsaved").color(AMBER));
                                 } else {
@@ -1321,7 +1322,7 @@ impl Shell {
                     ui.label("The draft and every committed revision are removed from the server.");
                     ui.add_space(PAD);
                     ui.horizontal(|ui| {
-                        if ui.add(filled("Delete", RED)).clicked() {
+                        if ui.add(filled("Delete", ACCENT)).clicked() {
                             s.link.send(Cmd::DeleteSong(id.clone()));
                             next = Some(Dialog::Load);
                         }
@@ -1439,7 +1440,7 @@ impl Shell {
             let (rule, _) = ui.allocate_exact_size(vec2(ui.available_width(), RULE_STRONG), egui::Sense::hover());
             ui.painter().rect_filled(rule, 0.0, RED);
             ui.add_space(U);
-            ui.label(RichText::new(STOP_NOT_SENT_DO).font(semibold(BODY)));
+            ui.label(RichText::new(STOP_NOT_SENT_DO).font(bold(BODY)));
             ui.add_space(U);
             ui.label(RichText::new(format!("What went wrong: {}", why.trim_end_matches('.'))).color(MUTED));
             ui.label(if trying { STOP_STILL_TRYING } else { STOP_GAVE_UP });
@@ -1703,8 +1704,9 @@ pub(crate) fn connect_form(
             vec2(column, ui.available_height() - top),
         );
         ui.scope_builder(egui::UiBuilder::new().max_rect(place).layout(Layout::top_down(Align::LEFT)), |ui| {
-            ui.label(RichText::new("PTZ Programmer").font(semibold(HERO)));
-            ui.label(RichText::new("Timeline programming and playout for the FR7 and its pedestal").color(MUTED));
+            crate::brand::lockup(ui, 14.0 * U);
+            ui.add_space(PAD);
+            ui.label(RichText::new("PTZ and camera animation for live production").color(MUTED));
             ui.add_space(PAD);
             hairline(ui);
             ui.add_space(PAD);

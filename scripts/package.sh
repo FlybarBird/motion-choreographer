@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build PTZ Programmer for this machine and write two installers into dist/:
+# Build Motion Choreographer for this machine and write two installers into dist/:
 # one for the desktop app, which offers the show server as an option, and one
 # for the show server alone.
 #
@@ -7,14 +7,14 @@
 #
 # On a Mac (for the kind of Mac it is run on; an Apple Silicon Mac also builds the Intel
 # installers, with PTZ_TARGET=x86_64-apple-darwin):
-#   dist/PTZ-Programmer-<version>-macos-<arch>.pkg   the app. "Show server and tools" is a
+#   dist/Motion-Choreographer-<version>-macos-<arch>.pkg   the app. "Show server and tools" is a
 #                                                     checkbox in the installer, ticked to start with
-#   dist/PTZ-Server-<version>-macos-<arch>.pkg       the show server and tools only
-#   They install /Applications/PTZ Programmer.app and /usr/local/ptz-programmer.
+#   dist/Motion-Choreographer-Server-<version>-macos-<arch>.pkg       the show server and tools only
+#   They install /Applications/Motion Choreographer.app and /usr/local/ptz-programmer.
 #
 # On Linux:
-#   dist/ptz-programmer-<version>-linux-<arch>.run   the app. Asks whether to install the server too
-#   dist/ptz-server-<version>-linux-<arch>.run       the show server and tools only
+#   dist/motion-choreographer-<version>-linux-<arch>.run   the app. Asks whether to install the server too
+#   dist/motion-choreographer-server-<version>-linux-<arch>.run       the show server and tools only
 #   They install under ~/.local, or under --prefix. Run one with --help for its options.
 #
 # Environment (all optional):
@@ -28,7 +28,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_NAME="PTZ Programmer"
+APP_NAME="Motion Choreographer"
+OLD_APP_NAME="PTZ Programmer"
 APP_ID="com.ptzprogrammer.app"
 SERVER_ID="com.ptzprogrammer.server"
 MAC_SERVER_HOME="/usr/local/ptz-programmer"
@@ -167,6 +168,7 @@ package_macos() {
   mkdir -p "$bundle/Contents/MacOS"
   cp "$RELEASE_DIR/ptz-app" "$bundle/Contents/MacOS/ptz-app"
   licenses_into "$bundle/Contents/Resources/licenses"
+  cp "$ROOT/brand/icon/macos/AppIcon.icns" "$bundle/Contents/Resources/AppIcon.icns"
   cat >"$bundle/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -180,6 +182,8 @@ package_macos() {
   <string>$APP_ID</string>
   <key>CFBundleExecutable</key>
   <string>ptz-app</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
@@ -191,9 +195,9 @@ package_macos() {
   <key>NSHighResolutionCapable</key>
   <true/>
   <key>NSMicrophoneUsageDescription</key>
-  <string>PTZ Programmer reads LTC timecode from an audio input.</string>
+  <string>Motion Choreographer reads LTC timecode from an audio input.</string>
   <key>NSLocalNetworkUsageDescription</key>
-  <string>PTZ Programmer talks to the show server, the camera and the pedestal on the local network.</string>
+  <string>Motion Choreographer talks to the show server, the camera and the pedestal on the local network.</string>
 </dict>
 </plist>
 PLIST
@@ -221,7 +225,16 @@ PLIST
 </array>
 </plist>
 PLIST
-  pkgbuild --root "$STAGE/app-root" --component-plist "$STAGE/app-component.plist" \
+  # The app was called PTZ Programmer up to version 0.1.2. The copy under that name is taken away,
+  # or there would be two in Applications and the old one would be the one in the Dock.
+  mkdir -p "$STAGE/app-scripts"
+  cat >"$STAGE/app-scripts/postinstall" <<SCRIPT
+#!/bin/sh
+rm -rf "/Applications/$OLD_APP_NAME.app"
+exit 0
+SCRIPT
+  chmod +x "$STAGE/app-scripts/postinstall"
+  pkgbuild --root "$STAGE/app-root" --component-plist "$STAGE/app-component.plist" --scripts "$STAGE/app-scripts" \
     --identifier "$APP_ID" --version "$VERSION" --install-location /Applications "$STAGE/pkgs/app.pkg"
 
   # The server and tools in a folder of their own, put on PATH the way macOS provides for.
@@ -246,11 +259,11 @@ SCRIPT
   local server_text="ptz-server, ptz-probe, ptz-bringup and ptz-panel (for a SKAARHOJ control panel), in $MAC_SERVER_HOME. Needed on the computer that runs the show. Clear it on a station that only connects to a server elsewhere."
   local server_choice="server|$SERVER_ID|Show server and tools|$server_text|optional"
 
-  local app_out="$DIST/PTZ-Programmer-$VERSION-macos-$ARCH.pkg"
-  local server_out="$DIST/PTZ-Server-$VERSION-macos-$ARCH.pkg"
+  local app_out="$DIST/Motion-Choreographer-$VERSION-macos-$ARCH.pkg"
+  local server_out="$DIST/Motion-Choreographer-Server-$VERSION-macos-$ARCH.pkg"
   distribution "$STAGE/app-distribution.xml" "$APP_NAME $VERSION" "$app_choice" "$server_choice"
   product "$app_out" "$STAGE/app-distribution.xml" app server
-  distribution "$STAGE/server-distribution.xml" "PTZ Programmer show server $VERSION" \
+  distribution "$STAGE/server-distribution.xml" "Motion Choreographer show server $VERSION" \
     "server|$SERVER_ID|Show server and tools|$server_text|required"
   product "$server_out" "$STAGE/server-distribution.xml" server
 
@@ -287,8 +300,8 @@ package_linux() {
   done
   licenses_into "$app/licenses"
   licenses_into "$server/licenses"
-  run_file "$DIST/ptz-programmer-$VERSION-linux-$ARCH.run" app "$app"
-  run_file "$DIST/ptz-server-$VERSION-linux-$ARCH.run" server "$server"
+  run_file "$DIST/motion-choreographer-$VERSION-linux-$ARCH.run" app "$app"
+  run_file "$DIST/motion-choreographer-server-$VERSION-linux-$ARCH.run" server "$server"
 }
 
 "package_$OS"

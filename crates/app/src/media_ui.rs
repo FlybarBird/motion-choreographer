@@ -35,7 +35,7 @@ fn media_card(ui: &mut Ui, info: &MediaInfo) -> egui::Response {
     let (tag, color) = if info.kind == MediaKind::Video { ("VID", VIDEO_CLIP) } else { ("AUD", AUDIO_CLIP) };
     p.rect_filled(badge, RADIUS, mix(PANEL, color, 0.24));
     p.rect_filled(badge.with_max_x(badge.left() + 3.0), 0.0, color);
-    p.text(badge.center() + vec2(1.5, 0.0), Align2::CENTER_CENTER, tag, semibold(MICRO), OFF_WHITE);
+    p.text(badge.center() + vec2(1.5, 0.0), Align2::CENTER_CENTER, tag, bold(MICRO), OFF_WHITE);
     let text = p.with_clip_rect(rect.shrink2(vec2(PAD, 0.0)));
     text.text(rect.left_top() + vec2(PAD + 10.0 * U, 1.5 * U), Align2::LEFT_TOP, &info.name, body(), OFF_WHITE);
     let mut detail = format!("{}   {}   {} Hz", duration_label(info.duration_s), channels_label(info.channels), info.sample_rate);
@@ -127,17 +127,11 @@ pub fn meters(ui: &mut Ui, s: &Session) {
         let y = rect.top() + U + row as f32 * 3.0 * U;
         p.text(egui::pos2(rect.left(), y + U), Align2::LEFT_CENTER, tag, mono(MICRO), MUTED);
         let bar = Rect::from_min_size(egui::pos2(rect.left() + 10.0, y), vec2(54.0, 2.0 * U));
-        p.rect_filled(bar, 0.0, BASE);
+        p.rect_filled(bar, 0.0, LINE);
         let lit = meter_fraction(peak);
         if lit > 0.0 {
-            // Level is plain ink: it turns amber near the top and red at full scale, and green is left to the rig.
-            let color = if peak >= 0.98 {
-                RED
-            } else if lit > 0.85 {
-                AMBER
-            } else {
-                OFF_WHITE
-            };
+            // Level is plain ink, and yellow at full scale: red and green are left to the rig.
+            let color = if peak >= 0.98 { AMBER } else { OFF_WHITE };
             p.rect_filled(Rect::from_min_size(bar.min, vec2(bar.width() * lit, bar.height())), 0.0, color);
         }
     }

@@ -521,6 +521,16 @@ fn diamond(painter: &Painter, c: Pos2, half: f32, fill: Color32, stroke: Stroke)
     painter.add(egui::Shape::convex_polygon(pts, fill, stroke));
 }
 
+/// A key: a diamond in the ink of its curve. A selected one is white, inside a second diamond.
+pub fn key_mark(painter: &Painter, at: Pos2, selected: bool, ink: Color32) {
+    if selected {
+        diamond(painter, at, 8.0, PANEL_DARK, Stroke::new(RULE, ACCENT));
+        diamond(painter, at, 4.5, ACCENT, Stroke::NONE);
+    } else {
+        diamond(painter, at, 5.0, ink, Stroke::new(RULE, PANEL_DARK));
+    }
+}
+
 fn paint_ruler(painter: &Painter, l: &Layout, s: &Session) {
     let fps = s.project.rate.fps();
     painter.rect_filled(Rect::from_min_max(l.rect.left_top(), pos2(l.rect.right(), l.ruler.bottom())), 0.0, PANEL_DARK);
@@ -924,8 +934,7 @@ fn paint(painter: &Painter, l: &Layout, song: &Song, s: &Session, playhead: f64)
             continue;
         }
         let selected = s.timeline.key_selection.contains(&(k.clip.clone(), k.axis, k.index));
-        let fill = if selected { OFF_WHITE } else { axis_color(k.axis) };
-        diamond(&pb, k.pos, 5.0, fill, Stroke::new(RULE, if selected { ACCENT } else { PANEL_DARK }));
+        key_mark(&pb, k.pos, selected, axis_color(k.axis));
     }
 
     // Marker flags.

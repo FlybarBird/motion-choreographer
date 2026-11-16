@@ -1,14 +1,13 @@
 # Third-party notices
 
-PTZ Programmer is released under the MIT licence (see `LICENSE`). A built app
+Motion Choreographer is released under the MIT licence (see `LICENSE`). A built app
 also contains the following, each under its own licence.
 
 ## Fonts built into the app
 
 | Font | Licence | Text |
 | --- | --- | --- |
-| Inter (Regular, SemiBold) | SIL Open Font License 1.1 | `crates/app/assets/fonts/Inter-LICENSE.txt` |
-| JetBrains Mono (Medium) | SIL Open Font License 1.1 | `crates/app/assets/fonts/JetBrainsMono-OFL.txt` |
+| Inter (Regular, Bold, and Regular with tabular figures; fixed weights made from the variable font in `brand/fonts`) | SIL Open Font License 1.1 | `crates/app/assets/fonts/Inter-LICENSE.txt` |
 | Phosphor Icons, through the `egui-phosphor` crate | MIT | <https://github.com/phosphor-icons/core/blob/main/LICENSE> |
 | Ubuntu Light, Hack, Noto Emoji and emoji-icon-font, through egui's default fonts | Ubuntu Font Licence 1.0, MIT, SIL Open Font License 1.1, MIT | <https://github.com/emilk/egui/tree/main/crates/epaint_default_fonts/fonts> |
 

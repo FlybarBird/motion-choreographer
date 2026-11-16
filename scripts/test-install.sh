@@ -25,7 +25,7 @@ run >"$WORK/first.log"
 # A second run over an existing install must also succeed.
 run >"$WORK/second.log"
 
-APP="$WORK/Applications/PTZ Programmer.app"
+APP="$WORK/Applications/Motion Choreographer.app"
 check() {
   if ! "$@"; then
     printf 'install test failed: %s\n' "$*" >&2

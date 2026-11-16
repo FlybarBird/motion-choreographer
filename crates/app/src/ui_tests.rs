@@ -2004,7 +2004,8 @@ fn a_newer_version_is_offered_in_the_view_menu_and_waits_for_the_show_to_stop() 
     r.harness.run_steps(2);
     assert!(r.toasts().is_empty(), "{:?}", r.toasts());
 
-    let installer = Installer { name: "PTZ-Programmer-0.9.0-macos-arm64.pkg".into(), size: 13_000_000, sha256: "0".repeat(64) };
+    let installer =
+        Installer { name: "Motion-Choreographer-0.9.0-macos-arm64.pkg".into(), size: 13_000_000, sha256: "0".repeat(64) };
     let release = Release {
         version: "0.9.0".into(),
         platform: "macos-arm64".into(),

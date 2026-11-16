@@ -196,7 +196,7 @@ pub(super) fn open(r: &mut Rig, prompt: Prompt) {
         Prompt::StopNotSent => shell.session.stop_not_sent = Some(("Connection refused".into(), true)),
         Prompt::Update => {
             let installer = crate::update::Installer {
-                name: "PTZ-Programmer-0.9.0-macos-arm64.pkg".into(),
+                name: "Motion-Choreographer-0.9.0-macos-arm64.pkg".into(),
                 size: 13_000_000,
                 sha256: "0".repeat(64),
             };

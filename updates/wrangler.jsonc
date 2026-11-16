@@ -1,4 +1,4 @@
-// The update service for PTZ Programmer. The app asks it what the newest release is and
+// The update service for Motion Choreographer. The app asks it what the newest release is and
 // where its installer can be downloaded; it answers from the releases of the private
 // GitHub repository, which the app cannot read itself.
 {

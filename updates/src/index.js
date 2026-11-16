@@ -47,7 +47,7 @@ async function answer(request, env, url) {
     return problem(405, "Only GET is answered");
   }
   if (url.pathname === "/") {
-    return new Response("PTZ Programmer update service\n", { headers: { "content-type": "text/plain; charset=utf-8" } });
+    return new Response("Motion Choreographer update service\n", { headers: { "content-type": "text/plain; charset=utf-8" } });
   }
   if (!env.GITHUB_TOKEN || !env.UPDATE_KEY) {
     return problem(503, "The update service is not set up yet: its secrets are missing");
@@ -102,8 +102,10 @@ async function describe(env, platform) {
  * @param {string} file
  */
 async function installer(env, version, file) {
-  // Only an installer of that release, by the names scripts/package.sh gives them.
-  if (!new RegExp(`^(PTZ|ptz)-(Programmer|Server|programmer|server)-${version.replaceAll(".", "\\.")}-[a-z0-9_-]+\\.(pkg|run)$`).test(file)) {
+  // Only an installer of that release, by the names scripts/package.sh gives them now, or gave
+  // them up to 0.1.2.
+  const names = "Motion-Choreographer|Motion-Choreographer-Server|motion-choreographer|motion-choreographer-server|PTZ-Programmer|PTZ-Server";
+  if (!new RegExp(`^(${names})-${version.replaceAll(".", "\\.")}-[a-z0-9_-]+\\.(pkg|run)$`).test(file)) {
     return problem(404, "That is not the name of an installer");
   }
   const release = await github(env, `/repos/${env.GITHUB_REPO}/releases/tags/v${version}`);

@@ -43,8 +43,8 @@ esac
 
 # The target name stands in for a triple, so the installers are named for this machine by hand.
 package linux >"$WORK/linux.log"
-mv "$WORK/dist-linux/ptz-programmer-$VERSION-linux-$(uname -m).run" "$WORK/app.run"
-mv "$WORK/dist-linux/ptz-server-$VERSION-linux-$(uname -m).run" "$WORK/server.run"
+mv "$WORK/dist-linux/motion-choreographer-$VERSION-linux-$(uname -m).run" "$WORK/app.run"
+mv "$WORK/dist-linux/motion-choreographer-server-$VERSION-linux-$(uname -m).run" "$WORK/server.run"
 check test "$(find "$WORK/dist-linux" -type f | wc -l)" -eq 0
 sed -i.bak "s/^ARCH=\"$(uname -m)\"\$/ARCH=\"$ARCH\"/" "$WORK/app.run" "$WORK/server.run"
 check test -x "$WORK/app.run"
@@ -93,7 +93,7 @@ check no_tools_in "$P2"
 check test ! -e "$P2/share/ptz-programmer"
 check test -f "$P2/bin/keep-me"
 refuse sh "$WORK/server.run" --uninstall --prefix "$P2"
-check grep -q 'nothing of PTZ Programmer to remove' "$WORK/refused.log"
+check grep -q 'nothing of Motion Choreographer to remove' "$WORK/refused.log"
 
 # --uninstall --with-server takes both away in one go.
 sh "$WORK/app.run" --uninstall --with-server --prefix "$P" >"$WORK/uninstall-both.log"
@@ -174,19 +174,24 @@ chmod +x "$STUBS"/*
 cp "$STUBS/pkgutil" "$STUBS/pkgutil.good"
 
 CALLS_DIR="$CALLS" PATH="$STUBS:$PATH" package macos >"$WORK/macos.log"
-APP_PKG="PTZ-Programmer-$VERSION-macos-$(uname -m)"
-SERVER_PKG="PTZ-Server-$VERSION-macos-$(uname -m)"
+APP_PKG="Motion-Choreographer-$VERSION-macos-$(uname -m)"
+SERVER_PKG="Motion-Choreographer-Server-$VERSION-macos-$(uname -m)"
 check test -f "$WORK/dist-macos/$APP_PKG.pkg"
 check test -f "$WORK/dist-macos/$SERVER_PKG.pkg"
 
 # The app goes to /Applications, there and nowhere else, and carries no server.
 check grep -qx -- '/Applications' "$CALLS/pkgbuild-app.args"
 check grep -qx -- 'com.ptzprogrammer.app' "$CALLS/pkgbuild-app.args"
-BUNDLE="$CALLS/pkgbuild-app.root/PTZ Programmer.app"
+BUNDLE="$CALLS/pkgbuild-app.root/Motion Choreographer.app"
 check test "$("$BUNDLE/Contents/MacOS/ptz-app")" = ptz-app
 check test "$(find "$BUNDLE/Contents/MacOS" -type f | wc -l)" -eq 1
 check test -f "$BUNDLE/Contents/Resources/licenses/LICENSE"
 check grep -q "<string>$VERSION</string>" "$BUNDLE/Contents/Info.plist"
+# It carries its icon, and takes away the copy under the name the app used to have.
+check test -s "$BUNDLE/Contents/Resources/AppIcon.icns"
+check grep -A1 'CFBundleIconFile' "$BUNDLE/Contents/Info.plist" | grep -q '<string>AppIcon</string>'
+check grep -qx 'rm -rf "/Applications/PTZ Programmer.app"' "$CALLS/pkgbuild-app.scripts/postinstall"
+check sh -n "$CALLS/pkgbuild-app.scripts/postinstall"
 check grep -q 'NSMicrophoneUsageDescription' "$BUNDLE/Contents/Info.plist"
 grep -A1 'BundleIsRelocatable' "$CALLS/pkgbuild-app.component.plist" >"$WORK/relocatable.txt"
 check grep -q '<false/>' "$WORK/relocatable.txt"

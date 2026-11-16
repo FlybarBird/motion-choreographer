@@ -84,7 +84,7 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
         egui::Grid::new("set_list").striped(true).spacing([PAD, U]).show(ui, |ui| {
             for (at, song) in listed.iter().map(|(at, song)| (*at, song)) {
                 let open = loaded.as_deref() == Some(song.id.as_str());
-                ui.label(RichText::new(format!("{:>2}", at + 1)).monospace().color(MUTED));
+                ui.label(RichText::new(format!("{:\u{2007}>2}", at + 1)).monospace().color(MUTED));
                 if arranging {
                     // In front of the name, so a long name cannot push them out of the panel.
                     ui.horizontal(|ui| {
@@ -103,7 +103,7 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
                 }
                 let can = if open { Err("This song is loaded".to_string()) } else { s.can_load(song) };
                 // The loaded song is the row that is switched on; green is kept for output that reaches the rig.
-                let name = RichText::new(&song.name).font(semibold(BODY));
+                let name = RichText::new(&song.name).font(bold(BODY));
                 let row = ui.add_enabled(open || can.is_ok(), egui::Button::selectable(open, name));
                 let row = match &can {
                     Err(why) if !open => row.on_disabled_hover_text(why.clone()),

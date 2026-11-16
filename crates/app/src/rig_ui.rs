@@ -246,7 +246,7 @@ fn driven(s: &Session, axis: Axis) -> bool {
 
 fn paint_surface(ui: &Ui, s: &Session, surface: &Surface, stick: Jog, focused: bool, dim: bool) {
     let p = ui.painter();
-    let ink = |axis: Axis| if dim || !driven(s, axis) { MUTED } else { axis_color(axis) };
+    let ink = |axis: Axis| if dim || !driven(s, axis) { MUTED } else { OFF_WHITE };
     let pad = surface.pad;
     // The pad is a well with a cross in it; it is ruled in the accent while it has the keyboard.
     p.rect(
@@ -374,10 +374,10 @@ fn controller(ui: &mut Ui, s: &mut Session) {
 fn live_state(ui: &mut Ui, s: &Session) {
     let tel = &s.status.telemetry;
     if let Some(fault) = &tel.fault {
-        ui.label(RichText::new(fault).color(RED).strong());
+        ui.label(RichText::new(fault).color(FAULT).strong());
     }
     if tel.halting {
-        ui.label(RichText::new("Stopping: stop is being repeated until the rig stands still").color(RED));
+        ui.label(RichText::new("Stopping: stop is being repeated until the rig stands still").color(FAULT));
     }
     if let Some(progress) = &tel.preset_sync {
         ui.label(RichText::new(progress).color(AMBER));
@@ -393,13 +393,13 @@ fn live_state(ui: &mut Ui, s: &Session) {
             let error = error.get(axis);
             let share = (error.abs() / tol.get(axis).max(1e-9)) as f32;
             let ink = if share > 1.0 {
-                RED
+                FAULT
             } else if share > 0.6 {
                 AMBER
             } else {
-                GREEN
+                OFF_WHITE
             };
-            ui.label(RichText::new(axis.label()).color(axis_color(axis)));
+            ui.label(RichText::new(axis.label()));
             ui.label(RichText::new(format!("{error:+.2}")).monospace().color(ink)).on_hover_text(format!(
                 "Rig minus timeline. A fault is raised beyond {}",
                 axis.format_in(tol.get(axis), s.project.units)
@@ -421,7 +421,7 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
                 ui.horizontal_wrapped(|ui| {
                     let (tag, _) = ui.allocate_exact_size(NUMBER_TAG, Sense::hover());
                     number_tag(ui.painter(), tag, i + 1, camera_color(i));
-                    ui.label(RichText::new(&s.cam().name).font(semibold(BODY)));
+                    ui.label(RichText::new(&s.cam().name).font(bold(BODY)));
                     ui.label(
                         RichText::new("The controller, the readout and the stored pose are this camera's.").color(MUTED).small(),
                     );
@@ -434,7 +434,7 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
                 ui.horizontal(|ui| {
                     // An adapter that answers is a plain dot: green is for output that reaches the rig.
                     let (dot, word) = match (a.connected, a.calibrated) {
-                        (false, _) => (RED, "not answering".to_string()),
+                        (false, _) => (FAULT, "not answering".to_string()),
                         (true, Some(false)) => (AMBER, "not calibrated".to_string()),
                         (true, _) => match a.round_trip_ms {
                             Some(ms) => (OFF_WHITE, format!("answers in {ms:.1} ms")),
@@ -447,7 +447,7 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
                     } else {
                         ui.painter().circle_stroke(mark.center(), U - 1.0, Stroke::new(1.5, dot));
                     }
-                    ui.label(RichText::new(&a.name).font(semibold(BODY)));
+                    ui.label(RichText::new(&a.name).font(bold(BODY)));
                     ui.label(RichText::new(word).color(MUTED));
                 })
                 .response
@@ -496,7 +496,7 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
                 for axis in Axis::ALL {
                     let lim = s.cam().axes.get(axis);
                     let value = s.cam_status().rig_pose.get(axis);
-                    ui.label(RichText::new(axis.label()).color(axis_color(axis)));
+                    ui.label(RichText::new(axis.label()));
                     ui.label(RichText::new(axis.format_in(value, s.project.units)).monospace());
                     let (bar, p) = level_bar(ui, 96.0);
                     let t = ((value - lim.min) / (lim.max - lim.min).max(1e-9)).clamp(0.0, 1.0) as f32;

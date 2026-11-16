@@ -1,7 +1,12 @@
-# PTZ Programmer
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="brand/social/readme-banner-dark.png">
+  <img alt="Motion Choreographer" src="brand/social/readme-banner-light.png" width="640">
+</picture>
 
-Timeline programming and playout for up to twelve Sony FR7 cameras, each on an
-AutoPod+ pedestal.
+# Motion Choreographer
+
+PTZ and camera animation for live production: timeline programming and playout
+for up to twelve Sony FR7 cameras, each on an AutoPod+ pedestal.
 
 You build a song by dragging camera presets onto a timeline. Each move takes its
 time from the distance between the two poses and the rig's speed limits, and you
@@ -70,7 +75,7 @@ the ALSA headers (`libasound2-dev`).
 make install-mac
 ```
 
-Builds for this Mac (Apple Silicon or Intel), assembles `PTZ Programmer.app`
+Builds for this Mac (Apple Silicon or Intel), assembles `Motion Choreographer.app`
 with the three command-line tools inside it, signs it ad hoc, copies it to
 `~/Applications` and links `ptz-server`, `ptz-probe`, `ptz-bringup` and `ptz-panel` into
 `~/.local/bin`. Running it again installs a newer version over the old one; it
@@ -90,8 +95,8 @@ Builds for the machine it is run on and writes two installers into `dist/`:
 
 | | On a Mac | On Linux |
 | --- | --- | --- |
-| The app, with the show server as an option | `PTZ-Programmer-<version>-macos-<arch>.pkg` | `ptz-programmer-<version>-linux-<arch>.run` |
-| The show server and tools alone | `PTZ-Server-<version>-macos-<arch>.pkg` | `ptz-server-<version>-linux-<arch>.run` |
+| The app, with the show server as an option | `Motion-Choreographer-<version>-macos-<arch>.pkg` | `motion-choreographer-<version>-linux-<arch>.run` |
+| The show server and tools alone | `Motion-Choreographer-Server-<version>-macos-<arch>.pkg` | `motion-choreographer-server-<version>-linux-<arch>.run` |
 
 The app installer always installs the app. **Show server and tools**
 (`ptz-server`, `ptz-probe`, `ptz-bringup`, `ptz-panel`) is a checkbox in the Mac installer,
@@ -105,7 +110,7 @@ show without a screen.
   terminals. The packages are not signed with a Developer ID unless
   `PTZ_INSTALLER_SIGN` names one, so on another Mac open one with a
   right-click and **Open**, or run `sudo installer -pkg <file> -target /`.
-- **Linux:** `sh ptz-programmer-<version>-linux-<arch>.run` installs under
+- **Linux:** `sh motion-choreographer-<version>-linux-<arch>.run` installs under
   `~/.local` (or `--prefix`), with an entry in the applications menu.
   `--uninstall` removes what it installed.
 
@@ -508,7 +513,7 @@ no open issues is loaded into an armed show. With **Follow timecode** ticked
 there, locked to an input with Play to code pressed, the server loads whichever
 song the incoming code is in and plays it.
 
-A camera's rig is held and its output is cut, with the reason in red on the bar and in the
+A camera's rig is held and its output is cut, with the reason in amber on the bar and in the
 Rig controller tab, until the show is disarmed and armed again (Play does not
 bring a held camera back), when:
 
@@ -800,6 +805,8 @@ run the real server and adapters against the stand-in devices over loopback.
 | `scripts/macos-install.sh` | The Mac installer. |
 | `scripts/release.sh` | Publishes a new version as an update. |
 | `updates` | The update service (a Cloudflare Worker), its tests, and the tool that signs a release. |
+| `brand` | The brand kit: the logo, the app icon, the colours and the typeface, with the rules for using them in `brand/BRAND.md`. The app, the installers and the manual site take theirs from here. |
+| `brand` | The brand kit: the logo, the app icon, the colours and the typeface, with the rules for using them in `brand/BRAND.md`. The app, the installers and the manual site take theirs from here. |
 
 Data folder (`~/PTZProgrammer` by default): `project.json`, `presets.json`,
 `state.json` (which song is open),

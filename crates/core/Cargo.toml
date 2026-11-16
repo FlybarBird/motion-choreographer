@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Shared model for PTZ Programmer: time, song, motion, transport rules, timecode codecs"
+description = "Shared model for Motion Choreographer: time, song, motion, transport rules, timecode codecs"
 
 [features]
 # Blocking HTTP client for the show server. Off by default so the model stays pure.

@@ -18,7 +18,7 @@ const release = {
   assets: [
     { name: "update-macos-arm64.json", url: `${API}/releases/assets/1`, size: manifest.length },
     { name: "update-macos-arm64.json.sig", url: `${API}/releases/assets/2`, size: 129 },
-    { name: "PTZ-Programmer-0.1.2-macos-arm64.pkg", url: `${API}/releases/assets/3`, size: 13_000_000 },
+    { name: "Motion-Choreographer-0.1.2-macos-arm64.pkg", url: `${API}/releases/assets/3`, size: 13_000_000 },
   ],
 };
 const files = { 1: manifest, 2: "ab".repeat(64) + "\n" };
@@ -73,14 +73,14 @@ test("nobody without the key is told anything, and nothing is asked of GitHub fo
     const response = await get("/v1/latest/macos-arm64", key);
     assert.equal(response.status, 401);
   }
-  assert.equal((await get("/v1/download/0.1.2/PTZ-Programmer-0.1.2-macos-arm64.pkg", "")).status, 401);
+  assert.equal((await get("/v1/download/0.1.2/Motion-Choreographer-0.1.2-macos-arm64.pkg", "")).status, 401);
   assert.deepEqual(asked, []);
   assert.equal((await get("/", "")).status, 200);
   assert.equal((await get("/v1/latest/macos-arm64", "the-key", "POST")).status, 405);
 });
 
 test("an installer is handed over as the address GitHub signs for it", async () => {
-  const response = await get("/v1/download/0.1.2/PTZ-Programmer-0.1.2-macos-arm64.pkg");
+  const response = await get("/v1/download/0.1.2/Motion-Choreographer-0.1.2-macos-arm64.pkg");
   assert.equal(response.status, 302);
   assert.equal(response.headers.get("location"), "https://files.example/3");
 });
@@ -88,9 +88,9 @@ test("an installer is handed over as the address GitHub signs for it", async () 
 test("only the installers of a release can be asked for", async () => {
   for (const path of [
     "/v1/download/0.1.2/update-macos-arm64.json",
-    "/v1/download/0.1.2/PTZ-Programmer-0.1.1-macos-arm64.pkg",
-    "/v1/download/0.1.2/PTZ-Server-0.1.2-macos-arm64.pkg",
-    "/v1/download/0.1.9/PTZ-Programmer-0.1.9-macos-arm64.pkg",
+    "/v1/download/0.1.2/Motion-Choreographer-0.1.1-macos-arm64.pkg",
+    "/v1/download/0.1.2/Motion-Choreographer-Server-0.1.2-macos-arm64.pkg",
+    "/v1/download/0.1.9/Motion-Choreographer-0.1.9-macos-arm64.pkg",
     "/v1/download/0.1.2/..%2F..%2Fsecrets",
     "/v1/latest/windows-x86_64",
     "/v1/elsewhere",

@@ -29,15 +29,16 @@ pub fn key_name(index: usize) -> &'static str {
 /// One word on a camera's state, and its colour.
 pub fn state(status: Option<&CameraStatus>, output: Output) -> (&'static str, egui::Color32) {
     match status {
-        Some(c) if c.fault.is_some() && c.held => ("held", RED),
-        Some(c) if c.fault.is_some() => ("fault", RED),
-        Some(c) if c.halting => ("stopping", RED),
+        Some(c) if c.fault.is_some() && c.held => ("held", FAULT),
+        Some(c) if c.fault.is_some() => ("fault", FAULT),
+        Some(c) if c.halting => ("stopping", FAULT),
         Some(c) if c.preset_sync.is_some() => ("reading", AMBER),
         Some(c) if c.hardware && c.adapters.iter().any(|a| !a.connected) => ("no answer", AMBER),
-        // Amber while the rig travels to the playhead, green once it follows the timeline: as the transport's rule is.
+        // Yellow while the rig travels to the playhead, red once it follows the timeline: as the transport's rule is.
         Some(c) if c.hardware && output == Output::Positioning => ("live", AMBER),
-        Some(c) if c.hardware && output != Output::Rehearse => ("live", GREEN),
-        Some(c) if c.hardware => ("rig", OFF_WHITE),
+        Some(c) if c.hardware && output != Output::Rehearse => ("live", RED),
+        // A rig that answers and is not being driven: ready.
+        Some(c) if c.hardware => ("rig", GREEN),
         _ => ("sim", MUTED),
     }
 }
@@ -76,7 +77,7 @@ fn detail(s: &Session, index: usize) -> String {
 /// dot for a rig, so that the two are not told apart by colour alone.
 fn camera_chip(ui: &mut Ui, index: usize, name: &str, on: bool, word: &str, ink: egui::Color32) -> egui::Response {
     let label = format!("{} {name}", index + 1);
-    let font = if on { semibold(BODY) } else { body() };
+    let font = if on { bold(BODY) } else { body() };
     let galley = ui.painter().layout_no_wrap(name.to_string(), font, OFF_WHITE);
     let mark = 2.0 * U;
     let width = U + NUMBER_TAG.x + GAP + galley.size().x + GAP + mark + GAP;
@@ -145,7 +146,7 @@ pub fn bar(ui: &mut Ui, s: &mut Session) {
                         }
                         // A state that needs the operator is said in a word beside the camera.
                         if matches!(word, "held" | "fault" | "stopping" | "no answer" | "reading") {
-                            ui.label(RichText::new(word).color(ink).font(semibold(SMALL)));
+                            ui.label(RichText::new(word).color(ink).font(bold(SMALL)));
                             ui.add_space(U);
                         }
                     }

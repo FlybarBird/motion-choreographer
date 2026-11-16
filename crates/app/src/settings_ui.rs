@@ -247,7 +247,7 @@ fn rig(ui: &mut Ui, s: &mut Session, camera: &mut CameraConfig, units: Units, ed
         ui.horizontal_wrapped(|ui| {
             for axis in Axis::ALL {
                 let step = step_for(axis) / 5.0;
-                ui.label(RichText::new(axis.label()).color(axis_color(axis)).small());
+                ui.label(RichText::new(axis.label()).small());
                 let mut v = rig.tolerance.get(axis);
                 let field = match axis {
                     Axis::Elevation => height_box(&mut v, units),
@@ -427,7 +427,7 @@ fn camera_tag(ui: &mut Ui, s: &Session) {
         ui.spacing_mut().item_spacing.x = GAP;
         let (rect, _) = ui.allocate_exact_size(NUMBER_TAG, egui::Sense::hover());
         number_tag(ui.painter(), rect, at + 1, camera_color(at));
-        ui.add(egui::Label::new(RichText::new(name).font(semibold(BODY))).truncate());
+        ui.add(egui::Label::new(RichText::new(name).font(bold(BODY))).truncate());
     });
 }
 
@@ -448,7 +448,7 @@ fn nav_item(ui: &mut Ui, open: bool, title: &str, height: f32) -> egui::Response
             p.rect_filled(row, 0.0, mix(PANEL_DARK, CONTROL, 0.6));
         }
         let ink = if open { egui::Color32::WHITE } else { OFF_WHITE };
-        let font = if open { semibold(BODY) } else { crate::theme::body() };
+        let font = if open { bold(BODY) } else { crate::theme::body() };
         p.text(egui::pos2(rect.left(), rect.center().y), egui::Align2::LEFT_CENTER, title, font, ink);
     }
     response
@@ -484,7 +484,7 @@ fn nav(ui: &mut Ui, s: &Session, page: &mut Page) {
         inset(ui, &mut |ui| {
             ui.spacing_mut().item_spacing.x = GAP;
             ui.label(RichText::new(icon::GEAR_SIX).font(icon_font(crate::theme::TITLE)));
-            ui.label(RichText::new(TITLE).font(semibold(crate::theme::TITLE)));
+            ui.label(RichText::new(TITLE).font(bold(crate::theme::TITLE)));
         });
         group(ui, "The show");
         items(ui, page, &Page::SHOW);
@@ -507,7 +507,7 @@ fn body(ui: &mut Ui, s: &mut Session, page: Page) {
         });
         ui.add_space(GAP);
     }
-    ui.label(RichText::new(page.title()).font(semibold(DISPLAY)));
+    ui.label(RichText::new(page.title()).font(bold(DISPLAY)));
     if page.of_one_camera() {
         camera_tag(ui, s);
         ui.label(
@@ -615,7 +615,7 @@ fn programming(ui: &mut Ui, project: &mut ptz_core::pose::Project, editable: boo
                 ui.end_row();
                 for axis in Axis::ALL {
                     let mut value = matching.range.get(axis);
-                    ui.label(RichText::new(axis.label()).color(axis_color(axis)));
+                    ui.label(RichText::new(axis.label()));
                     match axis {
                         Axis::Pan | Axis::Tilt => {
                             ui.add(egui::DragValue::new(&mut value).speed(0.1).range(0.0..=90.0).max_decimals(2).suffix(" deg"));
@@ -813,7 +813,7 @@ fn limits(ui: &mut Ui, camera: &mut CameraConfig, units: Units, editable: bool) 
             for axis in Axis::ALL {
                 let lim = camera.axes.get_mut(axis);
                 let step = step_for(axis);
-                ui.label(RichText::new(axis.label()).color(axis_color(axis)));
+                ui.label(RichText::new(axis.label()));
                 // Elevation is a length, shown in the show's units; the rest are degrees and shares.
                 let field = |value| match axis {
                     Axis::Elevation => height_box(value, units),
@@ -840,11 +840,10 @@ fn cameras(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::Project, 
         let status = s.status.camera(&camera.id);
         ui.horizontal(|ui| {
             let on = camera.id == selected;
-            let chip =
-                egui::Button::new(RichText::new(format!("{}", i + 1)).font(semibold(SMALL)).color(ink_on(camera_color(i))))
-                    .fill(camera_color(i))
-                    .stroke(egui::Stroke::new(if on { RULE_STRONG } else { 0.0 }, egui::Color32::WHITE))
-                    .min_size(egui::vec2(CONTROL_H, CONTROL_H));
+            let chip = egui::Button::new(RichText::new(format!("{}", i + 1)).font(bold(SMALL)).color(ink_on(camera_color(i))))
+                .fill(camera_color(i))
+                .stroke(egui::Stroke::new(if on { RULE_STRONG } else { 0.0 }, egui::Color32::WHITE))
+                .min_size(egui::vec2(CONTROL_H, CONTROL_H));
             if ui.add(chip).on_hover_text("Select this camera").clicked() {
                 select = Some(camera.id.clone());
             }
@@ -856,7 +855,7 @@ fn cameras(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::Project, 
                 }
             });
             let (text, ink) = match status {
-                Some(c) if c.fault.is_some() => ("fault", RED),
+                Some(c) if c.fault.is_some() => ("fault", FAULT),
                 Some(c) if c.hardware && c.adapters.iter().all(|a| a.connected) => ("rig connected", OFF_WHITE),
                 Some(c) if c.hardware => ("rig not answering", AMBER),
                 _ => ("simulator", MUTED),

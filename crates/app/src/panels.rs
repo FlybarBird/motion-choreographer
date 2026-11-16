@@ -269,7 +269,7 @@ fn inspect_move(ui: &mut Ui, s: &mut Session, id: &str) {
     let fps = s.project.rate.fps();
     // A list is as wide as the panel has room for beside its label, up to its usual width.
     let list = (ui.available_width() - 20.0 * U).clamp(28.0 * U, 190.0);
-    ui.label(RichText::new(crate::timeline::move_label(&song, id, &s.project)).font(semibold(BODY)));
+    ui.label(RichText::new(crate::timeline::move_label(&song, id, &s.project)).font(bold(BODY)));
     let issues: Vec<Issue> = s.issues_for(id).into_iter().cloned().collect();
     let missing = s.project.camera(&clip.camera).is_none();
     if s.project.cameras.len() > 1 || missing {
@@ -442,7 +442,7 @@ fn inspect_move(ui: &mut Ui, s: &mut Session, id: &str) {
                 ui.label(format!("{:.2} s", clip.duration_frames as f64 / fps));
                 ui.end_row();
                 for (axis, keys) in curves {
-                    ui.label(RichText::new(axis.label()).color(axis_color(*axis)));
+                    ui.label(RichText::new(axis.label()));
                     ui.label(format!("{} keys", keys.len()));
                     ui.end_row();
                 }
@@ -467,10 +467,7 @@ fn inspect_move(ui: &mut Ui, s: &mut Session, id: &str) {
         for axis in Axis::ALL {
             let mut on = clip.axes.contains(&axis);
             let enabled = clip.is_preset_move();
-            if ui
-                .add_enabled(enabled, egui::Checkbox::new(&mut on, RichText::new(axis.label()).color(axis_color(axis))))
-                .changed()
-            {
+            if ui.add_enabled(enabled, egui::Checkbox::new(&mut on, RichText::new(axis.label()))).changed() {
                 let mut axes = clip.axes.clone();
                 if on {
                     axes.push(axis);
@@ -516,7 +513,7 @@ fn inspect_media(ui: &mut Ui, s: &mut Session, id: &str) {
     let Some(song) = s.song.clone() else { return };
     let Some(clip) = song.media_clip(id).cloned() else { return };
     let fps = s.project.rate.fps();
-    ui.label(RichText::new(&clip.name).font(semibold(BODY)));
+    ui.label(RichText::new(&clip.name).font(bold(BODY)));
     section(ui, if clip.track == ptz_core::song::Track::Video { "Reference video" } else { "Audio" });
     egui::Grid::new("media_grid").num_columns(2).spacing([PAD, GAP]).show(ui, |ui| {
         tc_row(ui, s, "Start", clip.start_frame);
@@ -772,7 +769,7 @@ pub fn inspector(ui: &mut Ui, s: &mut Session) {
                 [id] if song.markers.iter().any(|m| &m.id == id) => inspect_marker(ui, s, id),
                 [_] => inspect_song(ui, s),
                 many => {
-                    ui.label(RichText::new(format!("{} items selected", many.len())).font(semibold(BODY)));
+                    ui.label(RichText::new(format!("{} items selected", many.len())).font(bold(BODY)));
                     note(ui, "Drag to move them together. Delete removes them. Cmd-D copies them after the selection.");
                     let issues: Vec<Issue> =
                         many.iter().flat_map(|id| s.issues_for(id).into_iter().cloned().collect::<Vec<_>>()).collect();
@@ -923,16 +920,28 @@ pub fn log(ui: &mut Ui, s: &mut Session) {
                 ui.horizontal(|ui| {
                     ui.add_space(PAD);
                     let time = r.time.get(11..19).unwrap_or(&r.time);
-                    ui.label(RichText::new(format!("{:>5}", r.seq)).monospace().color(MUTED));
-                    ui.label(RichText::new(time).monospace().color(MUTED));
+                    // Columns of a set width: the figures are of one width, the letters of a kind are not.
+                    let column = |ui: &mut Ui, width: f32, flush_right: bool, text: RichText| {
+                        let layout = if flush_right {
+                            egui::Layout::right_to_left(egui::Align::Center)
+                        } else {
+                            egui::Layout::left_to_right(egui::Align::Center)
+                        };
+                        ui.allocate_ui_with_layout(vec2(width, ui.spacing().interact_size.y), layout, |ui| {
+                            ui.set_min_width(width);
+                            ui.label(text);
+                        });
+                    };
+                    column(ui, 9.0 * U, true, RichText::new(format!("{}", r.seq)).monospace().color(MUTED));
+                    column(ui, 14.0 * U, false, RichText::new(time).monospace().color(MUTED));
                     let color = match r.kind.as_str() {
-                        "estop" | "fault" | "camera_held" | "estop_halted" | "estop_still_moving" => RED,
+                        "estop" | "fault" | "camera_held" | "estop_halted" | "estop_still_moving" => FAULT,
                         "limit" | "lease" | "refused" | "issue_accepted" | "acceptance_withdrawn" => AMBER,
-                        "arm" => GREEN,
+                        "arm" => RED,
                         "transport" => OFF_WHITE,
                         _ => MUTED,
                     };
-                    ui.label(RichText::new(format!("{:<13}", r.kind)).monospace().color(color));
+                    column(ui, 30.0 * U, false, RichText::new(r.kind.as_str()).monospace().color(color));
                     ui.label(RichText::new(log_line(&s.project, &r.kind, &r.data)).monospace());
                 });
             }

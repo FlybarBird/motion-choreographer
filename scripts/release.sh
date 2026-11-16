@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Publish a new version of PTZ Programmer: every installed copy then offers it as an update.
+# Publish a new version of Motion Choreographer: every installed copy then offers it as an update.
 #
 #   scripts/release.sh <version> ["what is new"]
 #   scripts/release.sh 0.1.1 "A scroll bar along the bottom of the timeline."
@@ -92,9 +92,9 @@ cargo update --workspace --offline --quiet
 # a copy that updates itself.
 OUT="$(mktemp -d)"
 PTZ_UPDATE_URL="$SERVICE" PTZ_UPDATE_KEY="$(cat "$KEYS/update-key")" PTZ_DIST="$OUT" bash scripts/package.sh
-APP_PKG="$(ls "$OUT"/PTZ-Programmer-"$VERSION"-macos-*.pkg)"
-SERVER_PKG="$(ls "$OUT"/PTZ-Server-"$VERSION"-macos-*.pkg)"
-PLATFORM="$(basename "$APP_PKG" .pkg | sed "s/^PTZ-Programmer-$VERSION-//")"
+APP_PKG="$(ls "$OUT"/Motion-Choreographer-"$VERSION"-macos-*.pkg)"
+SERVER_PKG="$(ls "$OUT"/Motion-Choreographer-Server-"$VERSION"-macos-*.pkg)"
+PLATFORM="$(basename "$APP_PKG" .pkg | sed "s/^Motion-Choreographer-$VERSION-//")"
 
 # 4. Describe the release and sign the description.
 printf '%s\n' "$NOTES" >"$OUT/notes.txt"
@@ -112,7 +112,7 @@ done
 
 # 6. Publish. Once this is done every installed copy offers the update.
 say "Publishing $TAG on GitHub"
-gh release create "$TAG" --repo "$REPO" --title "PTZ Programmer $VERSION" --notes-file "$OUT/notes.txt" --latest \
+gh release create "$TAG" --repo "$REPO" --title "Motion Choreographer $VERSION" --notes-file "$OUT/notes.txt" --latest \
   "$APP_PKG" "$SERVER_PKG" "$OUT/update-$PLATFORM.json" "$OUT/update-$PLATFORM.json.sig" >/dev/null ||
   fail "version $VERSION is committed, tagged and pushed, but GitHub did not take the release. Publish it by hand from $OUT"
 
