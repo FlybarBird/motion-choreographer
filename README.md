@@ -468,7 +468,10 @@ reads as stand, jump, stand, jump: too fast and too sharp for the head that
 made it. **Smooth recorded moves** in the Inspector (with nothing selected; or
 **Smooth this camera's moves** on a recorded clip) smooths every recorded move
 that is over a speed or acceleration limit until its rig can make it, changing
-only the stretches that are over and keeping each move's frames and ends. What
+only the stretches that are over and keeping each move's frames and ends. A
+take that stands still and then jumps, which is what a head that stopped
+reporting while it moved leaves, becomes the quickest move the rig can make,
+arriving when the take does. What
 is still over a limit is accepted as programmed in the station's name; range,
 step and keep-out problems never are, and are reported as left. The limits and
 the raw samples are not touched, smoothing again gives the same moves, and one

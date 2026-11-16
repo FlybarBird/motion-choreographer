@@ -2419,8 +2419,9 @@ impl Show {
     /// Smooth the recorded moves of the loaded song, or of one camera in it, until each is
     /// inside its rig's speed and acceleration limits, then accept the ones that still are
     /// not. A move is smoothed from its raw samples while it still is the whole pass, so
-    /// smoothing again starts from the same take; a trimmed one from its keys. A move someone
-    /// accepted is left as it is. Range, jump and keep-out problems are never accepted here:
+    /// smoothing again starts from the same take; a trimmed one from its keys. A move that was
+    /// accepted while still over a limit is smoothed again, and stays accepted only if it still
+    /// is over. Range, jump and keep-out problems are never accepted here:
     /// the report lists them as left. The rig's limits are read, never changed.
     pub fn smooth(&mut self, client: &str, req: &Smooth) -> Res<Smoothed> {
         self.require_lease(client)?;
@@ -2450,7 +2451,7 @@ impl Show {
         for clip in &recorded {
             let Some(camera) = self.project.camera(&clip.camera) else { continue };
             let overrun = entry.compiled.issues.iter().any(|i| i.clip_id() == Some(clip.id.as_str()) && i.acceptable());
-            if !overrun || clip.accepted.is_some() {
+            if !overrun {
                 continue;
             }
             let raw = self.raw_samples(&song_id, clip);

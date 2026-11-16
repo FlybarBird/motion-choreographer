@@ -409,15 +409,20 @@ nothing selected, under **Recorded moves**; with a recorded clip selected,
 - Each recorded move that is over a speed or acceleration limit is smoothed
   until its rig can make it. Only the stretches over a limit are changed, by as
   little as brings them inside; the move keeps its frames and starts and ends
-  where it did. A snap too quick for any head is spread over up to about a
-  second.
-- A move that is still over a limit after that, because the camera was really
-  moved faster than its limits for a while, is accepted as programmed in your
-  station's name, exactly as the button in chapter 6 does it.
+  where it did.
+- A head that stops reporting while it moves leaves a take that stands still
+  and then jumps to where the head had got to. That jump becomes the move the
+  rig must have made: as quick as its limits allow, arriving on the frame the
+  take does.
+- A move that is still over a limit after that, because there is no room in the
+  take to make it any slower, is accepted as programmed in your station's name,
+  exactly as the button in chapter 6 does it.
 - Range, step and keep-out problems are never accepted this way. They are left
   in the list, and the report counts them.
-- The rig's limits are not changed, and neither are moves someone has already
-  accepted or moves that were not recorded.
+- The rig's limits are not changed, and neither are moves that were not
+  recorded. A recorded move that was accepted while still over a limit is
+  smoothed again from its take, and is no longer an accepted one once it is
+  inside the limits.
 
 When it is done the Inspector and the Log say how many moves were smoothed, how
 far the furthest is from the take, how many were accepted and how many issues

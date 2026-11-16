@@ -193,14 +193,15 @@ fn a_move_still_over_a_limit_is_accepted_and_a_step_or_a_range_problem_is_report
     api.load_song(&song.id).unwrap();
     song = edit::set_song_length(&song, &project, 900).unwrap();
 
-    // Two and a half seconds at one and a half times the head's top speed: smoothing cannot hide that.
-    let sweep = |f: f64| -80.0 + 90.0 * ((f - 60.0) / 25.0).clamp(0.0, 2.5);
-    let fast = take(&t, &project, &mut song, "cam1", 10, [(Axis::Pan, (0..300).map(|f| sweep(f as f64)).collect())].into());
+    // Two and a half seconds at one and a half times the head's top speed, in a three second
+    // take: there is no room in it to make that move any slower, so smoothing cannot hide it.
+    let sweep = |f: f64| -80.0 + 90.0 * ((f - 10.0) / 25.0).clamp(0.0, 2.5);
+    let fast = take(&t, &project, &mut song, "cam1", 10, [(Axis::Pan, (0..90).map(|f| sweep(f as f64)).collect())].into());
     // A later take on the same head starts 45 degrees from where the first ended.
     let later =
         take(&t, &project, &mut song, "cam1", 500, [(Axis::Pan, late_readings(5, 200, |f| 100.0 - 0.8 * f.min(100.0)))].into());
     // The same sweep on the head that cannot reach it.
-    let beyond = take(&t, &project, &mut song, "cam2", 10, [(Axis::Pan, (0..300).map(|f| sweep(f as f64)).collect())].into());
+    let beyond = take(&t, &project, &mut song, "cam2", 10, [(Axis::Pan, (0..90).map(|f| sweep(f as f64)).collect())].into());
     let recorded = put(&api, &song);
     let of = |issues: &[Issue], clip: &str| issues.iter().filter(|i| i.clip_id() == Some(clip)).cloned().collect::<Vec<_>>();
     assert!(of(&recorded.issues, &later).iter().any(|i| i.acceptable()), "the late readings make the later take too sharp");

@@ -164,8 +164,13 @@ pub fn fit_keys(samples: &[f64], tolerance: f64) -> Vec<Key> {
     keys
 }
 
-/// How far smoothing may spread a move in time: the width of the blur, in seconds.
-const SMOOTH_SPREAD_S: f64 = 0.25;
+/// How far smoothing may spread a move in time: the widest the blur gets, in seconds. Wide
+/// enough that any move the rig could make inside the take is brought inside its limits.
+const SMOOTH_SPREAD_S: f64 = 2.0;
+/// How far in from each end of a take the easing reaches, in seconds.
+const EASE_REACH_S: f64 = 0.5;
+/// Readings count as standing still while they stay within this share of the jump that follows.
+const STALE: f64 = 1e-3;
 /// Smoothing aims a little inside the limits, so the keys fitted to it stay inside them too.
 const SMOOTH_MARGIN: f64 = 0.9;
 
@@ -187,12 +192,67 @@ pub fn overruns(samples: &[f64], limits: &AxisLimits, fps: f64) -> bool {
     fast || values.windows(3).any(|w| (w[2] - 2.0 * w[1] + w[0]).abs() * fps * fps > limits.max_accel * SLACK)
 }
 
+/// The steps of the quickest move over `distance` that starts and ends at rest: no step
+/// longer than `step`, no two neighbours further apart than `bend`.
+fn quickest(distance: f64, step: f64, bend: f64) -> Vec<f64> {
+    let shape = |frames: usize| -> Vec<f64> {
+        (1..=frames).map(|k| step.min(bend * k as f64).min(bend * (frames + 1 - k) as f64)).collect()
+    };
+    let mut frames = (distance / step).ceil().max(1.0) as usize;
+    loop {
+        let steps = shape(frames);
+        let reach: f64 = steps.iter().sum();
+        if reach >= distance {
+            return steps.into_iter().map(|d| d * distance / reach).collect();
+        }
+        frames += 1;
+    }
+}
+
+/// Readings that stood still and then caught up in a jump no rig could make: the head had
+/// stopped answering while it moved, and the first reading after is where it had got to. The
+/// rig is given the move it must have made, as late and as quick as its limits allow, so it
+/// arrives when the take does. Only where the readings stood still for as long as that move
+/// takes; anything else is left for the blur.
+fn arrive_on_time(values: &mut [f64], step: f64, bend: f64) {
+    let n = values.len();
+    let mut i = 1;
+    while i + 2 < n {
+        let first = values[i + 1] - values[i];
+        if first.abs() <= step {
+            i += 1;
+            continue;
+        }
+        // The jump runs from frame i to frame j: every step of it too long, all the same way.
+        let mut j = i + 1;
+        while j + 2 < n && (values[j + 1] - values[j]).abs() > step && (values[j + 1] - values[j]) * first > 0.0 {
+            j += 1;
+        }
+        let (from, to) = (values[i], values[j]);
+        let steps = quickest((to - from).abs(), step, bend);
+        // The move ends on frame j, so it starts this many frames before it; frame 1 is the
+        // first of the take and never moves.
+        if let Some(start) = j.checked_sub(steps.len()).filter(|s| *s >= 1) {
+            if values[start..=i].iter().all(|v| (v - from).abs() <= STALE * (to - from).abs()) {
+                let mut at = from;
+                for (k, d) in steps.iter().enumerate() {
+                    at += d * (to - from).signum();
+                    values[start + 1 + k] = at;
+                }
+                values[j] = to;
+            }
+        }
+        i = j;
+    }
+}
+
 /// Smooth a move, one value per frame, until its speed and acceleration are inside the
 /// limits. Only the stretches that break a limit are changed, each by as little as brings
 /// it inside, so what already fits is returned as it was and smoothing twice changes nothing
 /// more. The first and last value never move; a take that starts or ends with the rig
-/// moving is eased away from them. A move that stays too fast for longer than the blur can
-/// spread is left over the limit.
+/// moving is eased away from them. Readings that stood still and then jumped become the
+/// move the rig must have made, arriving when the take does. Only a move the rig could not
+/// make inside the take at all is left over the limit.
 pub fn smooth_to_limits(samples: &[f64], limits: &AxisLimits, fps: f64) -> Vec<f64> {
     if samples.len() < 3 {
         return samples.to_vec();
@@ -203,6 +263,7 @@ pub fn smooth_to_limits(samples: &[f64], limits: &AxisLimits, fps: f64) -> Vec<f
     let bend = limits.max_accel / (fps * fps) * SMOOTH_MARGIN;
     // Each pass widens the blur a little: this many reach the widest it may get.
     let passes = (2.0 * (SMOOTH_SPREAD_S * fps).powi(2)).ceil() as usize;
+    arrive_on_time(&mut values, step, bend);
     let mut over = vec![false; n];
     let mut was = values.clone();
     for _ in 0..passes {
@@ -210,7 +271,7 @@ pub fn smooth_to_limits(samples: &[f64], limits: &AxisLimits, fps: f64) -> Vec<f
         // rest there, so from each end the steps grow no faster than the rig can pick up speed.
         // Held a hair inside what the check below allows, so rounding never sets the two at odds,
         // and reaching no further in than the blur may spread.
-        let furthest = (2.0 * SMOOTH_SPREAD_S * fps).ceil() as i64;
+        let furthest = (EASE_REACH_S * fps).ceil() as i64;
         for (end, inward) in [(1, 1), (n as i64 - 2, -1)] {
             for k in 1..(n as i64 - 3).min(furthest) {
                 let (a, b) = ((end + inward * (k - 1)) as usize, (end + inward * k) as usize);
@@ -372,6 +433,40 @@ mod tests {
         let eased = smooth_to_limits(&moving, &FR7, 30.0);
         assert!(!overruns(&eased, &FR7, 30.0));
         assert_eq!((eased[0], eased[119]), (moving[0], moving[119]));
+    }
+
+    #[test]
+    fn readings_that_stood_still_and_then_jumped_become_a_move_that_arrives_when_the_take_does() {
+        // A head that stopped answering while it swung 44 degrees: 80 seconds of the old
+        // reading, one frame to where it had got to, then the slow pan it was making.
+        let mut take = vec![69.093; 2425];
+        take.extend([27.18, 24.763]);
+        take.extend((1..950).map(|i| 24.763 + 0.004 * i as f64));
+        assert!(overruns(&take, &FR7, 30.0));
+        let smooth = smooth_to_limits(&take, &FR7, 30.0);
+        assert!(!overruns(&smooth, &FR7, 30.0), "nothing is left over the limit to accept");
+        // The rig is there when the take says it is, and follows the take from then on.
+        assert_eq!(smooth[2426..], take[2426..]);
+        // It left as late as its limits let it: a little over a second before, and not sooner.
+        let left = smooth.iter().position(|v| *v != 69.093).unwrap();
+        assert!((2385..2400).contains(&left), "the move starts on frame {left}");
+        assert_eq!(smooth[..left], take[..left]);
+        assert!(smooth[left..2427].windows(2).all(|w| w[1] < w[0]), "one move, all the same way");
+        assert_eq!(smooth_to_limits(&smooth, &FR7, 30.0), smooth, "smoothing again changes nothing");
+        let keys = fit_keys(&smooth, 0.025);
+        let played: Vec<f64> = (0..take.len()).map(|f| keys_value(&keys, f as f64).unwrap()).collect();
+        assert!(!overruns(&played, &FR7, 30.0));
+
+        // A jump with the rig already moving before it is not that: it is blurred where it is,
+        // however wide the blur has to get.
+        let mut moving: Vec<f64> = (0..300).map(|i| 0.5 * (i as f64 - 150.0).max(0.0)).collect();
+        for v in &mut moving[200..] {
+            *v += 44.0;
+        }
+        moving.extend(vec![*moving.last().unwrap(); 200]);
+        let blurred = smooth_to_limits(&moving, &FR7, 30.0);
+        assert!(overruns(&moving, &FR7, 30.0) && !overruns(&blurred, &FR7, 30.0));
+        assert_eq!((blurred[0], blurred[499]), (moving[0], moving[499]));
     }
 
     #[test]
