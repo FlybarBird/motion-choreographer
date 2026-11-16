@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Stage models for PTZ Programmer: OBJ and 3DS import, a compact mesh file, a depth-buffered software renderer"
+description = "Stage models for Motion Choreographer: OBJ and 3DS import, a compact mesh file, a depth-buffered software renderer"
 
 [dependencies]
 

@@ -90,7 +90,7 @@ const app = document.querySelector("#app");
 app.innerHTML = `
   <header class="top">
     <button class="contents" type="button" aria-expanded="false">Contents</button>
-    <a class="mark" href="#/ptz-pro">PTZ Programmer</a>
+    <a class="mark" href="#/ptz-pro"><img src="/motion-choreographer-lockup-inline-color-reversed.svg" alt="Motion Choreographer" /></a>
     <nav class="books" aria-label="Manuals">
       ${BOOKS.map((book) => `<a data-book="${book.id}" href="#/${book.id}">${book.short}</a>`).join("")}
     </nav>
@@ -122,7 +122,7 @@ function parseHash() {
 function render() {
   const { book, anchor } = parseHash();
   const page = compiled.get(book.id);
-  document.title = `${book.short} · PTZ Programmer`;
+  document.title = `${book.short} · Motion Choreographer`;
   for (const link of bookLinks) {
     link.classList.toggle("on", link.dataset.book === book.id);
   }

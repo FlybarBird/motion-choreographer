@@ -1,5 +1,5 @@
 #!/bin/sh
-# PTZ Programmer @VERSION@ for Linux (@ARCH@): the installer for the @KIND@.
+# Motion Choreographer @VERSION@ for Linux (@ARCH@): the installer for the @KIND@.
 # scripts/package.sh fills in the three names above and appends the files, as a
 # tar.gz, after the last line of this script.
 set -eu
@@ -21,7 +21,7 @@ fail() {
 usage() {
   if [ "$KIND" = app ]; then
     cat <<HELP
-PTZ Programmer $VERSION: installs the desktop app, and the show server if you want it here.
+Motion Choreographer $VERSION: installs the desktop app, and the show server if you want it here.
 
   sh $(basename "$0") [--with-server | --no-server] [--prefix DIR]
   sh $(basename "$0") --uninstall [--with-server] [--prefix DIR]
@@ -36,7 +36,7 @@ The show data (~/PTZProgrammer) and the app's settings are never touched.
 HELP
   else
     cat <<HELP
-PTZ Programmer $VERSION: installs the show server and its tools (ptz-server, ptz-probe, ptz-bringup, ptz-panel).
+Motion Choreographer $VERSION: installs the show server and its tools (ptz-server, ptz-probe, ptz-bringup, ptz-panel).
 
   sh $(basename "$0") [--prefix DIR]
   sh $(basename "$0") --uninstall [--prefix DIR]
@@ -79,8 +79,11 @@ if [ "$KIND" = server ]; then
 fi
 
 BIN="$PREFIX/bin"
+# These keep the names from before the app was renamed, so that an older install is found,
+# upgraded in place and removed.
 SHARE="$PREFIX/share/ptz-programmer"
 DESKTOP="$PREFIX/share/applications/ptz-programmer.desktop"
+ICON="$SHARE/app-icon-256.png"
 
 # Each part keeps a list of what it installed, so that removing it removes exactly that.
 remove_part() {
@@ -100,7 +103,7 @@ if [ "$ACTION" = uninstall ]; then
   if [ ! -f "$SHARE/installed-app.txt" ] && [ ! -f "$SHARE/installed-server.txt" ]; then
     rm -rf "$SHARE"
   fi
-  [ -n "$removed" ] || fail "nothing of PTZ Programmer to remove was found under $PREFIX"
+  [ -n "$removed" ] || fail "nothing of Motion Choreographer to remove was found under $PREFIX"
   say "Removed $removed from $PREFIX"
   if [ "$KIND" = app ] && [ -f "$SHARE/installed-server.txt" ]; then
     say "Kept: the show server and tools. Add --with-server to remove them too"
@@ -155,19 +158,23 @@ missing_libraries() {
 if [ "$KIND" = app ]; then
   : >"$SHARE/installed-app.txt.new"
   put app "$WORK/app/bin/ptz-app" "$BIN/ptz-app"
+  cp "$WORK/app/share/app-icon-256.png" "$ICON"
+  chmod 644 "$ICON"
+  printf '%s\n' "$ICON" >>"$SHARE/installed-app.txt.new"
   mkdir -p "$(dirname "$DESKTOP")"
   cat >"$DESKTOP" <<ENTRY
 [Desktop Entry]
 Type=Application
-Name=PTZ Programmer
+Name=Motion Choreographer
 Comment=Timeline programming and playout for PTZ cameras
 Exec="$BIN/ptz-app"
+Icon=$ICON
 Terminal=false
 Categories=AudioVideo;Video;
 ENTRY
   printf '%s\n' "$DESKTOP" >>"$SHARE/installed-app.txt.new"
   mv -f "$SHARE/installed-app.txt.new" "$SHARE/installed-app.txt"
-  say "Installed PTZ Programmer $VERSION: $BIN/ptz-app"
+  say "Installed Motion Choreographer $VERSION: $BIN/ptz-app"
   missing="$(missing_libraries "$BIN/ptz-app")"
   [ -z "$missing" ] || say "ptz-app needs libraries this computer does not have: $missing"
 fi
@@ -202,7 +209,7 @@ if [ "$SERVER" = yes ]; then
   printf '  ptz-panel       run the show from a SKAARHOJ panel: ptz-panel --panel <panel address>\n'
 fi
 if [ "$KIND" = app ]; then
-  printf '  ptz-app         open the app, or choose PTZ Programmer in your applications menu\n'
+  printf '  ptz-app         open the app, or choose Motion Choreographer in your applications menu\n'
   if [ "$SERVER" != yes ]; then
     printf '                  then enter the address of the show server on the connect screen\n'
   fi

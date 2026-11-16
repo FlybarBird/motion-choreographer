@@ -3,7 +3,7 @@ use ptz_server::{audio, http, panel_host, runlog};
 use std::path::PathBuf;
 
 const HELP: &str = "\
-ptz-server: the PTZ Programmer show server
+ptz-server: the Motion Choreographer show server
 
 Usage: ptz-server [options]
 

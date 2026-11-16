@@ -111,9 +111,12 @@ fn e_stop_keeps_its_place_beside_the_longest_fault_and_lock_texts() {
         let mut r = crowded(window);
         assert_whole(&mut r, window, "E-STOP", Action::Estop);
 
-        // What the operator needs to read is still in the bar, whole and inside the window.
-        let bar =
-            egui::Rect::from_min_max(pos2(0.0, rect_of(&r, "E-STOP").top() - 10.0), pos2(window.x, rect_of(&r, "CAMERAS").top()));
+        // What the operator needs to read is still in the transport strip, whole and inside the window.
+        let bar = r.harness.state().transport_rect;
+        assert!(
+            egui::Rect::from_min_size(Pos2::ZERO, window).contains_rect(bar),
+            "{window:?}: the strip at {bar:?} is inside the window"
+        );
         let shown = worded(&r);
         for needed in [LONG_FAULT, LONG_PROBLEM, "REC", &format!("LOCKED TO {LONG_CLIP}")] {
             let at = shown
@@ -196,7 +199,7 @@ pub(super) fn open(r: &mut Rig, prompt: Prompt) {
         Prompt::StopNotSent => shell.session.stop_not_sent = Some(("Connection refused".into(), true)),
         Prompt::Update => {
             let installer = crate::update::Installer {
-                name: "PTZ-Programmer-0.9.0-macos-arm64.pkg".into(),
+                name: "Motion-Choreographer-0.9.0-macos-arm64.pkg".into(),
                 size: 13_000_000,
                 sha256: "0".repeat(64),
             };

@@ -234,7 +234,7 @@ pub fn choices() -> ptz_core::api::InputChoices {
         Ok((_, inputs)) => out.audio_inputs = inputs,
         Err(why) => out.audio_problem = Some(why),
     }
-    match midir::MidiInput::new("PTZ Programmer") {
+    match midir::MidiInput::new("Motion Choreographer") {
         Ok(input) => out.midi_inputs = input.ports().iter().filter_map(|p| input.port_name(p).ok()).collect(),
         Err(e) => out.midi_problem = Some(format!("MIDI is not available on this machine: {e}")),
     }
@@ -416,7 +416,8 @@ mod mtc {
 
     pub fn run(want: &str, feeder: Feeder, stop: Arc<AtomicBool>, ready: Sender<Result<(), String>>) {
         let opened = (|| {
-            let input = MidiInput::new("PTZ Programmer").map_err(|e| format!("MIDI is not available on this machine: {e}"))?;
+            let input =
+                MidiInput::new("Motion Choreographer").map_err(|e| format!("MIDI is not available on this machine: {e}"))?;
             let ports = input.ports();
             let names: Vec<String> = ports.iter().map(|p| input.port_name(p).unwrap_or_default()).collect();
             let want_l = want.to_lowercase();

@@ -276,7 +276,8 @@ fn squeezing_a_move_warns_and_the_inspector_button_clears_it() {
     r.harness.run_steps(2);
     r.harness.get_by_label("1 issue");
     r.harness.get_by_label("Use auto time").scroll_to_me();
-    r.harness.run_steps(2);
+    // The Inspector scrolls there over a few frames, and takes no click until it has.
+    r.harness.run_steps(8);
     r.harness.get_by_label("Use auto time").click();
     r.harness.run_steps(3);
     let fixed = r.song().motion_clip(&id).unwrap().clone();
@@ -1687,6 +1688,7 @@ fn a_dropped_model_is_imported_shown_with_its_size_and_placed_from_show_settings
 
 #[test]
 fn a_layout_saved_before_the_stage_tabs_existed_gains_them_beside_the_program_monitor() {
+    use crate::app::LOWER;
     use egui_dock::{DockState, NodeIndex};
     let mut old = DockState::new(vec![Tab::Reference, Tab::Program]);
     let surface = old.main_surface_mut();
@@ -1695,13 +1697,15 @@ fn a_layout_saved_before_the_stage_tabs_existed_gains_them_beside_the_program_mo
     let [_, _] = surface.split_right(centre, 0.6, vec![Tab::Rig, Tab::Inspector]);
     let program = old.find_tab(&Tab::Program).unwrap();
     old.set_active_tab(program).unwrap();
-    let before = serde_json::to_value(&old).unwrap();
 
     let (link, _cmds, _events) = Link::detached();
     let session = Session::offline(link, Project::default(), presets(), Song::new("s", "Test Song", "01:00:00:00", 1500));
     let shell = Shell::new(session, Some(old));
+    // Every tab is somewhere: the timeline's under the transport strip, the rest over it.
     for tab in Tab::ALL {
-        assert!(shell.dock.find_tab(&tab).is_some(), "{tab:?} is in the layout");
+        let over = shell.dock.find_tab(&tab).is_some();
+        let under = shell.lower.find_tab(&tab).is_some();
+        assert_eq!((over, under), (!LOWER.contains(&tab), LOWER.contains(&tab)), "{tab:?} is in its place");
     }
     let (program, stage, multiview) = (
         shell.dock.find_tab(&Tab::Program).unwrap(),
@@ -1718,9 +1722,10 @@ fn a_layout_saved_before_the_stage_tabs_existed_gains_them_beside_the_program_mo
     let leaf = shell.dock[presets_at.surface][presets_at.node].get_leaf().unwrap();
     assert_eq!(leaf.tabs(), &[Tab::Presets, Tab::Media, Tab::SetList]);
     assert_eq!(leaf.active, presets_at.tab);
-    // The splits the operator made are untouched.
-    let nodes = |v: &serde_json::Value| v["surfaces"][0]["Main"]["nodes"].as_array().map(Vec::len);
-    assert_eq!(nodes(&before), nodes(&serde_json::to_value(&shell.dock).unwrap()));
+    // The groups the operator made over the timeline are still apart.
+    let rig = shell.dock.find_tab(&Tab::Rig).unwrap();
+    assert_ne!(rig.node, program.node);
+    assert_ne!(presets_at.node, program.node);
 
     // A layout that already has every tab is kept as it is.
     let tabs = |dock: &DockState<Tab>| -> Vec<Tab> { dock.iter_all_tabs().map(|(_, tab)| *tab).collect() };
@@ -1728,7 +1733,7 @@ fn a_layout_saved_before_the_stage_tabs_existed_gains_them_beside_the_program_mo
     let session = Session::offline(link, Project::default(), presets(), Song::new("s", "Test Song", "01:00:00:00", 1500));
     let again = Shell::new(session, Some(crate::app::default_layout()));
     assert_eq!(tabs(&again.dock), tabs(&crate::app::default_layout()));
-    assert_eq!(tabs(&again.dock).len(), Tab::ALL.len());
+    assert_eq!(tabs(&again.dock).len() + tabs(&again.lower).len(), Tab::ALL.len());
 }
 
 // ---------------------------------------------------------------- audit follow-ups
@@ -2004,7 +2009,8 @@ fn a_newer_version_is_offered_in_the_view_menu_and_waits_for_the_show_to_stop() 
     r.harness.run_steps(2);
     assert!(r.toasts().is_empty(), "{:?}", r.toasts());
 
-    let installer = Installer { name: "PTZ-Programmer-0.9.0-macos-arm64.pkg".into(), size: 13_000_000, sha256: "0".repeat(64) };
+    let installer =
+        Installer { name: "Motion-Choreographer-0.9.0-macos-arm64.pkg".into(), size: 13_000_000, sha256: "0".repeat(64) };
     let release = Release {
         version: "0.9.0".into(),
         platform: "macos-arm64".into(),

@@ -398,7 +398,7 @@ fn run_installer(installer: &Path, version: &str) -> Result<(), String> {
         script.push_str(" -applyChoiceChangesXML \" & quoted form of (item 3 of argv) & \"");
     }
     script.push_str(" -target /");
-    let prompt = format!("PTZ Programmer is installing version {version}.");
+    let prompt = format!("{} is installing version {version}.", crate::brand::NAME);
     let out = Command::new("/usr/bin/osascript")
         .args(["-e", "on run argv"])
         .args(["-e", &format!("do shell script \"{script}\" with prompt (item 2 of argv) with administrator privileges")])
@@ -491,7 +491,7 @@ mod tests {
     fn only_a_release_signed_by_the_trusted_key_and_made_for_this_computer_is_read() {
         let key = SigningKey::from_bytes(&[7; 32]);
         let trusted = hex(&key.verifying_key().to_bytes());
-        let good = manifest("0.1.2", "macos-arm64", "PTZ-Programmer-0.1.2-macos-arm64.pkg");
+        let good = manifest("0.1.2", "macos-arm64", "Motion-Choreographer-0.1.2-macos-arm64.pkg");
 
         let release = read_release(&signed(&good, &key), &trusted, "macos-arm64").unwrap();
         assert_eq!((release.version.as_str(), release.installer.size, release.notes.as_str()), ("0.1.2", 11, "Scroll bars."));

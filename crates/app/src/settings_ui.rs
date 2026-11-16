@@ -840,11 +840,11 @@ fn cameras(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::Project, 
         let status = s.status.camera(&camera.id);
         ui.horizontal(|ui| {
             let on = camera.id == selected;
-            let chip =
-                egui::Button::new(RichText::new(format!("{}", i + 1)).font(semibold(SMALL)).color(ink_on(camera_color(i))))
-                    .fill(camera_color(i))
-                    .stroke(egui::Stroke::new(if on { RULE_STRONG } else { 0.0 }, egui::Color32::WHITE))
-                    .min_size(egui::vec2(CONTROL_H, CONTROL_H));
+            // The camera's number in its colour, in a thin square of it: heavier for the camera in hand.
+            let chip = egui::Button::new(RichText::new(format!("{}", i + 1)).font(semibold(SMALL)).color(camera_color(i)))
+                .fill(egui::Color32::TRANSPARENT)
+                .stroke(egui::Stroke::new(if on { RULE_STRONG } else { RULE }, camera_color(i)))
+                .min_size(egui::vec2(CONTROL_H, CONTROL_H));
             if ui.add(chip).on_hover_text("Select this camera").clicked() {
                 select = Some(camera.id.clone());
             }

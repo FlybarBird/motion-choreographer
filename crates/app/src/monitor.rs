@@ -88,6 +88,7 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
     } else if held {
         ("HELD  this camera stopped where it was".to_string(), RED, ink_on(RED))
     } else if live {
+        // A tag in the machine's colour, Ink on it, as the brand's LIVE.
         let fill = machine.unwrap_or(GREEN);
         (if simulated { "LIVE  simulator".to_string() } else { "LIVE  rig is moving".to_string() }, fill, ink_on(fill))
     } else {
@@ -102,7 +103,8 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
     let width = |text: &str| painter.layout_no_wrap(text.to_string(), small(), ink).size().x + 2.0 * GAP;
     let state =
         if width(&text) + width(what) + 3.0 * GAP > pic.width() { text.split("  ").next().unwrap_or(&text) } else { &text };
-    badge(&painter, pic.left_top() + vec2(GAP, GAP), Align2::LEFT_TOP, state, fill_c, ink);
+    let state_plate = badge(&painter, pic.left_top() + vec2(GAP, GAP), Align2::LEFT_TOP, state, fill_c, ink);
+    let _ = state_plate;
     let source = badge(&painter, pic.right_top() + vec2(-GAP, GAP), Align2::RIGHT_TOP, what, plate_fill(), OFF_WHITE);
     if s.status.transport.record {
         painter.circle_filled(source.right_bottom() + vec2(-GAP, 2.0 * GAP), 6.0, RED);

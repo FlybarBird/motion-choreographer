@@ -6,7 +6,7 @@ use crate::session::Session;
 use crate::theme::*;
 use crate::update::{self, Step, Updater};
 use crate::{monitor, timeline_ui};
-use egui::{vec2, Align, Key, Layout, RichText, Stroke, Ui};
+use egui::{vec2, Align, FontId, Key, Layout, RichText, Stroke, Ui};
 use egui_dock::{DockArea, DockState, NodeIndex};
 use ptz_core::edit;
 use ptz_core::time::Timecode;
@@ -65,13 +65,23 @@ impl Tab {
     }
 }
 
+/// The panels under the transport strip: the timeline and what shares its place.
+pub const LOWER: [Tab; 3] = [Tab::Timeline, Tab::Graph, Tab::Log];
+
+/// The panels over the transport strip: the browsers at the left, the stage viewer and the program
+/// monitor side by side in the middle, the inspector at the right.
 pub fn default_layout() -> DockState<Tab> {
-    let mut state = DockState::new(vec![Tab::Program, Tab::Stage, Tab::Multiview, Tab::Reference]);
+    let mut state = DockState::new(vec![Tab::Program, Tab::Multiview, Tab::Reference]);
     let surface = state.main_surface_mut();
-    let [top, _] = surface.split_below(NodeIndex::root(), 0.5, vec![Tab::Timeline, Tab::Graph, Tab::Log]);
-    let [centre, _] = surface.split_left(top, 0.2, vec![Tab::Presets, Tab::SetList, Tab::Media]);
-    let [_, _] = surface.split_right(centre, 0.7, vec![Tab::Inspector, Tab::Rig]);
+    let [centre, _] = surface.split_left(NodeIndex::root(), 0.2, vec![Tab::Presets, Tab::SetList, Tab::Media]);
+    let [centre, _] = surface.split_right(centre, 0.7, vec![Tab::Inspector, Tab::Rig]);
+    let [_, _] = surface.split_left(centre, 0.5, vec![Tab::Stage]);
     state
+}
+
+/// The panels under the transport strip.
+pub fn lower_layout() -> DockState<Tab> {
+    DockState::new(LOWER.to_vec())
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -83,6 +93,8 @@ pub struct Settings {
     /// Servers this station has reached, newest first.
     pub recent: Vec<String>,
     pub layout: Option<DockState<Tab>>,
+    /// The panels under the transport strip.
+    pub lower_layout: Option<DockState<Tab>>,
 }
 
 const RECENT_SERVERS: usize = 5;
@@ -386,9 +398,14 @@ pub(crate) enum Dialog {
 /// Everything shown once connected. Hosted by the real window and by the UI tests.
 pub struct Shell {
     pub session: Session,
+    /// The panels over the transport strip.
     pub dock: DockState<Tab>,
+    /// The panels under it: the timeline, the graph editor and the log.
+    pub lower: DockState<Tab>,
     pub(crate) dialog: Dialog,
     pub layout_changed: bool,
+    /// Where the transport strip was drawn last.
+    pub transport_rect: egui::Rect,
     /// Looks for a newer version of the app. The window's own; one that never looks, in the tests.
     pub updater: Updater,
     /// The newer version the operator has been told of.
@@ -398,8 +415,10 @@ pub struct Shell {
 impl Shell {
     /// Bring a tab to the front of its group.
     pub fn show_tab(&mut self, tab: Tab) {
-        if let Some(path) = self.dock.find_tab(&tab) {
-            let _ = self.dock.set_active_tab(path);
+        for dock in [&mut self.dock, &mut self.lower] {
+            if let Some(path) = dock.find_tab(&tab) {
+                let _ = dock.set_active_tab(path);
+            }
         }
     }
 }
@@ -480,10 +499,15 @@ fn action_button(ui: &mut Ui, s: &mut Session, action: Action, glyph: &str, labe
 pub(crate) const ESTOP_SIZE: egui::Vec2 = vec2(30.0 * U, 9.0 * U);
 /// The yellow ground it stands on shows this far round it.
 const ESTOP_GROUND: egui::Vec2 = vec2(ESTOP_SIZE.x + 2.0 * U, ESTOP_SIZE.y + 2.0 * U);
+/// The width of Reset E-Stop, beside the latch.
+const RESET_W: f32 = 130.0;
 /// A row of buttons in the transport bar is as high as its tallest control.
 const BUTTON_ROW: f32 = ESTOP_GROUND.y;
 /// The hint is left out where there is not even room for the mark that says it was cut short.
 const HINT_LEAST: f32 = 16.0;
+
+/// How high the transport strip is with its controls on one row.
+const TRANSPORT_H: f32 = ESTOP_GROUND.y + 2.0 * (U + 2.0);
 
 /// How the left of the transport bar is laid out. Its first row ends where the meters and the stop
 /// control begin; what does not fit there goes onto rows under it, which have the whole width of the bar.
@@ -556,12 +580,11 @@ fn e_stop_has_keyboard_id() -> egui::Id {
 }
 
 /// E-STOP has a layer of its own above every dialog, menu and tip the window can show, over the place kept
-/// for it in the transport bar. Whatever else is open it is drawn whole, in its own colour, and it takes
+/// for it in the top right corner. Whatever else is open it is drawn whole, in its own colour, and it takes
 /// the click: a dialog stops clicks only on what lies beneath it, and nothing is laid out above this.
-fn e_stop(ui: &mut Ui, s: &mut Session) {
-    let (place, _) = ui.allocate_exact_size(ESTOP_GROUND, egui::Sense::hover());
+fn e_stop(ctx: &egui::Context, s: &mut Session, place: egui::Rect) {
     let id = egui::Id::new("e_stop");
-    let ctx = ui.ctx().clone();
+    let ctx = ctx.clone();
     // The first time a layer is laid out egui only measures it. That pass is done over at once, so that
     // there is no frame in which the button is not there.
     if ctx.memory(|m| m.area_rect(id).is_none()) {
@@ -640,8 +663,17 @@ fn action_glyph(action: Action) -> &'static str {
 
 impl Shell {
     pub fn new(session: Session, layout: Option<DockState<Tab>>) -> Shell {
-        let dock = layout.map(with_every_tab).unwrap_or_else(default_layout);
-        Shell { session, dock, dialog: Dialog::None, layout_changed: false, updater: Updater::off(), update_told: None }
+        let dock = layout.map(|l| with_every_tab(without_lower(l))).unwrap_or_else(default_layout);
+        Shell {
+            session,
+            dock,
+            lower: lower_layout(),
+            dialog: Dialog::None,
+            layout_changed: false,
+            transport_rect: egui::Rect::NOTHING,
+            updater: Updater::off(),
+            update_told: None,
+        }
     }
 
     /// Why the app may not close to install an update just now.
@@ -662,19 +694,27 @@ impl Shell {
         self.shortcuts(ui);
         self.dropped_files(ui);
 
-        // Three bars, each a strip across the window with a hairline under it: the song, the machine, the cameras.
+        // Two bars across the top: the song and the cameras. The machine's strip, with the clock, the
+        // transport and E-STOP, runs across the window between the viewers and the timeline.
         let bar = |fill, y: f32| egui::Frame::new().fill(fill).inner_margin(egui::Margin::symmetric(PAD as i8, y as i8));
+        // The song bar runs the width of the window. The camera bar under it leaves its right end to
+        // E-STOP, which stands there on a layer of its own: above everything, so that nothing in the
+        // panels, however far it runs, is ever laid out over it.
         egui::Panel::top("song_header").frame(bar(PANEL_DARK, U + 2.0)).show(ui, |ui| self.header(ui));
-        let transport = egui::Panel::top("transport_bar")
-            .show_separator_line(false)
-            .frame(bar(PANEL, U + 2.0))
-            .show(ui, |ui| self.transport(ui))
+        let corner = self.corner_width();
+        let cameras = egui::Panel::top("camera_bar")
+            .frame(bar(PANEL_DARK, U))
+            .show(ui, |ui| {
+                ui.set_min_height(ESTOP_GROUND.y);
+                let mut room = ui.available_rect_before_wrap();
+                room.max.x -= corner;
+                ui.scope_builder(egui::UiBuilder::new().max_rect(room).layout(*ui.layout()), |ui| {
+                    crate::camera_ui::bar(ui, &mut self.session)
+                });
+            })
             .response
             .rect;
-        // The rule under the transport says what the machine is doing, right across the window.
-        let rail = egui::Rect::from_min_max(egui::pos2(transport.left(), transport.bottom() - RULE_STRONG), transport.max);
-        ui.painter().rect_filled(rail, 0.0, machine_rule(&self.session));
-        egui::Panel::top("camera_bar").frame(bar(PANEL_DARK, U)).show(ui, |ui| crate::camera_ui::bar(ui, &mut self.session));
+        self.stop_corner(ui, cameras);
         if let Some(lost) = self.session.lost.clone() {
             egui::Panel::top("lost_banner").show_separator_line(false).frame(bar(RED, U + 2.0)).show(ui, |ui| {
                 ui.label(
@@ -688,16 +728,44 @@ impl Shell {
             });
         }
 
-        let before = serde_json::to_string(&self.dock).unwrap_or_default();
+        let before =
+            (serde_json::to_string(&self.dock).unwrap_or_default(), serde_json::to_string(&self.lower).unwrap_or_default());
         // The rig controller is not drawn while Show settings is open, so it does not have the keyboard.
         self.session.rig.keyboard = false;
-        if let Some(mut page) = self.session.settings {
+        let settings = self.session.settings;
+        // Over the strip, the viewers; under it, the timeline, as tall as the viewers to start with. They
+        // are drawn top to bottom, as they read. Show settings takes the place of both; the strip stays,
+        // at the foot of the window.
+        let strip = |ui: &mut Ui, shell: &mut Shell, panel: egui::Panel| {
+            let transport =
+                panel.show_separator_line(false).frame(bar(PANEL, U + 2.0)).show(ui, |ui| shell.transport(ui)).response.rect;
+            shell.transport_rect = transport;
+            // A rule over the strip and one under it, in the machine's state, right across the window.
+            let rule = machine_rule(&shell.session);
+            let top = egui::Rect::from_min_max(transport.min, egui::pos2(transport.right(), transport.top() + RULE_STRONG));
+            let bottom = egui::Rect::from_min_max(egui::pos2(transport.left(), transport.bottom() - RULE_STRONG), transport.max);
+            ui.painter().rect_filled(top, 0.0, rule);
+            ui.painter().rect_filled(bottom, 0.0, rule);
+        };
+        if let Some(mut page) = settings {
+            strip(ui, self, egui::Panel::bottom("transport_bar"));
             crate::settings_ui::area(ui, &mut self.session, &mut page);
             self.session.settings = Some(page);
         } else {
-            self.panels(ui);
+            let half = ((ui.available_height() - TRANSPORT_H) / 2.0).max(120.0);
+            egui::Panel::top("upper_dock")
+                .resizable(true)
+                .show_separator_line(false)
+                .default_size(half)
+                .min_size(120.0)
+                .frame(egui::Frame::new().fill(BASE))
+                .show(ui, |ui| self.panels(ui));
+            strip(ui, self, egui::Panel::top("transport_bar"));
+            egui::CentralPanel::default().frame(egui::Frame::new().fill(BASE)).show(ui, |ui| self.lower_panels(ui));
         }
-        if serde_json::to_string(&self.dock).unwrap_or_default() != before {
+        if (serde_json::to_string(&self.dock).unwrap_or_default(), serde_json::to_string(&self.lower).unwrap_or_default())
+            != before
+        {
             self.layout_changed = true;
         }
         // Whatever was or was not drawn above, this is where a jog is sent, changed or stopped.
@@ -713,20 +781,42 @@ impl Shell {
         self.toasts(ui.ctx());
     }
 
+    /// The tab in front of each group, over and under the strip, which the tab strips mark.
+    fn front(&self) -> Vec<Tab> {
+        [&self.dock, &self.lower]
+            .into_iter()
+            .flat_map(|d| d.iter_surfaces().flat_map(|surface| surface.iter_nodes()))
+            .filter_map(|node| node.get_leaf())
+            .filter_map(|leaf| leaf.tabs.get(leaf.active.0).copied())
+            .collect()
+    }
+
     fn panels(&mut self, ui: &mut Ui) {
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(BASE)).show(ui, |ui| {
-            let style = dock_style(ui.style());
-            let leaves = self.dock.iter_surfaces().flat_map(|surface| surface.iter_nodes()).filter_map(|node| node.get_leaf());
-            let front = leaves.filter_map(|leaf| leaf.tabs.get(leaf.active.0).copied()).collect();
-            let mut viewer = Viewer { session: &mut self.session, front };
-            DockArea::new(&mut self.dock)
-                .style(style)
-                .show_close_buttons(false)
-                .show_add_buttons(false)
-                .show_leaf_close_all_buttons(false)
-                .show_leaf_collapse_buttons(false)
-                .show_inside(ui, &mut viewer);
-        });
+        let front = self.front();
+        let style = dock_style(ui.style());
+        let mut viewer = Viewer { session: &mut self.session, front };
+        DockArea::new(&mut self.dock)
+            .id(egui::Id::new("upper_dock"))
+            .style(style)
+            .show_close_buttons(false)
+            .show_add_buttons(false)
+            .show_leaf_close_all_buttons(false)
+            .show_leaf_collapse_buttons(false)
+            .show_inside(ui, &mut viewer);
+    }
+
+    fn lower_panels(&mut self, ui: &mut Ui) {
+        let front = self.front();
+        let style = dock_style(ui.style());
+        let mut viewer = Viewer { session: &mut self.session, front };
+        DockArea::new(&mut self.lower)
+            .id(egui::Id::new("lower_dock"))
+            .style(style)
+            .show_close_buttons(false)
+            .show_add_buttons(false)
+            .show_leaf_close_all_buttons(false)
+            .show_leaf_collapse_buttons(false)
+            .show_inside(ui, &mut viewer);
     }
 
     fn header(&mut self, ui: &mut Ui) {
@@ -738,8 +828,9 @@ impl Shell {
         ui.horizontal_wrapped(|ui| {
             let row = ui.cursor().top();
             ui.spacing_mut().item_spacing.x = U;
-            ui.label(RichText::new(icon::VIDEO_CAMERA).font(icon_font(TITLE)));
-            ui.label(RichText::new("PTZ Programmer").font(semibold(BODY)));
+            // The mark and the name, as the brand sets them in a title bar.
+            crate::brand::mark_widget(ui, 5.0 * U);
+            ui.label(RichText::new(crate::brand::NAME).font(semibold(BODY)));
             ui.add_space(U);
             ui.separator();
             let parked = s.status.transport.run == Run::Stopped && s.status.transport.output == Output::Rehearse;
@@ -901,6 +992,7 @@ impl Shell {
                 egui::Popup::menu(&view).anchor(beside).align(egui::RectAlign::BOTTOM_END).align_alternatives(&[]).show(|ui| {
                     if ui.button("Reset layout").clicked() {
                         self.dock = default_layout();
+                        self.lower = lower_layout();
                         self.layout_changed = true;
                         ui.close();
                     }
@@ -967,6 +1059,41 @@ impl Shell {
         });
     }
 
+    /// How much of the top bars the corner keeps: E-STOP, or the latch and the way out of it.
+    fn corner_width(&self) -> f32 {
+        let latched = if self.session.status.transport.estop { RESET_W + GAP } else { 0.0 };
+        ESTOP_GROUND.x + latched + 2.0 * PAD
+    }
+
+    /// The right end of the camera bar: E-STOP, or while it is latched, the latch with the way out of it
+    /// beside it.
+    fn stop_corner(&mut self, ui: &mut Ui, bars: egui::Rect) {
+        let s = &mut self.session;
+        let at = egui::pos2(bars.right() - PAD - ESTOP_GROUND.x, bars.center().y - ESTOP_GROUND.y / 2.0);
+        if !s.status.transport.estop {
+            e_stop(ui.ctx(), s, egui::Rect::from_min_size(at, ESTOP_GROUND));
+            return;
+        }
+        // The latch and the reset are part of the window, under any dialog, unlike E-STOP.
+        let place = egui::Rect::from_min_max(
+            egui::pos2(at.x - GAP - RESET_W, at.y),
+            egui::pos2(bars.right() - PAD, at.y + ESTOP_GROUND.y),
+        );
+        let ctx = ui.ctx().clone();
+        egui::Area::new(egui::Id::new("stop_corner")).order(egui::Order::Middle).fixed_pos(place.min).fade_in(false).show(
+            &ctx,
+            |ui| {
+                ui.set_min_size(place.size());
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    stop_latched(ui, "E-STOP LATCHED", ESTOP_GROUND, ESTOP_SIZE);
+                    ui.add_space(GAP);
+                    let reset = action_glyph(Action::ResetEstop);
+                    action_button(ui, s, Action::ResetEstop, reset, "Reset E-Stop", Look::Solid(AMBER), RESET_W);
+                });
+            },
+        );
+    }
+
     fn transport(&mut self, ui: &mut Ui) {
         let s = &mut self.session;
         let t = s.status.transport;
@@ -975,15 +1102,8 @@ impl Shell {
             // The stop control is laid out first and takes its place at the right. What is left of the
             // row is all the rest may use: it goes onto further rows instead of running on under the button.
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if t.estop {
-                    // The latch is said where the stop button was, on the same ground, with the way out of it beside it.
-                    stop_latched(ui, "E-STOP LATCHED", ESTOP_GROUND, ESTOP_SIZE);
-                    let reset = action_glyph(Action::ResetEstop);
-                    action_button(ui, s, Action::ResetEstop, reset, "Reset E-Stop", Look::Solid(AMBER), 130.0);
-                } else {
-                    e_stop(ui, s);
-                }
-                ui.add_space(U);
+                // E-STOP is not in this strip: it keeps the top right corner of the window, which nothing
+                // laid out under it can reach (see [`Shell::stop_corner`]).
                 crate::media_ui::meters(ui, s);
                 ui.add_space(U);
 
@@ -1000,18 +1120,36 @@ impl Shell {
                     let primary = g.primary.filter(|a| *a != Action::Estop && *a != Action::ResetEstop);
                     let live = t.output != Output::Rehearse;
                     flow.together(ui, "run", BUTTON_ROW, |ui| {
-                        // The show's clock, in a well: the largest figures in the window.
-                        egui::Frame::new()
-                            .fill(BASE)
-                            .stroke(Stroke::new(RULE, CONTROL_LINE))
-                            .corner_radius(RADIUS)
-                            .inner_margin(egui::Margin::symmetric(PAD as i8, U as i8))
-                            .show(ui, |ui| ui.label(RichText::new(s.timecode_at(frame)).font(mono(DISPLAY)).color(ink)));
-                        ui.add_space(U);
+                        // The show's clock, the largest figures in the window, and under it the frame of the
+                        // song and the song's length in frames.
+                        let length = s.song.as_ref().map(|x| x.length_frames).unwrap_or(0);
+                        // Set in Inter, each figure in a cell of its own, so that the clock holds still.
+                        let tc = s.timecode_at(frame);
+                        let count = format!("{:05}:{:05}", frame.max(0), length.max(0));
+                        let (big, small_font) = (mono(DISPLAY + 2.0), mono(SMALL));
+                        let p = ui.painter().clone();
+                        let measure = |text: &str, font: FontId| {
+                            figures(&p, egui::Pos2::ZERO, egui::Align2::LEFT_TOP, text, font, egui::Color32::TRANSPARENT).size()
+                        };
+                        let (a, b) = (measure(&tc, big.clone()), measure(&count, small_font.clone()));
+                        let (rect, r) = ui.allocate_exact_size(vec2(a.x.max(b.x), a.y + b.y), egui::Sense::hover());
+                        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, tc.as_str()));
+                        r.on_hover_text("The timecode at the playhead; under it, the frame of the song and its length in frames");
+                        figures(ui.painter(), rect.left_top(), egui::Align2::LEFT_TOP, &tc, big, ink);
+                        figures(
+                            ui.painter(),
+                            rect.left_top() + vec2(0.0, a.y),
+                            egui::Align2::LEFT_TOP,
+                            &count,
+                            small_font,
+                            MUTED,
+                        );
+                        ui.add_space(PAD);
                         match primary {
                             Some(action) => {
                                 let look = match action {
-                                    Action::Play if live => Look::Solid(GREEN),
+                                    // Going live is the brand's GO: Signal red.
+                                    Action::Play if live => Look::Solid(RED),
                                     Action::Stop => Look::Solid(OFF_WHITE),
                                     _ => Look::Solid(ACCENT),
                                 };
@@ -1560,8 +1698,19 @@ impl Shell {
 
 /// A layout saved by an earlier version lacks the tabs added since: they join the Program monitor's group,
 /// or the set list the Presets group, and the arrangement the operator made is kept.
+/// A layout saved before the transport strip went between the viewers and the timeline: the timeline's
+/// tabs are taken out of it, for the panels under the strip.
+fn without_lower(mut state: DockState<Tab>) -> DockState<Tab> {
+    for tab in LOWER {
+        if let Some(path) = state.find_tab(&tab) {
+            state.remove_tab(path);
+        }
+    }
+    state
+}
+
 fn with_every_tab(mut state: DockState<Tab>) -> DockState<Tab> {
-    for tab in Tab::ALL {
+    for tab in Tab::ALL.into_iter().filter(|t| !LOWER.contains(t)) {
         if state.find_tab(&tab).is_some() {
             continue;
         }
@@ -1703,8 +1852,24 @@ pub(crate) fn connect_form(
             vec2(column, ui.available_height() - top),
         );
         ui.scope_builder(egui::UiBuilder::new().max_rect(place).layout(Layout::top_down(Align::LEFT)), |ui| {
-            ui.label(RichText::new("PTZ Programmer").font(semibold(HERO)));
-            ui.label(RichText::new("Timeline programming and playout for the FR7 and its pedestal").color(MUTED));
+            // The primary lockup, flush left, and the descriptor line under a rule.
+            let lockup_h = 18.0 * U;
+            match crate::brand::lockup(ui.ctx()) {
+                Some(t) => {
+                    let size = t.size_vec2() * (lockup_h / t.size_vec2().y);
+                    let (rect, r) = ui.allocate_exact_size(size, egui::Sense::hover());
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, crate::brand::NAME));
+                    let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+                    ui.painter().image(t.id(), rect, uv, egui::Color32::WHITE);
+                }
+                None => {
+                    ui.label(RichText::new(crate::brand::NAME).font(semibold(HERO)));
+                }
+            }
+            ui.add_space(PAD);
+            hairline(ui);
+            ui.add_space(U);
+            ui.label(caps(crate::brand::DESCRIPTOR).color(MUTED));
             ui.add_space(PAD);
             hairline(ui);
             ui.add_space(PAD);
@@ -1816,6 +1981,11 @@ impl eframe::App for PtzApp {
                         self.settings.save();
                         let session = Session::new(link, &self.settings.station, *hello);
                         let mut shell = Shell::new(session, self.settings.layout.take());
+                        if let Some(lower) =
+                            self.settings.lower_layout.take().filter(|l| LOWER.iter().all(|t| l.find_tab(t).is_some()))
+                        {
+                            shell.lower = lower;
+                        }
                         shell.updater = self.updater.clone();
                         self.start_server = false;
                         next = Some(Screen::Main(Box::new(shell)));
@@ -1833,8 +2003,10 @@ impl eframe::App for PtzApp {
                     shell.layout_changed = false;
                     self.last_layout_save = std::time::Instant::now();
                     self.settings.layout = Some(shell.dock.clone());
+                    self.settings.lower_layout = Some(shell.lower.clone());
                     self.settings.save();
                     self.settings.layout = None;
+                    self.settings.lower_layout = None;
                 }
             }
         }
@@ -1847,6 +2019,7 @@ impl eframe::App for PtzApp {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         if let Screen::Main(shell) = &self.screen {
             self.settings.layout = Some(shell.dock.clone());
+            self.settings.lower_layout = Some(shell.lower.clone());
             self.settings.save();
         }
     }

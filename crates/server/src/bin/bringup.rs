@@ -291,7 +291,7 @@ fn main() {
     });
     let opts = Options { fr7, autopod: autopod.map(|h| with_port(h.trim(), 80)), steps, quick, start };
 
-    println!("PTZ Programmer bring-up. The show server must not be driving this rig while this runs.");
+    println!("Motion Choreographer bring-up. The show server must not be driving this rig while this runs.");
     let report = if yes { bringup::run(&opts, &mut Unattended { echo: true }) } else { bringup::run(&opts, &mut Console) };
     print!("{}", report.summary());
     let path = report_path.unwrap_or_else(|| PathBuf::from(format!("bringup-{}.json", &report.made_at[..10])));

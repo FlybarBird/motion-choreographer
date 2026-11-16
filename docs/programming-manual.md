@@ -1,4 +1,4 @@
-# PTZ Programmer: Programming Manual
+# Motion Choreographer: Programming Manual
 
 How to program a show: build songs out of camera moves, shape them, rehearse
 them, and play them live. It assumes the system has been set up as described in
@@ -74,23 +74,39 @@ monitor, the Presets tab, the Rig controller and Record all follow it.
 Commit), the song's name and start timecode, its revision state, the issue
 count, and at the right the edit lease and the View menu.
 
-**Transport bar** (second row): the timecode at the playhead, the main button,
-Stop, Cue, Lock, Arm or Disarm, Record, the state chips, a one-line hint, the
-audio meters, and E-STOP at the far right.
+**Camera bar** (second row): one chip per camera, its number in its own
+colour, with a dot for its state. Click a chip to select that camera. Hover it
+for detail. Towards its right end is **Show settings**, and at the far right,
+**E-STOP**, on black and yellow stripes. E-STOP stays in that corner whatever
+the window shows, above every dialog and menu. While it is latched, the latch
+and **Reset E-Stop** take its place.
 
-**Camera bar** (third row): one chip per camera in its own colour, with a dot
-for its state. Click a chip to select that camera. Hover it for detail. At its
-right end is **Show settings**.
+**The viewers** (top half): the Stage view and the Program monitor side by
+side, with the Presets, Set list and Media tabs at the left and the Inspector
+and Rig controller at the right.
 
-**Tabs.** The rest of the window is panels you can drag by their tabs, split
-and regroup. **View > Reset layout** puts them back.
+**Transport bar** (across the middle): the timecode at the playhead, with the
+frame of the song and its length in frames under it, the main button, Stop,
+Cue, Lock, Arm or Disarm, Record, the state chips, a one-line hint and the
+audio meters. The rules over and under it take the colour of the machine's
+state: green while output follows the timeline, amber while the rig travels
+to the playhead, red for E-Stop or a fault.
+
+**The timeline** (bottom half): the Timeline, Graph editor and Log tabs.
+Drag the line between the viewers and the transport bar to give either half
+more room.
+
+**Tabs.** The viewers and the timeline are panels you can drag by their tabs,
+split and regroup, each within its half. **View > Reset layout** puts them
+back.
 
 **Show settings.** What belongs to the whole show and not to one song (the
 cameras, their rigs, lenses, positions, limits and keep-out rules, the frame
 rate, the stage model, the audio output and the timecode inputs) is set in one
 place. **Show settings** on the camera bar puts it where the panels are;
-**Close settings** or Esc brings the panels back. The header, the transport,
-E-STOP and the camera bar stay on screen and keep working. While it is open
+**Close settings** or Esc brings the panels back. The header, the camera bar,
+E-STOP and the transport bar (at the foot of the window while Show settings is
+open) stay on screen and keep working. While it is open
 the keys that edit or move through the song do nothing: only Space, the
 camera keys and Cmd-S or Ctrl-S act. The setup guide goes through every page.
 

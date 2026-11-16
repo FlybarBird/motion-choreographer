@@ -43,7 +43,7 @@ esac
 
 # The target name stands in for a triple, so the installers are named for this machine by hand.
 package linux >"$WORK/linux.log"
-mv "$WORK/dist-linux/ptz-programmer-$VERSION-linux-$(uname -m).run" "$WORK/app.run"
+mv "$WORK/dist-linux/motion-choreographer-$VERSION-linux-$(uname -m).run" "$WORK/app.run"
 mv "$WORK/dist-linux/ptz-server-$VERSION-linux-$(uname -m).run" "$WORK/server.run"
 check test "$(find "$WORK/dist-linux" -type f | wc -l)" -eq 0
 sed -i.bak "s/^ARCH=\"$(uname -m)\"\$/ARCH=\"$ARCH\"/" "$WORK/app.run" "$WORK/server.run"
@@ -63,6 +63,9 @@ sh "$WORK/app.run" --no-server --prefix "$P" >"$WORK/app-only.log"
 check test "$("$P/bin/ptz-app")" = ptz-app
 check no_tools_in "$P"
 check grep -qF "Exec=\"$P/bin/ptz-app\"" "$P/share/applications/ptz-programmer.desktop"
+check grep -qx "Name=Motion Choreographer" "$P/share/applications/ptz-programmer.desktop"
+check grep -qxF "Icon=$P/share/ptz-programmer/app-icon-256.png" "$P/share/applications/ptz-programmer.desktop"
+check cmp -s "$ROOT/brand/icon/png/app-icon-256.png" "$P/share/ptz-programmer/app-icon-256.png"
 check test -f "$P/share/ptz-programmer/licenses/LICENSE"
 check test -f "$P/share/ptz-programmer/licenses/THIRD-PARTY-NOTICES.md"
 check grep -q 'The show server was not installed' "$WORK/app-only.log"
@@ -85,6 +88,7 @@ touch "$P2/bin/keep-me"
 sh "$WORK/app.run" --uninstall --prefix "$P2" >"$WORK/uninstall-app.log"
 check test ! -e "$P2/bin/ptz-app"
 check test ! -e "$P2/share/applications/ptz-programmer.desktop"
+check test ! -e "$P2/share/ptz-programmer/app-icon-256.png"
 check tools_in "$P2"
 check test -f "$P2/share/ptz-programmer/licenses/LICENSE"
 check grep -q 'Kept: the show server' "$WORK/uninstall-app.log"
@@ -93,7 +97,7 @@ check no_tools_in "$P2"
 check test ! -e "$P2/share/ptz-programmer"
 check test -f "$P2/bin/keep-me"
 refuse sh "$WORK/server.run" --uninstall --prefix "$P2"
-check grep -q 'nothing of PTZ Programmer to remove' "$WORK/refused.log"
+check grep -q 'nothing of Motion Choreographer to remove' "$WORK/refused.log"
 
 # --uninstall --with-server takes both away in one go.
 sh "$WORK/app.run" --uninstall --with-server --prefix "$P" >"$WORK/uninstall-both.log"
@@ -174,7 +178,7 @@ chmod +x "$STUBS"/*
 cp "$STUBS/pkgutil" "$STUBS/pkgutil.good"
 
 CALLS_DIR="$CALLS" PATH="$STUBS:$PATH" package macos >"$WORK/macos.log"
-APP_PKG="PTZ-Programmer-$VERSION-macos-$(uname -m)"
+APP_PKG="Motion-Choreographer-$VERSION-macos-$(uname -m)"
 SERVER_PKG="PTZ-Server-$VERSION-macos-$(uname -m)"
 check test -f "$WORK/dist-macos/$APP_PKG.pkg"
 check test -f "$WORK/dist-macos/$SERVER_PKG.pkg"
@@ -182,12 +186,23 @@ check test -f "$WORK/dist-macos/$SERVER_PKG.pkg"
 # The app goes to /Applications, there and nowhere else, and carries no server.
 check grep -qx -- '/Applications' "$CALLS/pkgbuild-app.args"
 check grep -qx -- 'com.ptzprogrammer.app' "$CALLS/pkgbuild-app.args"
-BUNDLE="$CALLS/pkgbuild-app.root/PTZ Programmer.app"
+BUNDLE="$CALLS/pkgbuild-app.root/Motion Choreographer.app"
 check test "$("$BUNDLE/Contents/MacOS/ptz-app")" = ptz-app
 check test "$(find "$BUNDLE/Contents/MacOS" -type f | wc -l)" -eq 1
 check test -f "$BUNDLE/Contents/Resources/licenses/LICENSE"
 check grep -q "<string>$VERSION</string>" "$BUNDLE/Contents/Info.plist"
 check grep -q 'NSMicrophoneUsageDescription' "$BUNDLE/Contents/Info.plist"
+check test "$(grep -c '<string>Motion Choreographer</string>' "$BUNDLE/Contents/Info.plist")" -eq 2
+grep -A1 'CFBundleIconFile' "$BUNDLE/Contents/Info.plist" >"$WORK/icon.txt"
+check grep -q '<string>AppIcon</string>' "$WORK/icon.txt"
+check cmp -s "$ROOT/brand/icon/macos/AppIcon.icns" "$BUNDLE/Contents/Resources/AppIcon.icns"
+check grep -q '<string>Motion Choreographer.app</string>' "$CALLS/pkgbuild-app.component.plist"
+# The app under its old name is removed when this one is installed.
+check test -x "$CALLS/pkgbuild-app.scripts/postinstall"
+check grep -qF '/Applications/PTZ Programmer.app' "$CALLS/pkgbuild-app.scripts/postinstall"
+check grep -qF '= "com.ptzprogrammer.app"' "$CALLS/pkgbuild-app.scripts/postinstall"
+check grep -qF 'ln -s "/Applications/Motion Choreographer.app"' "$CALLS/pkgbuild-app.scripts/postinstall"
+check sh -n "$CALLS/pkgbuild-app.scripts/postinstall"
 grep -A1 'BundleIsRelocatable' "$CALLS/pkgbuild-app.component.plist" >"$WORK/relocatable.txt"
 check grep -q '<false/>' "$WORK/relocatable.txt"
 
