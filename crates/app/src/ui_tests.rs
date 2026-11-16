@@ -1889,6 +1889,57 @@ fn the_set_list_tab_arranges_the_show_and_loads_a_song_at_a_click() {
 }
 
 #[test]
+fn the_timeline_is_scrolled_by_the_bar_along_its_bottom() {
+    let mut r = rig(Song::new("s", "Test Song", "01:00:00:00", 1500));
+    let scroll = |r: &Rig| r.harness.state().session.timeline.view.scroll;
+    let bar = |r: &Rig| safety::rect_of(r, "Scroll the timeline");
+    let body_w = |r: &Rig| r.layout().body.width();
+
+    // The bar is under the lanes and beside the lane names, and the view starts at the start.
+    let (at, l) = (bar(&r), r.layout());
+    assert!(at.top() >= l.lanes.last().unwrap().rect.bottom() - 0.5, "the bar covers no lane: {at:?}");
+    assert!((at.left() - l.body.left()).abs() < 0.5 && (at.right() - l.body.right()).abs() < 0.5, "{at:?}");
+    assert_eq!(scroll(&r), 0.0);
+
+    // Zoomed in, a press at the far end of the bar goes to the end of the song.
+    for _ in 0..5 {
+        r.press("+");
+    }
+    let view = r.harness.state().session.timeline.view;
+    let max = view.scroll_max(1500, body_w(&r));
+    assert!(max > 0.0);
+    r.click(bar(&r).right_center() - vec2(2.0, 0.0));
+    assert!((scroll(&r) - max).abs() < 1.0, "{} of {max}", scroll(&r));
+
+    // The thumb is dragged: it stays under the pointer, so the view goes by that share of the track.
+    let view = r.harness.state().session.timeline.view;
+    let (thumb_at, thumb_len) = view.thumb(1500, body_w(&r), body_w(&r));
+    let l = r.layout();
+    let from = pos2(l.body.left() + thumb_at + thumb_len / 2.0, bar(&r).center().y);
+    r.drag(from, from - vec2(120.0, 0.0));
+    let want = max * (thumb_at - 120.0) as f64 / (body_w(&r) - thumb_len) as f64;
+    assert!((scroll(&r) - want).abs() < max * 0.01, "{} for {want}", scroll(&r));
+
+    // And the ruler and the lanes went with it; nothing in the song was touched.
+    assert_eq!(r.layout().scroll, scroll(&r));
+    assert!(r.song().motion.is_empty() && r.song().markers.is_empty());
+    assert!(r.harness.state().session.timeline.selection.is_empty());
+
+    // The graph editor shares the view and has the same bar, under its curves and beside the axis names.
+    r.harness.state_mut().show_tab(Tab::Graph);
+    r.harness.run_steps(3);
+    let bar = safety::rect_of(&r, "Scroll the graph");
+    let plot = r.harness.state().session.graph.probe.expect("the graph was drawn");
+    assert!((bar.top() - plot.bottom()).abs() < 0.5, "the bar is under the curves: {bar:?} {plot:?}");
+    assert!((bar.left() - plot.left() - crate::timeline::HEADER_W).abs() < 0.5);
+    r.click(bar.left_center() + vec2(2.0, 0.0));
+    assert_eq!(scroll(&r), 0.0);
+    r.click(bar.right_center() - vec2(2.0, 0.0));
+    let max = r.harness.state().session.timeline.view.scroll_max(1500, bar.width());
+    assert!(max > 0.0 && (scroll(&r) - max).abs() < 1.0, "{} of {max}", scroll(&r));
+}
+
+#[test]
 fn the_stage_view_is_turned_slid_and_zoomed_from_its_pad_with_no_wheel() {
     use crate::stage_ui::{Angle, Nav};
     let (project, presets) = three_cameras();

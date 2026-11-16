@@ -101,9 +101,35 @@ impl View {
     }
 
     pub fn clamp(&mut self, length: i64, body_width: f32) {
+        self.scroll = self.scroll.clamp(0.0, self.scroll_max(length, body_width));
+    }
+
+    /// The furthest the view scrolls, in frames: the end of the song comes to the middle of the lanes.
+    pub fn scroll_max(&self, length: i64, body_width: f32) -> f64 {
         let visible = (body_width / self.px_per_frame) as f64;
-        let max = (length as f64 * 1.04 - visible * 0.5).max(0.0);
-        self.scroll = self.scroll.clamp(0.0, max);
+        (length as f64 * 1.04 - visible * 0.5).max(0.0)
+    }
+
+    /// The shortest the thumb of the scroll bar gets, in points, so it can always be taken hold of.
+    pub const THUMB_MIN: f32 = 24.0;
+
+    /// The thumb of a scroll bar `track` points long: how far along it starts, and how long it is.
+    /// It is the share of everything there is to scroll over that is in view. The view scrolls
+    /// until the end of the song is in its middle, so the thumb fills the track only when the song
+    /// takes up less than half of it.
+    pub fn thumb(&self, length: i64, body_width: f32, track: f32) -> (f32, f32) {
+        let visible = (body_width / self.px_per_frame) as f64;
+        let max = self.scroll_max(length, body_width);
+        let len = ((visible / (max + visible)) as f32 * track).max(Self::THUMB_MIN).min(track);
+        let at = if max > 0.0 { (self.scroll / max).clamp(0.0, 1.0) as f32 * (track - len) } else { 0.0 };
+        (at, len)
+    }
+
+    /// Scroll to where the thumb starts `at` points along a track `track` points long.
+    pub fn scroll_to_thumb(&mut self, length: i64, body_width: f32, track: f32, at: f32) {
+        let (_, len) = self.thumb(length, body_width, track);
+        let travel = track - len;
+        self.scroll = if travel > 0.0 { (at / travel).clamp(0.0, 1.0) as f64 * self.scroll_max(length, body_width) } else { 0.0 };
     }
 }
 
@@ -1418,6 +1444,32 @@ mod tests {
         v.fit(1000, 1040.0);
         assert!((v.px_per_frame - 1032.0 / 1040.0).abs() < 1e-3);
         assert_eq!(v.scroll, 0.0);
+
+        // The scroll bar. Fitted, the song can still be slid until its end is in the middle.
+        let (at, len) = v.thumb(1000, 1040.0, 900.0);
+        assert!(at == 0.0 && len > 590.0 && len < 610.0, "{at} {len}");
+        // Zoomed out to under half the window, the thumb fills the track and there is nowhere to go.
+        let mut v = View { px_per_frame: 0.4, scroll: 0.0, open: 0 };
+        assert_eq!(v.thumb(1000, 1040.0, 900.0), (0.0, 900.0));
+        v.scroll_to_thumb(1000, 1040.0, 900.0, 300.0);
+        assert_eq!(v.scroll, 0.0);
+        // Zoomed in to a tenth of the song, the thumb is that share of what there is to scroll over,
+        // and goes from one end of the track to the other as the view does.
+        let mut v = View { px_per_frame: 10.0, scroll: 0.0, open: 0 };
+        let max = v.scroll_max(1000, 1000.0);
+        assert_eq!(max, 990.0);
+        let (at, len) = v.thumb(1000, 1000.0, 1000.0);
+        assert!(at == 0.0 && (len - 1000.0 * 100.0 / 1090.0).abs() < 1e-3, "{at} {len}");
+        v.scroll_to_thumb(1000, 1000.0, 1000.0, (1000.0 - len) / 2.0);
+        assert!((v.scroll - max / 2.0).abs() < 1e-3);
+        v.scroll_to_thumb(1000, 1000.0, 1000.0, 5000.0);
+        assert_eq!(v.scroll, max);
+        assert!((v.thumb(1000, 1000.0, 1000.0).0 + len - 1000.0).abs() < 1e-3);
+        v.scroll_to_thumb(1000, 1000.0, 1000.0, -40.0);
+        assert_eq!(v.scroll, 0.0);
+        // A long song zoomed right in still has a thumb to take hold of.
+        let v = View { px_per_frame: 40.0, scroll: 0.0, open: 0 };
+        assert_eq!(v.thumb(90_000, 1000.0, 1000.0).1, View::THUMB_MIN);
 
         assert_eq!(tick_step(40.0, 25.0), (5, 1));
         assert_eq!(tick_step(4.0, 25.0), (25, 5));

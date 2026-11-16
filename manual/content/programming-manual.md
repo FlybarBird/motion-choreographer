@@ -193,7 +193,7 @@ and Elevation.
 | Move the playhead | Click the ruler |
 | Step one frame | Left and Right arrows. With Shift, ten frames. |
 | Go to the start, the end | **Home** (Cue), **End** |
-| Slide the view | Scroll |
+| Slide the view | Scroll, or drag the bar along the bottom of the timeline. A click beside its thumb brings it there. |
 | Zoom | Pinch, or Cmd-scroll; or **-** and **+** in the timeline's toolbar |
 | See the whole song | **Fit**, or `\` |
 
@@ -309,7 +309,8 @@ Open a camera's axis lanes with its triangle. Each key is a diamond.
 ### In the graph editor
 
 The **Graph editor** tab shows the selected clip as one curve per axis. It
-shares the timeline's zoom, scroll and playhead. The ruler on the left measures
+shares the timeline's zoom, scroll and playhead, and has the same scroll bar
+along its bottom. The ruler on the left measures
 the axis whose chip is outlined; click a curve to switch to it. Click an axis
 chip to show or hide its curve.
 

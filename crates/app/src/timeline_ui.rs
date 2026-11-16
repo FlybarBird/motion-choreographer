@@ -14,6 +14,9 @@ pub struct PresetDrag(pub Preset);
 #[derive(Clone)]
 pub struct MediaDrag(pub MediaInfo);
 
+/// The scroll bar along the bottom of the timeline: this high, with the thumb inset in it.
+pub const SCROLL_BAR_H: f32 = 4.0 * U;
+
 pub fn mods(ui: &Ui) -> Mods {
     ui.input(|i| Mods { shift: i.modifiers.shift, alt: i.modifiers.alt, command: i.modifiers.command })
 }
@@ -34,7 +37,8 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
     toolbar(ui, s, &song);
 
     let avail = ui.available_size();
-    let height = avail.y.max(Layout::content_height(&song, &s.project, &s.timeline.view));
+    // Room under the last lane for the scroll bar, so it covers none of it.
+    let height = avail.y.max(Layout::content_height(&song, &s.project, &s.timeline.view) + SCROLL_BAR_H);
     let (resp, painter) = ui.allocate_painter(vec2(avail.x, height), Sense::click_and_drag());
     let rect = resp.rect;
     s.probe_timeline = Some(rect);
@@ -57,6 +61,7 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
         }
     }
     s.timeline.view.clamp(song.length_frames, body_w);
+    let scroll_bar = scroll_bar(ui, s, song.length_frames, rect);
 
     request_peaks(s, &song);
 
@@ -222,6 +227,9 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
     let shown: &Song = s.timeline.preview.as_ref().unwrap_or(&song);
     let l = if s.timeline.preview.is_some() { timeline::layout(shown, &s.project, &s.timeline.view, rect) } else { base.clone() };
     paint(&painter, &l, shown, s, playhead);
+    if let Some((bar, resp)) = &scroll_bar {
+        paint_scroll_bar(&painter, &s.timeline.view, song.length_frames, *bar, resp);
+    }
 
     // Refused drag: where it would have gone, in the warning colour.
     if let Some(attempt) = s.timeline.attempt.clone() {
@@ -269,6 +277,65 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
     if s.is_playing() || s.timeline.is_dragging() {
         ui.ctx().request_repaint();
     }
+}
+
+/// The scroll bar of the timeline: along the bottom of what is in view of it, under the lanes and
+/// not the lane names. Gives the bar to be drawn once the lanes are.
+fn scroll_bar(ui: &mut Ui, s: &mut Session, length: i64, rect: Rect) -> Option<(Rect, egui::Response)> {
+    // The lanes scroll up and down under the bar, which stays at the bottom of the tab.
+    let bottom = rect.bottom().min(ui.clip_rect().bottom());
+    let bar = Rect::from_min_max(pos2(rect.left() + HEADER_W, bottom - SCROLL_BAR_H), pos2(rect.right(), bottom));
+    if bar.width() < 50.0 || bar.top() < rect.top() + timeline::RULER_H {
+        return None;
+    }
+    Some((bar, time_scroll_bar(ui, &mut s.timeline.view, length, bar, "Scroll the timeline")))
+}
+
+/// A scroll bar for the time the timeline and the graph editor share, in `bar`, which is as wide as
+/// the lanes. The thumb is dragged, and a press beside it brings it there. `name` is what a screen
+/// reader, and a test, finds it by.
+pub fn time_scroll_bar(ui: &mut Ui, view: &mut timeline::View, length: i64, bar: Rect, name: &'static str) -> egui::Response {
+    let id = ui.id().with("time_scroll_bar");
+    // The bar is a thing of its own, so a press on it is not a press on what is under it.
+    let resp = ui.interact(bar, id, Sense::click_and_drag());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, name));
+
+    let (left, track) = (bar.left(), bar.width());
+    let now = ui.input(|i| i.pointer.interact_pos());
+    let (at, len) = view.thumb(length, track, track);
+    // Where on the thumb it is held: where it was pressed, or its middle when the press was beside it.
+    let grab_at = |x: f32| if (at..=at + len).contains(&(x - left)) { x - left - at } else { len / 2.0 };
+    let held: Option<f32> = ui.data(|d| d.get_temp(id));
+    if resp.is_pointer_button_down_on() {
+        if let Some(now) = now {
+            let grab = held.unwrap_or_else(|| grab_at(now.x));
+            ui.data_mut(|d| d.insert_temp(id, grab));
+            view.scroll_to_thumb(length, track, track, now.x - left - grab);
+            ui.ctx().request_repaint();
+        }
+    } else {
+        // A press and release inside one frame is still a press beside the thumb.
+        if let (None, true, Some(now)) = (held, resp.clicked(), now) {
+            view.scroll_to_thumb(length, track, track, now.x - left - grab_at(now.x));
+        }
+        ui.data_mut(|d| d.remove::<f32>(id));
+    }
+    resp
+}
+
+pub fn paint_scroll_bar(painter: &Painter, view: &timeline::View, length: i64, bar: Rect, resp: &egui::Response) {
+    painter.rect_filled(bar, 0.0, PANEL_DARK);
+    painter.hline(bar.x_range(), bar.top(), Stroke::new(RULE, LINE));
+    let (at, len) = view.thumb(length, bar.width(), bar.width());
+    let thumb = Rect::from_min_size(pos2(bar.left() + at, bar.top()), vec2(len, bar.height())).shrink2(vec2(U / 2.0, U));
+    let ink = match (len >= bar.width(), resp.is_pointer_button_down_on(), resp.hovered()) {
+        // So little of the window is song that there is nowhere to scroll to.
+        (true, _, _) => CONTROL,
+        (_, true, _) => OFF_WHITE,
+        (_, _, true) => MUTED,
+        _ => CONTROL_LINE,
+    };
+    painter.rect_filled(thumb, CornerRadius::same(RADIUS), ink);
 }
 
 fn toolbar(ui: &mut Ui, s: &mut Session, song: &Song) {

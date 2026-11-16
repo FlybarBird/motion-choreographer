@@ -6,6 +6,7 @@ use crate::panels::note;
 use crate::session::Session;
 use crate::theme::*;
 use crate::timeline::{self, KeyRef, Mods, View, HEADER_W};
+use crate::timeline_ui::{paint_scroll_bar, time_scroll_bar, SCROLL_BAR_H};
 use egui::{pos2, vec2, Align2, Color32, CornerRadius, Painter, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Ui};
 use ptz_core::compile::{speed_profile, SLACK};
 use ptz_core::edit::{self, EasyEase, Refusal};
@@ -680,7 +681,14 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
     let mut frame_it = toolbar(ui, s, clip.as_ref());
 
     let (resp, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
-    let rect = resp.rect;
+    // The scroll bar has the bottom of the panel, beside the axis names, and the curves what is above it.
+    let (rect, bar) = match resp.rect {
+        all if all.width() - HEADER_W >= 50.0 && all.height() >= RULER_H + 6.0 * SCROLL_BAR_H => {
+            let (plot, under) = all.split_top_bottom_at_y(all.bottom() - SCROLL_BAR_H);
+            (plot, Some(under.with_min_x(under.left() + HEADER_W)))
+        }
+        all => (all, None),
+    };
     s.graph.probe = Some(rect);
     let body_w = rect.width() - HEADER_W;
 
@@ -700,6 +708,7 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
         }
     }
     s.timeline.view.clamp(song.length_frames, body_w);
+    let bar = bar.map(|bar| (bar, time_scroll_bar(ui, &mut s.timeline.view, song.length_frames, bar, "Scroll the graph")));
 
     // Each axis is scaled to the clip being shown; a different clip is fitted afresh.
     let fit_key = clip_id.clone().unwrap_or_default();
@@ -816,6 +825,13 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
     let shown: &Song = s.timeline.preview.as_ref().unwrap_or(&song);
     let shown_clip = clip_id.as_deref().and_then(|id| shown.motion_clip(id));
     paint(&painter, &plot, shown, shown_clip, s, playhead);
+    if let Some((bar, resp)) = &bar {
+        // The column of axis names runs down beside the bar.
+        let corner = Rect::from_min_max(pos2(rect.left(), bar.top()), bar.left_bottom());
+        painter.rect_filled(corner, 0.0, PANEL);
+        painter.vline(bar.left(), bar.y_range(), Stroke::new(RULE, LINE));
+        paint_scroll_bar(&painter, &s.timeline.view, song.length_frames, *bar, resp);
+    }
     if let (Some(why), Some(p)) = (&blocked, pointer) {
         painter.text(p + vec2(14.0, 18.0), Align2::LEFT_TOP, why, small(), AMBER);
     }

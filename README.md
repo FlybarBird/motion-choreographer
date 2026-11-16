@@ -300,7 +300,8 @@ A preset move is one block. To shape a move by hand it becomes keys:
   the rest to whatever came before it.
 
 The **Graph editor** tab shows the selected clip as one curve per axis. It
-shares the timeline's zoom, scroll and playhead. The ruler on the left measures
+shares the timeline's zoom, scroll and playhead, and has the same scroll bar
+along its bottom. The ruler on the left measures
 the axis whose chip is outlined; click a curve to switch.
 
 | Do this | To |
