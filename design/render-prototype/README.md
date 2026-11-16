@@ -1,6 +1,6 @@
 # Render comparison prototype
 
-A separate, local visual study for Motion Choreographer. It does **not** replace or change the app's production renderer. There is no API, hardware control, telemetry, publishing, or build integration.
+A separate, local visual study for Motion Choreographer, retained as the before/after design reference. Its approved models and lighting direction are now implemented in the native app through `crates/app/src/stage.rs` and `stage_gpu.rs`. The browser study itself has no API, hardware control, telemetry, publishing, or build integration; Three.js is not embedded in the desktop app.
 
 Run from the repository root:
 
@@ -42,7 +42,7 @@ This establishes a visual direction. It does not establish a native-renderer mig
 
 The live statistic is the median browser animation-frame interval over up to 90 frames. It includes browser scheduling and this machine's rendering behavior. It is **not** GPU execution time, a CPU-versus-GPU benchmark, or a result for twelve views, imported venues, native egui integration, or production hardware. Headless validation used Chromium with software WebGL, so its timings should not guide backend selection. Shadows are rebuilt only when scene/light settings change.
 
-An implementation decision should follow a separate native test with representative imported models, multiple simultaneous camera previews, GPU compatibility/fallback handling, and measured latency. Better geometry could also be added to the existing renderer independently.
+The native implementation has separate OpenGL tests for imported geometry, multiple camera views, exact vertical poses, depth and graphics-state preservation. Browser timings here remain a historical design aid; they do not measure the native implementation. Native rendering falls back to the CPU when OpenGL 3.3 is unavailable.
 
 ## Verification and dependencies
 

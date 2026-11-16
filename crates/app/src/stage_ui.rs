@@ -7,8 +7,7 @@ use crate::theme::*;
 use egui::{vec2, Align2, PointerButton, Pos2, Rect, Sense, Stroke, StrokeKind, Ui};
 use ptz_core::camera::Mount;
 use ptz_core::pose::{Pose, Units};
-use ptz_scene::mesh::Mesh;
-use ptz_scene::render::{self, Camera, Look};
+use ptz_scene::render::{Camera, Look};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tool {
@@ -846,11 +845,9 @@ fn show_scene(ui: &mut Ui, s: &mut Session) {
     let selected = s.cam_index();
 
     let (mut lines, grid_step) = grid_lines(min, max);
-    let mut markers: Vec<Mesh> = Vec::new();
     let mut key = Key::new().camera(&view).add(selected);
     for (i, (camera, pose)) in s.project.cameras.iter().zip(&poses).enumerate() {
         let color = stage::rgb(camera_color(i));
-        markers.push(stage::marker(&camera.mount, pose, color));
         let lens_view = stage::view_of(camera, pose);
         let reach = s.world.centre_distance(camera, pose).unwrap_or(stage::FRUSTUM_REACH_M).clamp(0.5, 200.0);
         lines.extend(frustum_lines(&lens_view, reach, color, i == selected));
@@ -873,16 +870,27 @@ fn show_scene(ui: &mut Ui, s: &mut Session) {
     }
 
     let size = stage::pixel_size(rect, ui.ctx().pixels_per_point(), crate::monitor::WIDEST_PX);
-    let texture = s.world.picture(ui.ctx(), "stage", size, key.finish(), true, |frame, scene| {
-        let look = Look::default();
-        render::draw_scene(frame, &view, scene, &look);
-        for marker in &markers {
-            render::draw_mesh(frame, &view, marker, &look);
-        }
-        for (a, b, rgba, width) in &lines {
-            render::draw_line(frame, &view, *a, *b, *rgba, *width);
-        }
-    });
+    let project = &s.project;
+    let texture = s.world.scene_picture(
+        ui.ctx(),
+        "stage",
+        size,
+        key.finish(),
+        true,
+        &view,
+        || {
+            project
+                .cameras
+                .iter()
+                .zip(&poses)
+                .enumerate()
+                .map(|(i, (camera, pose))| stage::marker(&camera.mount, pose, stage::rgb(camera_color(i))))
+                .collect()
+        },
+        None,
+        &lines,
+        &Look::default(),
+    );
     stage::paint_picture(&painter, rect, texture);
 
     // Names over the picture, so a camera is found even behind a wall.

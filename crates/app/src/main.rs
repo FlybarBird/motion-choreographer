@@ -4,6 +4,8 @@ mod app;
 mod brand;
 mod camera_ui;
 mod frames;
+#[cfg(all(test, target_os = "linux"))]
+mod gpu_tests;
 mod graph;
 mod link;
 mod lock_ui;
@@ -17,6 +19,7 @@ mod session;
 mod setlist_ui;
 mod settings_ui;
 mod stage;
+mod stage_gpu;
 mod stage_ui;
 mod theme;
 mod timeline;

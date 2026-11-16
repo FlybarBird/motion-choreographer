@@ -473,6 +473,76 @@ mod tests {
     }
 
     #[test]
+    fn vertical_endpoints_and_the_sweep_between_them_keep_configured_limits_and_finite_poses() {
+        for inverted in [false, true] {
+            for mount_tilt in [0.0, 15.0] {
+                let mut p = project();
+                let camera = p.first_mut();
+                camera.mount.inverted = inverted;
+                camera.mount.z = 6.0;
+                camera.mount.tilt_deg = mount_tilt;
+                // This rig has been measured to reach both world poles with its mount offset.
+                camera.axes.tilt.min = -90.0 - mount_tilt;
+                camera.axes.tilt.max = 90.0 - mount_tilt;
+                p.validate().unwrap();
+                for target_pitch in [-90.0, 90.0] {
+                    for ease in Ease::ALL {
+                        let mount = p.first().mount;
+                        let from = Pose { tilt: mount.pose_angles(0.0, -target_pitch).1, ..Pose::home() };
+                        let to = Pose { tilt: mount.pose_angles(0.0, target_pitch).1, ..Pose::home() };
+                        let duration = auto(&from, &to, &[Axis::Tilt], ease, &p);
+                        let start = 25;
+                        let mut song = Song::new("vertical", "Vertical", "01:00:00:00", start + duration + 25);
+                        song.home_pose = from;
+                        song.motion.push(MotionClip {
+                            id: "vertical-sweep".into(),
+                            camera: FIRST_CAMERA.into(),
+                            start_frame: start,
+                            duration_frames: duration,
+                            axes: vec![Axis::Tilt],
+                            body: ClipBody::PresetMove {
+                                auto_duration: true,
+                                from: FromPose::linked(),
+                                to: PresetRef { preset_id: "pole".into(), name: "Pole".into(), pose: to },
+                                ease,
+                            },
+                            accepted: None,
+                            recorded_pass: None,
+                        });
+                        let compiled = compile(&song, &p);
+                        assert!(compiled.issues.is_empty(), "{ease:?}, inverted={inverted}: {:?}", compiled.issues);
+                        let poses = compiled.poses(FIRST_CAMERA);
+                        assert_eq!(mount.view(&poses[start as usize]).1, -target_pitch);
+                        assert_eq!(mount.view(&poses[(start + duration) as usize]).1, target_pitch);
+                        assert_eq!(poses.last(), Some(&to));
+                        for pose in poses {
+                            assert!(Axis::ALL.into_iter().all(|axis| pose.get(axis).is_finite()));
+                            assert!(p.first().axes.out_of_range(pose).is_none());
+                            assert!((-90.0 - 1e-9..=90.0 + 1e-9).contains(&mount.view(pose).1));
+                        }
+                        for pair in poses.windows(2) {
+                            assert!((pair[1].tilt - pair[0].tilt) * target_pitch.signum() >= -1e-9);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn vertical_tilt_does_not_bypass_the_measured_mechanical_range() {
+        let mut p = project();
+        let mut song = Song::new("down", "Down", "01:00:00:00", 25);
+        song.home_pose.tilt = -90.0;
+        assert!(compile(&song, &p)
+            .issues
+            .iter()
+            .any(|issue| { matches!(issue, Issue::OutOfRange { axis: Axis::Tilt, value, .. } if *value == -90.0) }));
+        p.first_mut().axes.tilt.min = -90.0;
+        assert!(compile(&song, &p).issues.is_empty());
+    }
+
+    #[test]
     fn out_of_range_and_jump_and_keep_out() {
         let mut p = project();
         let mut song = Song::new("s", "S", "01:00:00:00", 500);

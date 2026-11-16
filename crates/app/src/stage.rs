@@ -31,16 +31,81 @@ pub const DECK_HEIGHT: f32 = 0.5;
 const DECK_FRONT: f32 = 9.0;
 const BACK_WALL: f32 = 16.0;
 
-fn person(mesh: &mut Mesh, x: f32, y: f32, color: [u8; 3]) {
-    let floor = DECK_HEIGHT;
-    mesh.push_cuboid([x - 0.22, y - 0.12, floor], [x + 0.22, y + 0.12, floor + 1.45], color);
-    let head = color.map(|c| c.saturating_add(40));
-    mesh.push_cuboid([x - 0.1, y - 0.1, floor + 1.5], [x + 0.1, y + 0.1, floor + 1.76], head);
+/// Closed procedural geometry shared by the GPU preview, CPU fallback and scene picking.
+/// Seams and poles use identical positions so normal generation can weld them reliably.
+fn cylinder(mesh: &mut Mesh, from: [f32; 3], to: [f32; 3], radii: [f32; 2], color: [u8; 3]) {
+    const SIDES: usize = 24;
+    let delta = [0, 1, 2].map(|k| to[k] - from[k]);
+    let length = delta.iter().map(|v| v * v).sum::<f32>().sqrt();
+    if length < 1e-6 {
+        return;
+    }
+    let w = delta.map(|v| v / length);
+    let cross = |a: [f32; 3], b: [f32; 3]| [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    let side = cross(w, if w[2].abs() > 0.9 { [1.0, 0.0, 0.0] } else { [0.0, 0.0, 1.0] });
+    let side_length = side.iter().map(|v| v * v).sum::<f32>().sqrt();
+    let u = side.map(|v| v / side_length);
+    let v = cross(w, u);
+    let ring = |centre: [f32; 3], radius: f32, i: usize| {
+        let (sin, cos) = ((i % SIDES) as f32 * std::f32::consts::TAU / SIDES as f32).sin_cos();
+        [0, 1, 2].map(|k| centre[k] + radius * (u[k] * cos + v[k] * sin))
+    };
+    for i in 0..SIDES {
+        let (a, b) = (ring(from, radii[0], i), ring(from, radii[0], i + 1));
+        let (c, d) = (ring(to, radii[1], i + 1), ring(to, radii[1], i));
+        mesh.push_quad([a, b, c, d], color);
+        mesh.push_triangle(from, b, a, color);
+        mesh.push_triangle(to, d, c, color);
+    }
 }
 
-/// The simple stage the program draws when no venue has been imported: an auditorium floor, a raised
+fn ellipsoid(mesh: &mut Mesh, centre: [f32; 3], radii: [f32; 3], color: [u8; 3]) {
+    const SIDES: usize = 20;
+    const RINGS: usize = 12;
+    let point = |ring: usize, side: usize| {
+        if ring == 0 {
+            return [centre[0], centre[1], centre[2] - radii[2]];
+        }
+        if ring == RINGS {
+            return [centre[0], centre[1], centre[2] + radii[2]];
+        }
+        let (height, width) = (std::f32::consts::PI * (ring as f32 / RINGS as f32 - 0.5)).sin_cos();
+        let (y, x) = (std::f32::consts::TAU * (side % SIDES) as f32 / SIDES as f32).sin_cos();
+        [centre[0] + radii[0] * width * x, centre[1] + radii[1] * width * y, centre[2] + radii[2] * height]
+    };
+    for ring in 0..RINGS {
+        for side in 0..SIDES {
+            let [a, b, c, d] = [point(ring, side), point(ring, side + 1), point(ring + 1, side + 1), point(ring + 1, side)];
+            if ring == 0 {
+                mesh.push_triangle(a, c, d, color);
+            } else if ring == RINGS - 1 {
+                mesh.push_triangle(a, b, c, color);
+            } else {
+                mesh.push_quad([a, b, c, d], color);
+            }
+        }
+    }
+}
+
+fn person(mesh: &mut Mesh, x: f32, y: f32, color: [u8; 3]) {
+    let at = |dx: f32, dy: f32, z: f32| [x + dx, y + dy, DECK_HEIGHT + z];
+    let dark = color.map(|c| (c as f32 * 0.52).round() as u8);
+    let skin = [205, 181, 162];
+    ellipsoid(mesh, at(0.0, 0.0, 1.16), [0.23, 0.13, 0.30], color);
+    ellipsoid(mesh, at(0.0, 0.0, 0.88), [0.18, 0.12, 0.14], dark);
+    cylinder(mesh, at(0.0, 0.0, 1.37), at(0.0, 0.0, 1.50), [0.055; 2], skin);
+    ellipsoid(mesh, at(0.0, 0.0, 1.61), [0.12, 0.11, 0.15], skin);
+    for sign in [-1.0, 1.0] {
+        cylinder(mesh, at(sign * 0.10, 0.0, 0.83), at(sign * 0.13, 0.0, 0.10), [0.075, 0.055], dark);
+        ellipsoid(mesh, at(sign * 0.13, -0.045, 0.065), [0.075, 0.14, 0.065], [39, 43, 48]);
+        cylinder(mesh, at(sign * 0.20, 0.0, 1.34), at(sign * 0.29, -0.015, 0.91), [0.065, 0.045], color);
+        ellipsoid(mesh, at(sign * 0.29, -0.015, 0.86), [0.045, 0.04, 0.07], skin);
+    }
+}
+
+/// The stage the program draws when no venue has been imported: an auditorium floor, a raised
 /// deck with a lectern and two award marks, people standing at them, and a back wall with a screen.
-/// It is drawn in greys, like a model: the colours in a monitor are the app's own marks and badges.
+/// Neutral materials and rounded subjects give the preview scale and readable silhouettes.
 pub fn builtin() -> Mesh {
     let mut m = Mesh::default();
     let top = |m: &mut Mesh, min: [f32; 2], max: [f32; 2], z: f32, color: [u8; 3]| {
@@ -50,12 +115,21 @@ pub fn builtin() -> Mesh {
     for i in 0..14 {
         let y = -5.0 + i as f32;
         let color = if i % 2 == 0 { [44, 44, 44] } else { [36, 36, 36] };
-        top(&mut m, [-14.0, y], [14.0, y + 1.0], 0.0, color);
+        m.push_cuboid([-14.0, y, -0.025], [14.0, y + 1.0, 0.0], color);
     }
     // The deck, its riser, and the wall behind it.
-    m.push_cuboid([-10.0, DECK_FRONT, 0.0], [10.0, BACK_WALL, DECK_HEIGHT], [92, 92, 92]);
-    m.push_cuboid([-10.0, BACK_WALL, 0.0], [10.0, BACK_WALL + 0.2, 7.0], [62, 62, 62]);
-    m.push_cuboid([-4.0, BACK_WALL - 0.06, 2.6], [4.0, BACK_WALL, 6.2], [128, 128, 128]);
+    m.push_cuboid([-10.0, DECK_FRONT, 0.0], [10.0, BACK_WALL, DECK_HEIGHT], [101, 94, 85]);
+    m.push_cuboid([-10.0, DECK_FRONT - 0.025, 0.0], [10.0, DECK_FRONT, DECK_HEIGHT - 0.04], [38, 41, 46]);
+    m.push_cuboid([-10.0, DECK_FRONT - 0.04, DECK_HEIGHT - 0.04], [10.0, DECK_FRONT, DECK_HEIGHT], [164, 156, 139]);
+    for step in 0..3 {
+        let rise = (step + 1) as f32 * DECK_HEIGHT / 3.0;
+        let front = DECK_FRONT - (3 - step) as f32 * 0.32;
+        m.push_cuboid([7.8, front, 0.0], [9.2, DECK_FRONT, rise], [105, 102, 97]);
+        m.push_cuboid([7.8, front - 0.01, rise - 0.02], [9.2, front + 0.04, rise], [181, 176, 163]);
+    }
+    m.push_cuboid([-10.0, BACK_WALL, 0.0], [10.0, BACK_WALL + 0.2, 7.0], [54, 59, 67]);
+    m.push_cuboid([-4.12, BACK_WALL - 0.10, 2.48], [4.12, BACK_WALL, 6.32], [24, 27, 33]);
+    m.push_cuboid([-4.0, BACK_WALL - 0.12, 2.6], [4.0, BACK_WALL - 0.10, 6.2], [157, 170, 185]);
     for i in -4..=4 {
         let x = i as f32 * 2.5;
         m.push_cuboid([x - 0.03, BACK_WALL - 0.03, DECK_HEIGHT], [x + 0.03, BACK_WALL, 7.0], [84, 84, 84]);
@@ -104,6 +178,7 @@ fn statics(model: Option<&Mesh>, stage: &Stage) -> Mesh {
 
 struct Built {
     stage: Stage,
+    mesh: Arc<Mesh>,
     scene: Arc<Scene>,
     picker: Arc<Picker>,
     bounds: Option<([f32; 3], [f32; 3])>,
@@ -112,7 +187,7 @@ struct Built {
 fn build(model: Option<Arc<Mesh>>, stage: Stage) -> Built {
     let mesh = statics(model.as_deref(), &stage);
     let bounds = mesh.bounds().map(|b| (b.min, b.max));
-    Built { scene: Arc::new(Scene::new(&mesh)), picker: Arc::new(Picker::new(&mesh)), bounds, stage }
+    Built { scene: Arc::new(Scene::new(&mesh)), picker: Arc::new(Picker::new(&mesh)), mesh: Arc::new(mesh), bounds, stage }
 }
 
 /// How a camera's lens looks at the world for a pose.
@@ -122,28 +197,47 @@ pub fn view_of(camera: &CameraConfig, pose: &Pose) -> Camera {
     Camera::look(eye, yaw as f32, pitch as f32, camera.lens.hfov_deg(pose.zoom) as f32)
 }
 
-/// A pedestal or suspension with a head at lens height, turned and tilted to where the camera looks.
+/// Distinct from the housing and trim so both renderers can give the optical glass its own material.
+const CAMERA_GLASS: [u8; 3] = [32, 71, 96];
+
+/// A rounded PTZ head with a lens barrel, tilt yoke and pedestal or ceiling suspension.
+/// Only the head tilts; the yoke pans and the support stays fixed at the attachment.
 pub fn marker(mount: &Mount, pose: &Pose, color: [u8; 3]) -> Mesh {
     let [x, y, lens_z] = mount.lens_position(pose.elevation).map(|v| v as f32);
     let attachment = mount.z as f32;
     let direction = if mount.inverted { -1.0 } else { 1.0 };
-    let base_end = attachment + direction * 0.08;
-    let column_end = attachment + direction * (direction * (lens_z - attachment) - 0.12).max(0.1);
     let mut m = Mesh::default();
-    m.push_cuboid([x - 0.3, y - 0.3, attachment.min(base_end)], [x + 0.3, y + 0.3, attachment.max(base_end)], [70, 72, 84]);
-    m.push_cuboid(
-        [x - 0.07, y - 0.07, base_end.min(column_end)],
-        [x + 0.07, y + 0.07, base_end.max(column_end)],
-        [120, 122, 134],
-    );
-    let mut head = Mesh::default();
-    head.push_cuboid([-0.13, -0.19, -0.11], [0.13, 0.15, 0.11], color);
-    head.push_cuboid([-0.06, 0.15, -0.06], [0.06, 0.3, 0.06], [230, 232, 236]);
+    cylinder(&mut m, [x, y, attachment], [x, y, attachment + direction * 0.06], [0.30, 0.27], [53, 58, 66]);
+    let support_end = lens_z - direction * 0.30;
+    if (support_end - attachment) * direction > 0.06 {
+        cylinder(&mut m, [x, y, attachment + direction * 0.06], [x, y, support_end], [0.055; 2], [121, 128, 139]);
+    }
+
     let (yaw, pitch) = mount.view(pose);
-    let view = Camera::look([x, y, lens_z], yaw as f32, pitch as f32, 60.0);
-    let transform =
-        Transform { m: [0, 1, 2].map(|k| [view.right[k] * direction, view.forward[k], view.up[k] * direction]), t: view.eye };
-    m.append(&head.transformed(&transform));
+    let basis = |pitch: f32| {
+        let view = Camera::look([x, y, lens_z], yaw as f32, pitch, 60.0);
+        Transform { m: [0, 1, 2].map(|k| [view.right[k] * direction, view.forward[k], view.up[k] * direction]), t: view.eye }
+    };
+    let mut yoke = Mesh::default();
+    cylinder(&mut yoke, [0.0, 0.0, -0.30], [0.0, 0.0, -0.23], [0.18, 0.20], [39, 43, 50]);
+    cylinder(&mut yoke, [0.0, 0.0, -0.235], [0.0, 0.0, -0.215], [0.20; 2], color);
+    yoke.push_cuboid([-0.25, -0.10, -0.22], [0.25, 0.10, -0.16], [47, 52, 61]);
+    for side in [-1.0, 1.0] {
+        let cx = side * 0.22;
+        yoke.push_cuboid([cx - 0.03, -0.10, -0.18], [cx + 0.03, 0.10, 0.025], [47, 52, 61]);
+        cylinder(&mut yoke, [side * 0.18, 0.0, 0.0], [side * 0.265, 0.0, 0.0], [0.075; 2], color);
+    }
+    m.append(&yoke.transformed(&basis(0.0)));
+
+    let mut head = Mesh::default();
+    ellipsoid(&mut head, [0.0, -0.025, 0.0], [0.185, 0.21, 0.16], [65, 72, 83]);
+    cylinder(&mut head, [0.0, 0.10, 0.0], [0.0, 0.30, 0.0], [0.105, 0.115], [31, 35, 42]);
+    cylinder(&mut head, [0.0, 0.30, 0.0], [0.0, 0.335, 0.0], [0.115; 2], [130, 141, 154]);
+    cylinder(&mut head, [0.0, 0.335, 0.0], [0.0, 0.35, 0.0], [0.098; 2], [17, 23, 31]);
+    cylinder(&mut head, [0.0, 0.351, 0.0], [0.0, 0.355, 0.0], [0.082; 2], CAMERA_GLASS);
+    cylinder(&mut head, [-0.025, 0.356, 0.03], [-0.025, 0.357, 0.03], [0.017; 2], [114, 161, 177]);
+    head.push_cuboid([-0.025, 0.035, 0.145], [0.025, 0.07, 0.165], color);
+    m.append(&head.transformed(&basis(pitch as f32)));
     m
 }
 
@@ -243,6 +337,9 @@ pub enum Import {
 }
 
 pub struct World {
+    /// Native studio renderer, available only while the window's GL context is alive.
+    gpu: Option<crate::stage_gpu::Renderer>,
+    render_error: Option<String>,
     /// The model as the server holds it, in the file's own units and axes, with its revision.
     model: Option<(u64, Arc<Mesh>)>,
     /// The revision that has been asked for and has not arrived.
@@ -276,6 +373,8 @@ impl Default for World {
 impl World {
     pub fn new() -> World {
         World {
+            gpu: None,
+            render_error: None,
             model: None,
             asked: None,
             retry_at: None,
@@ -294,6 +393,83 @@ impl World {
 
     pub fn picker(&self) -> &Picker {
         &self.built.picker
+    }
+
+    /// Called on the window thread with its OpenGL context current.
+    pub fn enable_gpu(&mut self, gl: Arc<eframe::glow::Context>) -> Result<(), String> {
+        self.disable_gpu();
+        self.gpu = Some(crate::stage_gpu::Renderer::new(gl)?);
+        self.generation += 1;
+        Ok(())
+    }
+
+    /// Release GL resources before eframe destroys the window context.
+    pub fn disable_gpu(&mut self) {
+        if let Some(mut gpu) = self.gpu.take() {
+            gpu.destroy();
+            self.generation += 1;
+        }
+    }
+
+    pub fn take_render_error(&mut self) -> Option<String> {
+        self.render_error.take()
+    }
+
+    /// Render the same scene through native studio shading or the CPU fallback.
+    pub fn scene_picture(
+        &mut self,
+        ctx: &egui::Context,
+        name: &str,
+        size: [usize; 2],
+        key: u64,
+        urgent: bool,
+        view: &Camera,
+        make_markers: impl FnOnce() -> Vec<Mesh>,
+        hidden_marker: Option<usize>,
+        lines: &[crate::stage_gpu::Line],
+        look: &Look,
+    ) -> Option<egui::TextureId> {
+        let mut gpu = self.gpu.take();
+        let mesh = self.built.mesh.clone();
+        let generation = self.generation;
+        let mut error = None;
+        let picture = self.picture(ctx, name, size, key, urgent, |frame, scene| {
+            let markers = make_markers();
+            if let Some(renderer) = &mut gpu {
+                // All views share the same shadow casters, including the camera
+                // whose body is hidden from its own simulated picture.
+                let visible;
+                let shown = if let Some(hidden) = hidden_marker {
+                    visible =
+                        markers.iter().enumerate().filter(|(i, _)| *i != hidden).map(|(_, m)| m.clone()).collect::<Vec<_>>();
+                    &visible
+                } else {
+                    &markers
+                };
+                match renderer.render_with_shadow_casters(frame, generation, &mesh, view, shown, &markers, lines, look) {
+                    Ok(()) => return,
+                    Err(why) => error = Some(why),
+                }
+                // A failed draw may have partially filled the picture.
+                frame.clear(SKY);
+            }
+            render::draw_scene(frame, view, scene, look);
+            for (i, marker) in markers.iter().enumerate() {
+                if hidden_marker != Some(i) {
+                    render::draw_mesh(frame, view, marker, look);
+                }
+            }
+            for (a, b, color, width) in lines {
+                render::draw_line(frame, view, *a, *b, *color, *width);
+            }
+        });
+        self.gpu = gpu;
+        if let Some(error) = error {
+            self.disable_gpu();
+            self.render_error = Some(error);
+            ctx.request_repaint();
+        }
+        picture
     }
 
     /// Lowest and highest corner of everything that stands still.
@@ -538,7 +714,28 @@ pub fn camera_picture(
     let view = view_of(camera, poses.get(index)?);
     let key = camera_key(&s.project, poses, index, &view);
     let project = &s.project;
-    s.world.picture(ctx, name, size, key, urgent, |frame, scene| draw_camera_view(frame, scene, project, poses, index, &view))
+    s.world.scene_picture(
+        ctx,
+        name,
+        size,
+        key,
+        urgent,
+        &view,
+        || {
+            project
+                .cameras
+                .iter()
+                .enumerate()
+                .map(|(i, camera)| {
+                    let pose = poses.get(i).copied().unwrap_or_else(Pose::home);
+                    marker(&camera.mount, &pose, rgb(crate::theme::camera_color(i)))
+                })
+                .collect()
+        },
+        Some(index),
+        &[],
+        &fog(),
+    )
 }
 
 /// Paint a picture made by `World::picture`, or the empty sky while it has not been drawn yet.
@@ -555,6 +752,7 @@ pub fn paint_picture(painter: &egui::Painter, rect: egui::Rect, texture: Option<
 }
 
 /// What one camera sees: the stage, and the other cameras standing in it.
+#[cfg(test)]
 pub fn draw_camera_view(frame: &mut Frame, scene: &Scene, project: &Project, poses: &[Pose], index: usize, view: &Camera) {
     let look = fog();
     render::draw_scene(frame, view, scene, &look);
@@ -566,25 +764,23 @@ pub fn draw_camera_view(frame: &mut Frame, scene: &Scene, project: &Project, pos
     }
 }
 
-/// The key of a camera's picture: its own view, and where the others stand.
+/// The key of a camera's picture: its view and every camera body that can cast a shadow.
 pub fn camera_key(project: &Project, poses: &[Pose], index: usize, view: &Camera) -> u64 {
     let mut key = Key::new().camera(view).add(index);
     for (i, camera) in project.cameras.iter().enumerate() {
-        if i != index {
-            let pose = poses.get(i).copied().unwrap_or_else(Pose::home);
-            let m = &camera.mount;
-            key = key.add(m.inverted).floats(&[
-                m.x,
-                m.y,
-                m.z,
-                m.heading_deg,
-                m.tilt_deg,
-                m.base_height_mm,
-                pose.pan,
-                pose.tilt,
-                pose.elevation,
-            ]);
-        }
+        let pose = poses.get(i).copied().unwrap_or_else(Pose::home);
+        let m = &camera.mount;
+        key = key.add(m.inverted).floats(&[
+            m.x,
+            m.y,
+            m.z,
+            m.heading_deg,
+            m.tilt_deg,
+            m.base_height_mm,
+            pose.pan,
+            pose.tilt,
+            pose.elevation,
+        ]);
     }
     key.finish()
 }
@@ -732,11 +928,9 @@ mod tests {
         let m = marker(&mount, &pose, [1, 2, 3]);
         let b = m.bounds().unwrap();
         assert!((b.min[2] - 0.5).abs() < 1e-6, "{b:?}");
-        assert!((b.max[2] - (0.5 + 1.5 + 0.11)).abs() < 1e-5, "{b:?}");
+        assert!((b.max[2] - (0.5 + 1.5 + 0.165)).abs() < 1e-5, "{b:?}");
         // Heading 90 looks along -X: the lens barrel is the part furthest that way.
-        assert!((b.min[0] - (3.0 - 0.3)).abs() < 1e-5 && (b.max[0] - (3.0 + 0.3)).abs() < 1e-5, "{b:?}");
-        let barrel_tip = m.positions.iter().map(|p| p[0]).fold(f32::INFINITY, f32::min);
-        assert!((barrel_tip - 2.7).abs() < 1e-5);
+        assert!(b.min[0] < 3.0 - 0.35 && (b.max[0] - (3.0 + 0.3)).abs() < 1e-5, "{b:?}");
         assert_eq!(heading_toward(&mount, [3.0, 10.0, 0.0]), 0.0);
         assert!((heading_toward(&mount, [-7.0, -2.0, 0.0]) - 90.0).abs() < 1e-9);
         assert!((heading_toward(&mount, [13.0, -2.0, 0.0]) + 90.0).abs() < 1e-9);
@@ -750,38 +944,109 @@ mod tests {
         let m = marker(&camera.mount, &pose, [1, 2, 3]);
         let bounds = m.bounds().unwrap();
         assert!((bounds.max[2] - 6.0).abs() < 1e-6, "the suspension ends at the ceiling: {bounds:?}");
-        assert!((bounds.min[2] - 4.39).abs() < 1e-5, "the head hangs at lens height: {bounds:?}");
+        assert!((bounds.min[2] - 4.335).abs() < 1e-5, "the head hangs at lens height: {bounds:?}");
         assert!(m.validate().is_ok());
 
-        // The barrel's centre must remain along the view ray when either the mounting
-        // angles or pose change, including an upside-down head.
+        // The optical glass must stay centred on the view ray when either mounting
+        // angles or pose change, including a hanging head looking exactly up or down.
         for inverted in [false, true] {
             camera.mount.inverted = inverted;
-            camera.mount.heading_deg = 35.0;
-            camera.mount.tilt_deg = -20.0;
-            for (pan, tilt) in [(0.0, 0.0), (-80.0, -25.0), (45.0, 50.0)] {
-                let pose = Pose { pan, tilt, ..pose };
-                let view = view_of(&camera, &pose);
-                let m = marker(&camera.mount, &pose, [1, 2, 3]);
-                let barrel: Vec<_> = m
-                    .triangles
-                    .iter()
-                    .zip(&m.colors)
-                    .filter(|(_, color)| **color == [230, 232, 236])
-                    .flat_map(|(triangle, _)| triangle.map(|index| m.positions[index as usize]))
-                    .collect();
-                assert!(!barrel.is_empty());
-                let centre = [0, 1, 2].map(|k| {
-                    (barrel.iter().map(|p| p[k]).fold(f32::INFINITY, f32::min)
-                        + barrel.iter().map(|p| p[k]).fold(f32::NEG_INFINITY, f32::max))
-                        * 0.5
-                });
-                for (k, &coordinate) in centre.iter().enumerate() {
-                    assert!((coordinate - view.eye[k] - 0.225 * view.forward[k]).abs() < 1e-5);
+            for (heading, mount_tilt) in [(0.0, 0.0), (35.0, -20.0), (-110.0, 35.0)] {
+                camera.mount.heading_deg = heading;
+                camera.mount.tilt_deg = mount_tilt;
+                for (pan, pitch) in [(0.0, -90.0), (-80.0, 0.0), (45.0, 90.0), (20.0, 25.0)] {
+                    let pose = Pose { pan, tilt: pitch - mount_tilt, ..pose };
+                    let view = view_of(&camera, &pose);
+                    let m = marker(&camera.mount, &pose, [1, 2, 3]);
+                    let glass = points_with_color(&m, CAMERA_GLASS);
+                    assert!(!glass.is_empty());
+                    let centre = [0, 1, 2].map(|k| {
+                        (glass.iter().map(|p| p[k]).fold(f32::INFINITY, f32::min)
+                            + glass.iter().map(|p| p[k]).fold(f32::NEG_INFINITY, f32::max))
+                            * 0.5
+                    });
+                    for (k, &coordinate) in centre.iter().enumerate() {
+                        assert!((coordinate - view.eye[k] - 0.353 * view.forward[k]).abs() < 1e-5);
+                    }
+                    let projected = view.project(centre, 960, 540).unwrap();
+                    assert!((projected[0] - 480.0).abs() < 0.02 && (projected[1] - 270.0).abs() < 0.02, "{projected:?}");
+                    assert!(m.validate().is_ok());
                 }
-                assert!(m.validate().is_ok());
             }
         }
+    }
+
+    fn points_with_color(mesh: &Mesh, color: [u8; 3]) -> Vec<[f32; 3]> {
+        mesh.triangles
+            .iter()
+            .zip(&mesh.colors)
+            .filter(|(_, c)| **c == color)
+            .flat_map(|(triangle, _)| triangle.map(|index| mesh.positions[index as usize]))
+            .collect()
+    }
+
+    #[test]
+    fn the_yoke_and_support_stay_put_when_the_head_tilts_but_the_yoke_follows_pan() {
+        for inverted in [false, true] {
+            let mount = Mount { z: if inverted { 5.0 } else { 0.0 }, inverted, heading_deg: 27.0, ..Mount::default() };
+            let base = marker(&mount, &Pose::home(), [1, 2, 3]);
+            for tilt in [-90.0, -35.0, 25.0, 90.0] {
+                let tilted = marker(&mount, &Pose { tilt, ..Pose::home() }, [1, 2, 3]);
+                for fixed_color in [[53, 58, 66], [121, 128, 139], [47, 52, 61]] {
+                    assert_eq!(points_with_color(&base, fixed_color), points_with_color(&tilted, fixed_color));
+                }
+                assert_ne!(points_with_color(&base, CAMERA_GLASS), points_with_color(&tilted, CAMERA_GLASS));
+            }
+            let panned = marker(&mount, &Pose { pan: 55.0, ..Pose::home() }, [1, 2, 3]);
+            assert_ne!(points_with_color(&base, [47, 52, 61]), points_with_color(&panned, [47, 52, 61]));
+            assert_eq!(points_with_color(&base, [121, 128, 139]), points_with_color(&panned, [121, 128, 139]));
+        }
+    }
+
+    #[test]
+    fn rounded_primitives_are_closed_non_degenerate_and_wound_outward() {
+        let mut round = Mesh::default();
+        let centre = [1.0, 2.0, 3.0];
+        ellipsoid(&mut round, centre, [0.3, 0.18, 0.5], [1, 2, 3]);
+        let mut tube = Mesh::default();
+        let (from, to) = ([-1.0, 0.3, 2.0], [0.5, 1.1, 4.0]);
+        cylinder(&mut tube, from, to, [0.2, 0.3], [1, 2, 3]);
+        for (mesh, inside) in [(round, centre), (tube, [0, 1, 2].map(|k| (from[k] + to[k]) * 0.5))] {
+            assert!(mesh.validate().is_ok());
+            let mut edges = std::collections::HashMap::<([u32; 3], [u32; 3]), (usize, i32)>::new();
+            for triangle in &mesh.triangles {
+                let [a, b, c] = triangle.map(|i| mesh.positions[i as usize]);
+                let ab = [0, 1, 2].map(|k| b[k] - a[k]);
+                let ac = [0, 1, 2].map(|k| c[k] - a[k]);
+                let n = [ab[1] * ac[2] - ab[2] * ac[1], ab[2] * ac[0] - ab[0] * ac[2], ab[0] * ac[1] - ab[1] * ac[0]];
+                assert!(n.iter().map(|v| v * v).sum::<f32>() > 1e-12, "degenerate triangle");
+                assert!((0..3).map(|k| n[k] * (a[k] - inside[k])).sum::<f32>() > 0.0, "inward-facing triangle");
+                let point_key = |p: [f32; 3]| p.map(|v| if v == 0.0 { 0 } else { v.to_bits() });
+                for (a, b) in [(a, b), (b, c), (c, a)] {
+                    let (a, b) = (point_key(a), point_key(b));
+                    let (edge, sign) = if a < b { ((a, b), 1) } else { ((b, a), -1) };
+                    let entry = edges.entry(edge).or_default();
+                    entry.0 += 1;
+                    entry.1 += sign;
+                }
+            }
+            assert!(edges.values().all(|&(count, winding)| count == 2 && winding == 0), "open seam or mismatched winding");
+        }
+    }
+
+    #[test]
+    fn detailed_models_stay_within_the_preview_budget_and_keep_subjects_on_their_marks() {
+        let stage = builtin();
+        assert!(stage.validate().is_ok());
+        assert!(stage.triangles.len() < 15_000, "{} stage triangles", stage.triangles.len());
+        let camera = marker(&Mount::default(), &Pose::home(), [1, 2, 3]);
+        assert!(camera.triangles.len() < 3_000, "{} camera triangles", camera.triangles.len());
+        let mut subject = Mesh::default();
+        person(&mut subject, AWARDS[0], AWARDS[1], [168, 172, 180]);
+        let bounds = subject.bounds().unwrap();
+        assert!((bounds.min[2] - DECK_HEIGHT).abs() < 1e-5, "feet meet the stage");
+        assert!((bounds.max[2] - DECK_HEIGHT - 1.76).abs() < 1e-5, "subject height stays useful for framing");
+        assert!(((bounds.min[0] + bounds.max[0]) * 0.5 - AWARDS[0]).abs() < 1e-5, "subject stays centred on the mark");
     }
 
     #[test]
@@ -925,6 +1190,9 @@ mod tests {
         mounted.cameras[1].mount = project.cameras[1].mount;
         mounted.cameras[1].mount.inverted = true;
         assert_ne!(camera_key(&mounted, &poses, 0, &view), key, "an inverted suspension needs a fresh picture");
+        mounted = project.clone();
+        mounted.cameras[0].mount.inverted = true;
+        assert_ne!(camera_key(&mounted, &poses, 0, &view), key, "the hidden camera still casts a shadow");
         // A camera does not see itself.
         let own = view_of(&project.cameras[1], &poses[1]);
         let own_key = camera_key(&project, &poses, 1, &own);

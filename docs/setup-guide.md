@@ -455,6 +455,11 @@ downward from that point. Enable image flip on the camera itself, then verify
 the **Counts run backwards** settings during rig bring-up. Mount inversion
 keeps the calibrated pan/tilt directions; it does not change those settings.
 
+Exact +90° and −90° tilt are supported by the view and timeline. Allow those
+angles in **Rig limits** only when the installed camera can physically reach
+them. Bring-up should establish the normalized limits for an inverted rig;
+mount inversion does not change the manufacturer's default travel range.
+
 ---
 
 ## 6. Sound and timecode
