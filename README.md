@@ -297,10 +297,43 @@ the model** brings the built-in stage back for every station.
 Distances are in metres, Z is up, and a camera with heading 0 and pan 0 looks
 along +Y.
 
+The native visualization uses rounded people and PTZ models, studio lighting,
+soft shadows and antialiasing on OpenGL 3.3 or newer. The same geometry is used
+for camera previews, placement and picking. If advanced rendering cannot start,
+the app uses basic CPU shading; `PTZ_RENDERER=cpu` also selects it for troubleshooting.
+The [render comparison study](design/render-prototype/README.md) preserves the
+original block-model captures alongside the approved visual direction.
+
 ### Placing cameras: the Stage view
 
 The **Stage** tab shows the model from outside with every camera, its name and
 the cone it sees, which follows its pan, tilt, zoom and lens as the song plays.
+
+Turn on **Camera placement** to open a full workspace with the selected camera's
+simulated view beside the stage. The transport stays available; choose **Done
+placing** (or turn **Camera placement** off) to return to the saved panel layout. The preview updates as its
+position and angles change. Enter its
+X/Y position, **Mount height**, **Heading**, **Tilt offset** and **Lens offset**,
+or drag the preview to adjust the mounting heading and tilt. The preview uses
+the camera's current pose and lens; placement changes its installation, not the
+programmed shot or the hardware's pose. One preview drag is one **Undo move**
+step; Escape cancels it.
+
+For a ceiling or underslung installation, choose **Inverted mount**. Mount
+height is then the height of the attachment, and lens offset is measured down
+from it. Column extension also moves the lens downward. The rendered camera
+hangs below its support, while the preview stays upright, as a camera configured
+to flip its image would. Set image flip on the real camera itself. Pan and tilt
+retain the show's existing convention (positive pan left, positive tilt up);
+if the device's counts run the other way, calibrate **Counts run backwards**
+under the camera's rig settings. The mount option does not toggle those hardware
+calibration settings. Existing projects open with upright mounts and zero tilt
+offset.
+
+Views and motion planning support exact straight-up (+90°) and straight-down
+(−90°) tilt, including inverted mounts. Set the tilt limits to the camera's
+measured range in **Rig limits**. An unsupported angle is still rejected;
+the default FR7 mechanical limits are not widened by changing the mount.
 
 | Tool | What it does |
 | --- | --- |
@@ -322,11 +355,11 @@ it, and the middle button shows everything. The two buttons at its top corners
 choose whether the arrows, and a plain drag on the picture, turn the view or
 slide it. Hold a button to keep going.
 
-The same numbers are in Show settings under **Position on the stage**: floor
-position, heading, and the height of the lens above the floor with the column
-down. **Face the stage** turns the camera to the middle of the model and **Drop
-to the surface below** stands it on whatever is under it. Placing cameras needs
-the edit lease and is refused while armed.
+The same mounting numbers are in Show settings under **Position on the stage**.
+**Face the stage** turns the camera to the middle of the model and **Drop
+to the surface below** stands an upright camera on whatever is under it.
+Placing cameras needs the edit lease and is refused while armed; the preview
+remains available for inspection.
 
 ## Audio
 
@@ -808,6 +841,14 @@ scratch data folder, or before real work starts.
 
 The tests that go live (`crates/server/tests/live.rs`, `hw.rs`, `bringup.rs`)
 run the real server and adapters against the stand-in devices over loopback.
+
+On Linux with Mesa EGL installed, the optional native renderer test uses a real
+headless OpenGL context. It checks vertical/inverted views, lighting and depth,
+shared shadows across twelve cameras, GL state restoration and the placement UI:
+
+```sh
+cargo test -p ptz-app gpu_tests -- --ignored --nocapture
+```
 
 ## Layout
 

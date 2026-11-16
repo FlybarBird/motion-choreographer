@@ -3,7 +3,7 @@
 mod common;
 
 use common::*;
-use ptz_core::camera::{Unit, UpAxis};
+use ptz_core::camera::{Mount, Unit, UpAxis};
 use ptz_core::transport::Action;
 use ptz_scene::mesh::Mesh;
 
@@ -53,6 +53,45 @@ fn a_model_is_stored_served_and_kept_across_a_restart() {
     assert_eq!(api.stage_model().unwrap(), bigger);
     let log = std::fs::read_to_string(std::fs::read_dir(dir.join("log")).unwrap().next().unwrap().unwrap().path()).unwrap();
     assert_eq!(log.matches("\"stage_model\"").count(), 2);
+    drop(t);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn an_inverted_mount_is_validated_kept_across_restart_and_cannot_change_while_armed() {
+    let t = TestServer::start("inverted-mount");
+    let api = t.client("a");
+    let mut project = api.project().unwrap();
+    let rig = project.cameras[0].rig.clone();
+    project.cameras[0].mount =
+        Mount { x: -4.0, y: 2.5, z: 7.0, heading_deg: 35.0, tilt_deg: -18.0, inverted: true, base_height_mm: 600.0 };
+    refused(api.put_project(&project), 409);
+    api.take_lease("Luke", false).unwrap();
+    let saved = api.put_project(&project).unwrap();
+    assert_eq!(saved.cameras[0].mount, project.cameras[0].mount);
+    assert_eq!(saved.cameras[0].rig, rig, "mounting does not rewrite hardware direction calibration");
+
+    for tilt in [-91.0, 91.0] {
+        let mut bad = saved.clone();
+        bad.cameras[0].mount.tilt_deg = tilt;
+        assert!(refused(api.put_project(&bad), 422).contains("mount tilt"));
+    }
+    assert_eq!(api.project().unwrap(), saved, "invalid placement leaves the saved project alone");
+
+    let song = api.new_song("Opening", None).unwrap();
+    api.commit(&song.song.id).unwrap();
+    api.load_song(&song.song.id).unwrap();
+    do_act(&api, Action::Arm);
+    let mut moved = saved.clone();
+    moved.cameras[0].mount.inverted = false;
+    assert_eq!(refused(api.put_project(&moved), 409), "Disarm to change project settings");
+    do_act(&api, Action::Disarm);
+
+    let dir = t.stop_keeping_data();
+    let t = TestServer::reopen(&dir);
+    let restored = t.client("b").project().unwrap();
+    assert_eq!(restored.cameras[0].mount, saved.cameras[0].mount);
+    assert_eq!(restored.cameras[0].rig, rig);
     drop(t);
     let _ = std::fs::remove_dir_all(dir);
 }

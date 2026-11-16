@@ -25,7 +25,10 @@ struct Link {
 impl Link {
     /// A connected panel, and a hand that everything but the link allows to drive.
     fn start() -> Link {
-        let panel = FakePanel::start();
+        Self::with_panel(FakePanel::start())
+    }
+
+    fn with_panel(panel: FakePanel) -> Link {
         let shared = Shared::new();
         let (events_tx, events) = std::sync::mpsc::channel();
         let (presses_tx, presses) = std::sync::mpsc::channel();
@@ -72,6 +75,78 @@ impl Link {
     fn saw(&self, mut which: impl FnMut(&Event) -> bool) -> bool {
         self.events.try_iter().any(|e| which(&e))
     }
+}
+
+#[test]
+fn an_idle_panel_is_woken_and_stays_awake_past_its_two_second_sleep_timer_even_after_reconnect() {
+    let panel = FakePanel::start();
+    panel.set_sleep_timer(50);
+    let started = Instant::now();
+    while !panel.is_sleeping() {
+        assert!(started.elapsed() < Duration::from_secs(2));
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // The user's short timer is already configured when the controller connects.
+    panel.set_sleep_timer(2000);
+    let l = Link::with_panel(panel);
+    l.wait("the already-sleeping panel to wake", || !l.panel.is_sleeping());
+    let opened = Instant::now();
+    while opened.elapsed() < Duration::from_millis(2300) {
+        assert!(!l.panel.is_sleeping(), "heartbeats alone must not stand in for disabling operator-inactivity sleep");
+        assert!(l.shared.hand().panel_up);
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(l.panel.lines().iter().any(|line| line == "SleepTimer=0"));
+    assert!(l.panel.unknown().is_empty());
+
+    l.panel.clear_lines();
+    l.panel.set_sleep_timer(2000);
+    l.panel.drop_connections();
+    l.wait("the panel to be initialized again", || l.panel.lines().iter().any(|line| line == "SleepTimer=0"));
+    l.wait("the reconnected link to be proven", || l.shared.hand().panel_up);
+    assert!(!l.panel.is_sleeping());
+}
+
+#[test]
+fn a_panel_that_announces_sleep_is_woken_and_its_unchanged_feedback_is_restored() {
+    let l = Link::start();
+    {
+        let mut surface = l.shared.surface();
+        surface.0 += 1;
+        surface.1.insert(
+            6,
+            ptz_panel::link::Cell {
+                text: ptz_panel::codec::Text { line1: "Still here".into(), ..Default::default() },
+                ..Default::default()
+            },
+        );
+    }
+    l.wait("the initial feedback", || l.panel.text(6).line1 == "Still here");
+    l.panel.clear_lines();
+    l.push();
+    l.panel.set_sleep_timer(60);
+    l.wait("the controller to wake the panel after its sleep report", || l.panel.lines().iter().any(|line| line == "WakeUp!"));
+    l.wait("unchanged feedback to be redrawn", || !l.panel.is_sleeping() && l.panel.text(6).line1 == "Still here");
+    assert_eq!(l.pan(), 0.0, "waking must not restart a deflected joystick");
+    assert!(l.shared.hand().rest_first);
+    assert!(!l.saw(|e| matches!(e, Event::PanelDown(_))), "sleep recovery should keep the same connection");
+}
+
+#[test]
+fn mapping_tools_also_wake_a_sleeping_panel() {
+    let panel = FakePanel::start();
+    panel.set_sleep_timer(50);
+    let started = Instant::now();
+    while !panel.is_sleeping() {
+        assert!(started.elapsed() < Duration::from_secs(2));
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let mut session = ptz_panel::tool::Session::open(&panel.addr.to_string(), Duration::from_secs(2)).unwrap();
+    assert!(!panel.is_sleeping());
+    assert!(session.topology.is_some());
+    panel.down(6);
+    assert_eq!(session.next_event(Duration::from_secs(1)).unwrap(), Some((6, ptz_panel::codec::Trigger::Down)));
+    assert!(panel.unknown().is_empty());
 }
 
 impl Drop for Link {

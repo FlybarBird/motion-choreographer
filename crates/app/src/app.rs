@@ -687,6 +687,7 @@ impl Shell {
 
     pub fn ui(&mut self, ui: &mut Ui) {
         self.session.poll();
+        self.session.stage_view.placement_preview = None;
         if let Some(version) = self.updater.offered().filter(|v| self.update_told.as_ref() != Some(v)) {
             self.session.toast(format!("Version {version} is available: View, then Update"), false);
             self.update_told = Some(version);
@@ -715,6 +716,9 @@ impl Shell {
             .response
             .rect;
         self.stop_corner(ui, cameras);
+        if self.session.settings.is_some() {
+            crate::placement_ui::cancel_drag(&mut self.session);
+        }
         if let Some(lost) = self.session.lost.clone() {
             egui::Panel::top("lost_banner").show_separator_line(false).frame(bar(RED, U + 2.0)).show(ui, |ui| {
                 ui.label(
@@ -751,6 +755,13 @@ impl Shell {
             strip(ui, self, egui::Panel::bottom("transport_bar"));
             crate::settings_ui::area(ui, &mut self.session, &mut page);
             self.session.settings = Some(page);
+        } else if self.session.stage_view.placement && self.front().contains(&Tab::Stage) {
+            // Placement needs the stage and the lens view together. Give them the
+            // workspace while this mode is on; the saved dock layout stays intact.
+            strip(ui, self, egui::Panel::bottom("transport_bar"));
+            egui::CentralPanel::default().frame(egui::Frame::new().fill(BASE)).show(ui, |ui| {
+                crate::stage_ui::show(ui, &mut self.session);
+            });
         } else {
             let half = ((ui.available_height() - TRANSPORT_H) / 2.0).max(120.0);
             egui::Panel::top("upper_dock")
@@ -769,7 +780,14 @@ impl Shell {
             self.layout_changed = true;
         }
         // Whatever was or was not drawn above, this is where a jog is sent, changed or stopped.
+        if self.session.stage_view.placement_preview.is_none() {
+            crate::placement_ui::cancel_drag(&mut self.session);
+        }
         crate::rig_ui::settle(ui.ctx(), &mut self.session);
+        if let Some(why) = self.session.world.take_render_error() {
+            eprintln!("Advanced visualization stopped: {why}");
+            self.session.toast("Advanced visualization is unavailable. Using basic shading for this session", true);
+        }
 
         if let Some(path) = self.session.stage_import_wanted.take() {
             self.import_stage(path);
@@ -1769,6 +1787,7 @@ enum Screen {
 }
 
 pub struct PtzApp {
+    gl: Option<Arc<eframe::glow::Context>>,
     settings: Settings,
     screen: Screen,
     repaint: Arc<dyn Fn() + Send + Sync>,
@@ -1787,6 +1806,7 @@ impl PtzApp {
         let repaint: Arc<dyn Fn() + Send + Sync> = Arc::new(move || ctx.request_repaint());
         let settings = Settings::load();
         let mut app = PtzApp {
+            gl: cc.gl.clone(),
             settings,
             screen: Screen::Connect { error: None },
             updater: Updater::of_this_build(repaint.clone()),
@@ -1999,7 +2019,18 @@ impl eframe::App for PtzApp {
                         let server = self.settings.server.clone();
                         remember_server(&mut self.settings.recent, &server);
                         self.settings.save();
-                        let session = Session::new(link, &self.settings.station, *hello);
+                        let mut session = Session::new(link, &self.settings.station, *hello);
+                        if std::env::var("PTZ_RENDERER").as_deref() != Ok("cpu") {
+                            if let Some(gl) = &self.gl {
+                                if let Err(why) = session.world.enable_gpu(gl.clone()) {
+                                    eprintln!("Advanced visualization could not start: {why}");
+                                    session.toast(
+                                        "Advanced visualization is unavailable. Using basic shading for this session",
+                                        true,
+                                    );
+                                }
+                            }
+                        }
                         let mut shell = Shell::new(session, self.settings.layout.take());
                         if let Some(lower) =
                             self.settings.lower_layout.take().filter(|l| LOWER.iter().all(|t| l.find_tab(t).is_some()))
@@ -2037,7 +2068,8 @@ impl eframe::App for PtzApp {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        if let Screen::Main(shell) = &self.screen {
+        if let Screen::Main(shell) = &mut self.screen {
+            shell.session.world.disable_gpu();
             self.settings.layout = Some(shell.dock.clone());
             self.settings.lower_layout = Some(shell.lower.clone());
             self.settings.save();

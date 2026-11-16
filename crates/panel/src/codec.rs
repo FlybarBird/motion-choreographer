@@ -57,6 +57,7 @@ pub enum FromPanel {
     /// The JSON after `_panelTopology_HWC=`.
     Topology(String),
     HeartBeatTimer(u32),
+    SleepTimer(u32),
     Sleeping(bool),
     Msg(String),
     ErrorMsg(String),
@@ -132,6 +133,7 @@ pub fn parse(line: &str) -> FromPanel {
         "_panelTopology_svgbase" => FromPanel::TopologySvg(value.into()),
         "_panelTopology_HWC" => FromPanel::Topology(value.into()),
         "_heartBeatTimer" => value.parse().map(FromPanel::HeartBeatTimer).unwrap_or_else(|_| other()),
+        "_sleepTimer" => value.parse().map(FromPanel::SleepTimer).unwrap_or_else(|_| other()),
         "_isSleeping" => FromPanel::Sleeping(value.trim() == "1"),
         "Msg" => FromPanel::Msg(value.into()),
         "ErrorMsg" => FromPanel::ErrorMsg(value.into()),
@@ -332,6 +334,9 @@ pub enum ToPanel {
     Nack,
     ActivePanel,
     HeartBeatTimer(u32),
+    SleepTimer(u32),
+    GetSleepTimer,
+    WakeUp,
     Clear,
     ClearLeds,
     ClearDisplays,
@@ -350,6 +355,8 @@ pub fn parse_to_panel(line: &str) -> ToPanel {
         "ack" => return ToPanel::Ack,
         "nack" => return ToPanel::Nack,
         "ActivePanel=1" => return ToPanel::ActivePanel,
+        "SleepTimer?" => return ToPanel::GetSleepTimer,
+        "WakeUp!" => return ToPanel::WakeUp,
         "Clear" => return ToPanel::Clear,
         "ClearLEDs" => return ToPanel::ClearLeds,
         "ClearDisplays" => return ToPanel::ClearDisplays,
@@ -373,6 +380,7 @@ pub fn parse_to_panel(line: &str) -> ToPanel {
     }
     match key {
         "HeartBeatTimer" => value.parse().map(ToPanel::HeartBeatTimer).unwrap_or_else(|_| unknown()),
+        "SleepTimer" => value.parse().map(ToPanel::SleepTimer).unwrap_or_else(|_| unknown()),
         "PanelBrightness" => ToPanel::Brightness(value.to_string()),
         _ => unknown(),
     }
@@ -455,6 +463,8 @@ mod tests {
         assert_eq!(parse("RDY"), FromPanel::Ready);
         assert_eq!(parse("list"), FromPanel::List);
         assert_eq!(parse("_heartBeatTimer=3000"), FromPanel::HeartBeatTimer(3000));
+        assert_eq!(parse("_sleepTimer=2000"), FromPanel::SleepTimer(2000));
+        assert_eq!(parse("_sleepTimer=0"), FromPanel::SleepTimer(0));
         assert_eq!(parse("_isSleeping=1"), FromPanel::Sleeping(true));
         assert_eq!(parse("Msg=Rebooting..."), FromPanel::Msg("Rebooting...".into()));
         assert_eq!(parse("ErrorMsg=Max clients reached"), FromPanel::ErrorMsg("Max clients reached".into()));
@@ -553,6 +563,10 @@ mod tests {
         // Reference 1.1: several components in one command.
         assert_eq!(parse_to_panel("HWC#12,13,14=5"), ToPanel::Mode { hwcs: vec![12, 13, 14], value: 5 });
         assert_eq!(parse_to_panel("HeartBeatTimer=3000"), ToPanel::HeartBeatTimer(3000));
+        assert_eq!(parse_to_panel("SleepTimer=0"), ToPanel::SleepTimer(0));
+        assert_eq!(parse_to_panel("SleepTimer=2000"), ToPanel::SleepTimer(2000));
+        assert_eq!(parse_to_panel("SleepTimer?"), ToPanel::GetSleepTimer);
+        assert_eq!(parse_to_panel("WakeUp!"), ToPanel::WakeUp);
         assert_eq!(parse_to_panel("PanelBrightness=8,6"), ToPanel::Brightness("8,6".into()));
         assert_eq!(parse_to_panel("PanelTopology?"), ToPanel::Topology);
         assert_eq!(parse_to_panel("ActivePanel=1"), ToPanel::ActivePanel);

@@ -17,45 +17,61 @@ pub fn is_first_camera(id: &str) -> bool {
     id == FIRST_CAMERA
 }
 
-/// Where a camera's pedestal stands and which way it faces. The world is in
-/// metres, Z up, with the floor at zero.
+/// Where a camera is attached and which way it faces. The world is in metres,
+/// Z up, with the floor at zero. Pose angles keep their world-normalized signs
+/// for either mounting orientation; device count inversion belongs to the rig.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
 #[serde(default)]
 pub struct Mount {
     pub x: f64,
     pub y: f64,
-    /// Height of the floor under the column: zero, or the top of a riser or balcony.
+    /// Height of the attachment: floor or riser for an upright camera, ceiling or truss for an inverted one.
     pub z: f64,
     /// Direction of pan 0: 0 looks toward +Y, positive turns counter-clockwise seen from above.
     pub heading_deg: f64,
-    /// Height of the lens above the floor point with the column at its lowest.
+    /// World pitch at tilt 0: positive looks up.
+    pub tilt_deg: f64,
+    /// The camera hangs below its attachment. The camera's image flip is assumed
+    /// to keep its output upright, as the simulated view is.
+    pub inverted: bool,
+    /// Distance from the attachment to the lens with the column at its lowest setting.
     pub base_height_mm: f64,
 }
 
 impl Default for Mount {
     fn default() -> Self {
-        Mount { x: 0.0, y: 0.0, z: 0.0, heading_deg: 0.0, base_height_mm: 1200.0 }
+        Mount { x: 0.0, y: 0.0, z: 0.0, heading_deg: 0.0, tilt_deg: 0.0, inverted: false, base_height_mm: 1200.0 }
     }
 }
 
 impl Mount {
-    /// Where the lens is for a column raised by `elevation_mm`.
+    /// Where the lens is for a column extended by `elevation_mm` away from its attachment.
     pub fn lens_position(&self, elevation_mm: f64) -> [f64; 3] {
-        [self.x, self.y, self.z + (self.base_height_mm + elevation_mm) / 1000.0]
+        let direction = if self.inverted { -1.0 } else { 1.0 };
+        [self.x, self.y, self.z + direction * (self.base_height_mm + elevation_mm) / 1000.0]
     }
 
     /// Yaw and pitch of the view in degrees for a pose: positive pan turns left, positive tilt looks up.
     pub fn view(&self, pose: &Pose) -> (f64, f64) {
-        (self.heading_deg + pose.pan, pose.tilt)
+        (self.heading_deg + pose.pan, self.tilt_deg + pose.tilt)
+    }
+
+    /// Pose pan and tilt that face a world yaw and pitch. Pan takes the shortest
+    /// turn from the mount heading; callers still apply the camera's axis limits.
+    pub fn pose_angles(&self, yaw_deg: f64, pitch_deg: f64) -> (f64, f64) {
+        ((yaw_deg - self.heading_deg + 180.0).rem_euclid(360.0) - 180.0, pitch_deg - self.tilt_deg)
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        let all = [self.x, self.y, self.z, self.heading_deg, self.base_height_mm];
+        let all = [self.x, self.y, self.z, self.heading_deg, self.tilt_deg, self.base_height_mm];
         if all.iter().any(|v| !v.is_finite()) || [self.x, self.y, self.z].iter().any(|v| v.abs() > 10_000.0) {
             return Err("its position is not a usable number".into());
         }
         if !(0.0..=5000.0).contains(&self.base_height_mm) {
             return Err("the base height must be between 0 and 5000 mm".into());
+        }
+        if !(-90.0..=90.0).contains(&self.tilt_deg) {
+            return Err("the mount tilt must be between -90 and 90 degrees".into());
         }
         Ok(())
     }
@@ -334,7 +350,7 @@ mod tests {
 
     #[test]
     fn the_lens_rises_with_the_column_and_turns_with_the_heading() {
-        let mount = Mount { x: 2.0, y: -3.0, z: 0.3, heading_deg: 90.0, base_height_mm: 1200.0 };
+        let mount = Mount { x: 2.0, y: -3.0, z: 0.3, heading_deg: 90.0, base_height_mm: 1200.0, ..Mount::default() };
         let p = mount.lens_position(400.0);
         assert_eq!((p[0], p[1]), (2.0, -3.0));
         assert!((p[2] - 1.9).abs() < 1e-12);
@@ -343,6 +359,57 @@ mod tests {
         assert!(mount.validate().is_ok());
         assert!(Mount { base_height_mm: 6000.0, ..mount }.validate().is_err());
         assert!(Mount { x: f64::NAN, ..mount }.validate().is_err());
+    }
+
+    #[test]
+    fn an_inverted_camera_hangs_below_its_attachment_without_reversing_calibrated_angles() {
+        let mount = Mount { x: 2.0, y: -3.0, z: 6.0, heading_deg: 90.0, tilt_deg: -12.0, inverted: true, base_height_mm: 1200.0 };
+        assert_eq!(mount.lens_position(0.0), [2.0, -3.0, 4.8]);
+        assert_eq!(mount.lens_position(400.0), [2.0, -3.0, 4.4]);
+        let pose = Pose { pan: -20.0, tilt: 5.0, ..Pose::home() };
+        assert_eq!(mount.view(&pose), (70.0, -7.0));
+        assert_eq!(mount.view(&pose), Mount { inverted: false, ..mount }.view(&pose));
+        assert!(mount.validate().is_ok());
+    }
+
+    #[test]
+    fn world_aim_accounts_for_the_mount_angles_and_wraps_across_north() {
+        for inverted in [false, true] {
+            let mount = Mount { heading_deg: 170.0, tilt_deg: -15.0, inverted, ..Mount::default() };
+            let (pan, tilt) = mount.pose_angles(-170.0, 8.0);
+            assert_eq!((pan, tilt), (20.0, 23.0));
+            let view = mount.view(&Pose { pan, tilt, ..Pose::home() });
+            assert_eq!(view, (190.0, 8.0));
+            for (pan, tilt) in [(-90.0, -20.0), (0.0, 0.0), (45.0, 30.0)] {
+                let (yaw, pitch) = mount.view(&Pose { pan, tilt, ..Pose::home() });
+                assert_eq!(mount.pose_angles(yaw, pitch), (pan, tilt));
+            }
+        }
+    }
+
+    #[test]
+    fn older_mounts_stay_upright_and_new_mount_settings_round_trip() {
+        let legacy = r#"{"x":2.0,"y":-3.0,"z":0.3,"heading_deg":90.0,"base_height_mm":1200.0}"#;
+        let mount: Mount = serde_json::from_str(legacy).unwrap();
+        assert!(!mount.inverted);
+        assert_eq!(mount.tilt_deg, 0.0);
+        let empty: Mount = serde_json::from_str("{}").unwrap();
+        assert_eq!(empty, Mount::default());
+
+        let camera =
+            CameraConfig { mount: Mount { inverted: true, tilt_deg: -35.0, z: 6.0, ..mount }, ..CameraConfig::default() };
+        let json = serde_json::to_string(&camera).unwrap();
+        assert_eq!(serde_json::from_str::<CameraConfig>(&json).unwrap(), camera);
+    }
+
+    #[test]
+    fn mount_tilt_is_finite_and_within_a_quarter_turn() {
+        for tilt_deg in [-90.0, 0.0, 90.0] {
+            assert!(Mount { tilt_deg, ..Mount::default() }.validate().is_ok());
+        }
+        for tilt_deg in [-90.1, 90.1, f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
+            assert!(Mount { tilt_deg, ..Mount::default() }.validate().is_err());
+        }
     }
 
     #[test]

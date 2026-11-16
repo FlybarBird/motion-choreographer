@@ -443,6 +443,23 @@ A practical order for each camera:
 The **Multiview** tab shows all the cameras' pictures at once: a quick check
 that nobody is pointing at a wall. Placing cameras is refused while armed.
 
+For a side-by-side setup view, turn on **Camera placement** in the Stage tab.
+It uses the workspace for the stage and a simulated view through the selected
+camera. Adjust **Placement X/Y**, **Mount height**, **Heading**, **Tilt offset**
+and **Lens offset**, or drag the camera preview to adjust its angle. **Undo
+move** reverses a change and **Done placing** returns to the saved panel layout.
+
+For an upside-down camera, choose **Inverted mount** and set **Mount height**
+to the ceiling or truss attachment. The lens offset and column extension go
+downward from that point. Enable image flip on the camera itself, then verify
+the **Counts run backwards** settings during rig bring-up. Mount inversion
+keeps the calibrated pan/tilt directions; it does not change those settings.
+
+Exact +90° and −90° tilt are supported by the view and timeline. Allow those
+angles in **Rig limits** only when the installed camera can physically reach
+them. Bring-up should establish the normalized limits for an inverted rig;
+mount inversion does not change the manufacturer's default travel range.
+
 ---
 
 ## 6. Sound and timecode

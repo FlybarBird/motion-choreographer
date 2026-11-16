@@ -1103,21 +1103,28 @@ fn position(ui: &mut Ui, s: &Session, camera: &mut CameraConfig, units: Units, e
     ui.add_enabled_ui(editable, |ui| {
         let m = &mut camera.mount;
         egui::Grid::new("mount_grid").num_columns(2).spacing([4.0 * U, GAP]).show(ui, |ui| {
-            field(ui, "Floor position");
+            field(ui, if m.inverted { "Mount position" } else { "Floor position" });
             ui.horizontal(|ui| {
                 ui.add(distance_box(&mut m.x, units).range(-1000.0..=1000.0).prefix("x "));
                 ui.add(distance_box(&mut m.y, units).range(-1000.0..=1000.0).prefix("y "));
                 ui.add(distance_box(&mut m.z, units).range(-100.0..=100.0).prefix("z "))
-                    .on_hover_text("Height of the floor or platform the pedestal stands on");
+                    .on_hover_text("Height of the attachment: floor or riser when upright, ceiling or truss when inverted");
             });
             ui.end_row();
             field(ui, "Heading");
             ui.add(egui::DragValue::new(&mut m.heading_deg).speed(0.5).range(-360.0..=360.0).suffix("°"))
                 .on_hover_text("Where pan 0 points, counter-clockwise seen from above. 0 looks along +Y, towards the stage");
             ui.end_row();
+            field(ui, "Tilt offset");
+            ui.add(egui::DragValue::new(&mut m.tilt_deg).speed(0.2).range(-90.0..=90.0).suffix("°"))
+                .on_hover_text("Where tilt 0 points; positive looks up");
+            ui.end_row();
+            field(ui, "Mount orientation");
+            ui.checkbox(&mut m.inverted, "Inverted mount");
+            ui.end_row();
             field(ui, "Lens height");
             ui.add(height_box(&mut m.base_height_mm, units).range(0.0..=5000.0))
-                .on_hover_text("Height of the lens above the floor with the column fully down");
+                .on_hover_text("Lens distance from the attachment with zero column extension; below it when inverted");
             ui.end_row();
         });
         ui.horizontal_wrapped(|ui| {
@@ -1134,7 +1141,7 @@ fn position(ui: &mut Ui, s: &Session, camera: &mut CameraConfig, units: Units, e
                 m.heading_deg = (to * 10.0).round() / 10.0;
             }
             if ui
-                .button("Drop to the surface below")
+                .add_enabled(!m.inverted, egui::Button::new("Drop to the surface below"))
                 .on_hover_text(
                     "Set the floor height to the surface of the stage under the camera: a riser, a balcony, or the floor",
                 )
@@ -1147,7 +1154,14 @@ fn position(ui: &mut Ui, s: &Session, camera: &mut CameraConfig, units: Units, e
             }
         });
     });
-    ui.label(RichText::new("The Stage view places cameras by dragging.").color(MUTED).small());
+    ui.label(
+        RichText::new("Use Camera placement in the Stage view to adjust the position and angle with a simulated camera preview.")
+            .color(MUTED)
+            .small(),
+    );
+    if camera.mount.inverted {
+        ui.label(RichText::new("Enable image flip on the camera for an upright picture. Check Pan / Tilt direction in Rig settings; mounting orientation does not change calibrated movement directions.").color(MUTED).small());
+    }
 }
 
 /// The venue: an imported model, where it stands, and whether the built-in stage is drawn.

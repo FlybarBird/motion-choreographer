@@ -34,7 +34,7 @@ impl Session {
             s.pump()?;
             if !asked && (s.heard || opened.elapsed() > Duration::from_millis(500)) {
                 asked = true;
-                s.send(&["PanelTopology?".to_string(), "map".to_string()])?;
+                s.send(&["SleepTimer=0".to_string(), "WakeUp!".to_string(), "PanelTopology?".to_string(), "map".to_string()])?;
             }
         }
         if !s.heard {
@@ -58,6 +58,7 @@ impl Session {
                 FromPanel::Event { hwc, trigger, .. } => self.events.push_back((hwc, trigger)),
                 FromPanel::Ping => out.push("ack".to_string()),
                 FromPanel::List => out.push("\nActivePanel=1".to_string()),
+                FromPanel::Sleeping(true) => out.extend(["SleepTimer=0".to_string(), "WakeUp!".to_string()]),
                 FromPanel::Model(m) => self.model = m,
                 FromPanel::Name(n) => self.name = n,
                 FromPanel::Topology(json) => match Topology::parse(&json) {
