@@ -520,6 +520,95 @@ fn a_column_is_recorded_with_no_height_map_entered_and_one_map_serves_every_came
 }
 
 #[test]
+fn columns_measured_from_the_floor_arm_and_stay_where_they_stand_in_a_song_with_no_elevation() {
+    let t = TestServer::start_with("multicam-floor-heights", |cfg| cfg.seed = false);
+    let api = t.client("a");
+    api.take_lease("Luke-MacBook", false).unwrap();
+    let rigs: Vec<Rig> = (0..2).map(|_| Rig::start()).collect();
+    // The show's height map: 52.25, 75.35 and 104 inches off the floor, the raw position
+    // falling as the column rises, and one map for every column.
+    let inch = 25.4;
+    let map = [(4215.0, 104.0 * inch), (37059.0, 75.35 * inch), (65220.0, 52.25 * inch)];
+    let per_mm = (4215.0 - 65220.0) / ((104.0 - 52.25) * inch);
+    // The first column stands fully down and reads a little below the lowest height that was
+    // measured; the second stands 33 mm up.
+    rigs[0].pod.set_raw_scale(65514.0, per_mm);
+    rigs[1].pod.set_raw_scale(65220.0, per_mm);
+    rigs[1].pod.place(33.0);
+    for rig in &rigs {
+        rig.fr7.place(-20.0, -5.0, 0.3, 0.2);
+    }
+    let mut project = connect(&api, &rigs);
+    for camera in &mut project.cameras {
+        camera.rig.autopod_calibration.clear();
+    }
+    project.autopod_calibration = map.iter().map(|&(raw, mm)| ptz_core::pose::CalPoint { raw, mm }).collect();
+    let project = api.put_project(&project).unwrap();
+    let default = ptz_core::pose::AxisTable::default().elevation;
+    assert!(project.cameras.iter().all(|c| (c.axes.elevation.min, c.axes.elevation.max) == (default.min, default.max)));
+    let st = wait_for(&api, |s| {
+        s.cameras.iter().all(|c| c.adapters.len() == 2 && c.adapters.iter().all(|a| a.connected) && c.rig_pose.elevation > 1000.0)
+    });
+    let stood: Vec<f64> = st.cameras.iter().map(|c| c.rig_pose.elevation).collect();
+    assert!((stood[0] - 1321.0).abs() < 1.0 && (stood[1] - 1360.0).abs() < 1.5, "{stood:?}");
+    for rig in &rigs {
+        rig.pod.settle_after_connect();
+    }
+
+    // A song that pans each camera and says nothing about height.
+    let marks = [
+        store(&api, "cam1", "Wide", Pose { pan: 10.0, ..Pose::home() }),
+        store(&api, "cam2", "Keys", Pose { pan: -35.0, ..Pose::home() }),
+    ];
+    let created = api.new_song("No Heights", None).unwrap();
+    let id = created.song.id.clone();
+    api.load_song(&id).unwrap();
+    let mut song = created.song;
+    for mark in &marks {
+        song = edit::insert_preset_move(&song, &project, mark, 25).unwrap().0;
+    }
+    for clip in &mut song.motion {
+        clip.axes.retain(|a| *a != Axis::Elevation);
+    }
+    api.put_working(&PutWorking { expected_counter: 0, song }).unwrap();
+    api.save(&id).unwrap();
+    api.commit(&id).unwrap();
+    let st = api.status().unwrap();
+    assert_eq!(st.song.as_ref().unwrap().blocking, 0, "a column the song does not move is not judged at the song's home height");
+
+    // Arm: neither column is held for standing outside 0 to 670 mm, and neither is moved.
+    do_act(&api, Action::Arm);
+    let st = wait_for(&api, |s| s.transport.output == Output::Armed || s.telemetry.fault.is_some());
+    assert_eq!(st.telemetry.fault, None);
+    assert!(st.cameras.iter().all(|c| !c.held && c.fault.is_none()), "{:?}", st.cameras);
+    do_act(&api, Action::Play);
+    let st = wait_for(&api, |s| s.frame > 120 || s.telemetry.fault.is_some());
+    assert_eq!(st.telemetry.fault, None);
+    assert!(st.cameras.iter().all(|c| !c.held && c.fault.is_none()), "{:?}", st.cameras);
+    assert_eq!(st.transport.output, Output::Armed);
+    do_act(&api, Action::Stop);
+    assert!((rigs[0].fr7.pose().0 - 10.0).abs() < 1.0 && (rigs[1].fr7.pose().0 + 35.0).abs() < 1.0, "the heads made their moves");
+    for (rig, at) in rigs.iter().zip([0.0, 33.0]) {
+        assert_eq!(rig.pod.height_mm(), at, "the column stands where it stood");
+        assert!(rig.pod.orders().iter().all(|c| c == "#PTS5050"), "a column is sent no speed: {:?}", rig.pod.orders());
+    }
+
+    // The travel a column is held to is what was measured on it, so a height from before the
+    // map, on the assumed 0 to 670 mm scale, is reported and not played.
+    do_act(&api, Action::Disarm);
+    let mut song = api.working(&id).unwrap().song;
+    let low = store(&api, "cam1", "Low", Pose { pan: 10.0, elevation: 400.0, ..Pose::home() });
+    song = edit::insert_preset_move(&song, &project, &low, 200).unwrap().0;
+    let counter = api.working(&id).unwrap().edit_counter;
+    let working = api.put_working(&PutWorking { expected_counter: counter, song }).unwrap();
+    assert!(
+        working.issues.iter().any(|i| matches!(i, Issue::OutOfRange { camera, axis: Axis::Elevation, .. } if camera == "cam1")),
+        "{:?}",
+        working.issues
+    );
+}
+
+#[test]
 fn twelve_stand_in_rigs_position_together_play_live_within_tolerance_and_estop_halts_every_one() {
     let t = TestServer::start("multicam-twelve");
     let api = t.client("a");

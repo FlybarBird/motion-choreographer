@@ -110,6 +110,11 @@ impl CameraConfig {
         }
     }
 
+    /// Whether the camera stands on a column: an AutoPod+ is named for it.
+    pub fn has_column(&self) -> bool {
+        !self.rig.autopod_host.trim().is_empty()
+    }
+
     pub fn new(id: &str, name: &str) -> CameraConfig {
         CameraConfig {
             id: id.into(),

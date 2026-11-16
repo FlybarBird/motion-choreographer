@@ -238,7 +238,7 @@ fn the_rig_follows_a_moving_target_and_touches_nothing_until_it_is_driven() {
     loop {
         let t = began.elapsed().as_secs_f64();
         let (target, velocity) = eased(from, to, 4.0, t);
-        rig.drive(&Drive { target, velocity, scale: 1.0, ride: None });
+        rig.drive(&Drive { target, velocity, scale: 1.0, ride: None, column: true });
         rig.tick(1.0 / 60.0, &axes);
         asked.push((Instant::now(), target));
         // Compare each reading with what was asked at the moment it was taken.
@@ -271,7 +271,7 @@ fn the_rig_follows_a_moving_target_and_touches_nothing_until_it_is_driven() {
     // Stop goes to every axis, more than once, until the rig reads as standing still.
     fr7.clear_seen();
     pod.clear_seen();
-    rig.drive(&Drive { target: from, velocity: Pose::default(), scale: 1.0, ride: None });
+    rig.drive(&Drive { target: from, velocity: Pose::default(), scale: 1.0, ride: None, column: true });
     std::thread::sleep(Duration::from_millis(200));
     assert!(fr7.is_moving() && pod.is_moving());
     rig.stop();
@@ -283,7 +283,7 @@ fn the_rig_follows_a_moving_target_and_touches_nothing_until_it_is_driven() {
     assert!(pod.seen().iter().filter(|c| *c == "#PTS5050").count() >= 2);
 
     // A show that stops sending targets is a show that has hung: the adapters stop the rig themselves.
-    rig.drive(&Drive { target: to, velocity: Pose::default(), scale: 1.0, ride: None });
+    rig.drive(&Drive { target: to, velocity: Pose::default(), scale: 1.0, ride: None, column: true });
     std::thread::sleep(Duration::from_millis(150));
     assert!(fr7.is_moving());
     wait_until("the watchdog stops the head", || !fr7.is_moving() && !pod.is_moving());
@@ -316,7 +316,13 @@ fn an_absolute_move_is_one_command_and_the_head_runs_its_own_ramp() {
         let target = Pose { pan: pan_to * (began.elapsed().as_secs_f64() / 2.0).min(1.0), ..Pose::home() };
         // The time left shrinks every tick; it is still the same move.
         let left = (2.0 - began.elapsed().as_secs_f64()).max(0.0);
-        rig.drive(&Drive { target, velocity: Pose::default(), scale: 1.0, ride: Some(Ride { seconds: left, ..ride }) });
+        rig.drive(&Drive {
+            target,
+            velocity: Pose::default(),
+            scale: 1.0,
+            ride: Some(Ride { seconds: left, ..ride }),
+            column: true,
+        });
         std::thread::sleep(Duration::from_millis(16));
     }
     let absolute: Vec<Vec<u8>> = fr7.commands().into_iter().filter(|c| c[..4] == [0x81, 0x01, 0x06, 0x02]).collect();
@@ -507,6 +513,57 @@ fn standby_and_a_refused_speed_command_are_problems_that_keep_the_connection() {
         std::thread::sleep(Duration::from_millis(20));
     }
     assert_eq!(rig.problem(), None);
+    rig.stop();
+}
+
+#[test]
+fn a_column_that_runs_the_other_way_to_its_speed_commands_is_stopped_a_short_way_out() {
+    let pod = FakeAutoPod::start();
+    pod.place(300.0);
+    let axes = AxisTable::default();
+    // A height map that says the opposite of what the column does: by it, the speed that
+    // should raise the column lowers it.
+    let mut cfg = rig_config(None, Some(&pod));
+    for point in &mut cfg.autopod_calibration {
+        point.mm = 600.0 - point.mm;
+    }
+    let mut rig = HardwareRig::start(&cfg, &axes);
+    wait_until("the leg box answers", || rig.problem().is_none());
+    pod.settle_after_connect();
+    assert!((rig.pose().elevation - 300.0).abs() < 1.0);
+
+    let drive = Drive::to(Pose { elevation: 350.0, ..Pose::home() }, 1.0);
+    let began = Instant::now();
+    while rig.problem().is_none() && began.elapsed() < Duration::from_secs(5) {
+        rig.drive(&drive);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let why = rig.problem().expect("the runaway is reported");
+    assert!(why.starts_with("The AutoPod+ column moved away from the height it was sent to and was stopped"), "{why}");
+    wait_until("the column stands", || !pod.is_moving());
+    let ran = (pod.height_mm() - 300.0).abs();
+    assert!(ran > 10.0 && ran < 30.0, "it ran {ran} mm before it was stopped");
+    // It is not driven again, however often it is asked.
+    pod.clear_seen();
+    for _ in 0..20 {
+        rig.drive(&drive);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(pod.orders().iter().all(|c| c == autopod::STOP), "{:?}", pod.orders());
+    assert!(rig.problem().is_some());
+
+    // The same column with a height map that agrees with it is driven to its target as before.
+    let mut rig = HardwareRig::start(&rig_config(None, Some(&pod)), &axes);
+    wait_until("the leg box answers", || rig.problem().is_none());
+    let at = pod.height_mm();
+    let drive = Drive::to(Pose { elevation: at + 50.0, ..Pose::home() }, 1.0);
+    let began = Instant::now();
+    while began.elapsed() < Duration::from_secs(3) {
+        rig.drive(&drive);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(rig.problem(), None);
+    assert!((pod.height_mm() - (at + 50.0)).abs() < 3.0, "{}", pod.height_mm());
     rig.stop();
 }
 

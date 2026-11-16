@@ -25,11 +25,13 @@ pub struct Drive {
     /// Set while the playhead is inside a plain preset move and the project asks for
     /// absolute moves. An adapter that cannot do that follows `target` as usual.
     pub ride: Option<Ride>,
+    /// False when the song has no elevation for this camera: the column is left where it stands.
+    pub column: bool,
 }
 
 impl Drive {
     pub fn to(target: Pose, scale: f64) -> Drive {
-        Drive { target, velocity: Pose::default(), scale, ride: None }
+        Drive { target, velocity: Pose::default(), scale, ride: None, column: true }
     }
 }
 
@@ -62,6 +64,12 @@ pub trait RigAdapter: Send {
 
     /// Why the rig cannot go live, if it cannot.
     fn problem(&self) -> Option<String>;
+
+    /// Why the rig cannot go live when its column is left where it stands: the column's own
+    /// troubles do not count, because nothing is asked of it.
+    fn head_problem(&self) -> Option<String> {
+        self.problem()
+    }
 
     /// Latest known pose.
     fn pose(&self) -> Pose;

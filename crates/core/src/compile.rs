@@ -1,6 +1,6 @@
 //! Auto time, per-frame compile and feasibility issues.
 
-use crate::camera::{first_camera, is_first_camera};
+use crate::camera::{first_camera, is_first_camera, CameraConfig};
 use crate::eval::{ease_keys, peak_factor, segment_value, Evaluator};
 use crate::pose::{Axis, AxisLimits, AxisTable, KeepOutRule, Pose, Project, Units};
 use crate::song::{ClipBody, Ease, FromPose, MotionClip, Song};
@@ -157,7 +157,8 @@ pub fn compile(song: &Song, project: &Project) -> Compiled {
     let fps = project.rate.fps();
     let mut out = Compiled::default();
     for cam in &project.cameras {
-        let poses = compile_camera(song, &cam.id, &cam.axes, &cam.keep_out, project.units, fps, &mut out.issues);
+        let (axes, still) = (project.limits_of(cam), column_stays(song, cam));
+        let poses = compile_camera(song, &cam.id, &axes, still, &cam.keep_out, project.units, fps, &mut out.issues);
         out.tracks.push(PoseTrack { camera: cam.id.clone(), poses });
     }
     for c in song.motion.iter().filter(|c| project.camera(&c.camera).is_none()) {
@@ -167,10 +168,17 @@ pub fn compile(song: &Song, project: &Project) -> Compiled {
     out
 }
 
+/// A column the song has no elevation for is not the song's to move: it stays at the height
+/// it stands at, whatever that is, and the song's home height is not asked of it.
+pub fn column_stays(song: &Song, camera: &CameraConfig) -> bool {
+    camera.has_column() && !song.motion.iter().any(|c| c.camera == camera.id && c.has_axis(Axis::Elevation))
+}
+
 fn compile_camera(
     song: &Song,
     camera: &str,
     axes: &AxisTable,
+    column_stays: bool,
     keep_out: &[KeepOutRule],
     units: Units,
     fps: f64,
@@ -184,6 +192,10 @@ fn compile_camera(
     let last = if idle { 0 } else { n };
 
     for axis in Axis::ALL {
+        // The height of a column that stays where it stands is not known here, so not judged.
+        if axis == Axis::Elevation && column_stays {
+            continue;
+        }
         let lim = axes.get(axis);
         let jumps = ev.jumps(axis);
         let is_jump = |frame: i64| jumps.iter().any(|j| j.1 == frame);
@@ -670,6 +682,52 @@ mod tests {
         song.motion.push(on("cam2", pan_move(60, 30, 0.0, false)));
         refresh_auto(&mut song, &p);
         assert!(song.motion[0].duration_frames > 20, "another camera's clip does not squeeze this one");
+    }
+
+    #[test]
+    fn a_column_is_held_to_the_heights_measured_on_it_and_is_not_judged_where_the_song_has_no_elevation() {
+        use crate::pose::CalPoint;
+        let mut p = project();
+        p.cameras.push(CameraConfig::new("cam2", "On a column"));
+        // Heights off the floor, the raw position falling as the column rises; limits untouched.
+        p.autopod_calibration =
+            [(4215.0, 2641.6), (37059.0, 1913.89), (65220.0, 1327.15)].map(|(raw, mm)| CalPoint { raw, mm }).to_vec();
+        p.cameras[1].rig.autopod_host = "192.168.60.25".into();
+        let travel = |p: &Project, i: usize| (p.limits_of(&p.cameras[i]).elevation.min, p.limits_of(&p.cameras[i]).elevation.max);
+        assert_eq!(travel(&p, 1), (1327.15, 2641.6), "the column's travel is what was measured");
+        assert_eq!(travel(&p, 0), (0.0, 670.0), "a camera with no column keeps its limits");
+        assert_eq!(p.limits_of(&p.cameras[1]).elevation.max_speed, p.cameras[1].axes.elevation.max_speed);
+
+        // Limits set inside the measured travel are kept; limits that reach past it are cut to it.
+        let mut set = p.clone();
+        (set.cameras[1].axes.elevation.min, set.cameras[1].axes.elevation.max) = (1500.0, 2000.0);
+        assert_eq!(travel(&set, 1), (1500.0, 2000.0));
+        (set.cameras[1].axes.elevation.min, set.cameras[1].axes.elevation.max) = (1000.0, 3000.0);
+        assert_eq!(travel(&set, 1), (1327.15, 2641.6));
+        // One height is not a map, and a camera's own map is the one that counts.
+        set.autopod_calibration.truncate(1);
+        assert_eq!(travel(&set, 1), (1000.0, 3000.0));
+        set.cameras[1].rig.autopod_calibration = [(100.0, 0.0), (900.0, 500.0)].map(|(raw, mm)| CalPoint { raw, mm }).to_vec();
+        (set.cameras[1].axes.elevation.min, set.cameras[1].axes.elevation.max) = (0.0, 670.0);
+        assert_eq!(travel(&set, 1), (0.0, 500.0));
+
+        // The song pans the column's camera and says nothing of height: its home height of
+        // zero, far below the column's travel, is not asked of the column and is no issue.
+        let mut song = Song::new("s", "S", "01:00:00:00", 300);
+        song.motion.push(on("cam2", pan_move(10, 60, 20.0, false)));
+        assert!(column_stays(&song, &p.cameras[1]) && !column_stays(&song, &p.cameras[0]));
+        let c = compile(&song, &p);
+        assert!(c.issues.is_empty(), "{:?}", c.issues);
+        // A height the song does ask for is judged against the measured travel: one from before
+        // the map, on the old assumed scale, is out of range and blocks.
+        song.motion.push(on("cam2", MotionClip { axes: vec![Axis::Elevation], ..pan_move(100, 60, 0.0, false) }));
+        let c = compile(&song, &p);
+        assert!(!column_stays(&song, &p.cameras[1]));
+        assert!(c
+            .issues
+            .iter()
+            .any(|i| matches!(i, Issue::OutOfRange { camera, axis: Axis::Elevation, .. } if camera == "cam2")));
+        assert!(c.blocking_count(&song) > 0);
     }
 
     #[test]

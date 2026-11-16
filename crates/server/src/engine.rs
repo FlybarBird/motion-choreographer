@@ -1554,7 +1554,7 @@ impl Show {
             committed_clean: entry.is_some_and(|e| e.committed_clean()),
             blocking_issues: entry.map(|e| e.compiled.blocking_count(&e.song)).unwrap_or(0),
             adapter_problem: (0..self.units.len())
-                .find_map(|i| self.units[i].rig.problem().map(|why| format!("{}{why}", self.prefix(i)))),
+                .find_map(|i| self.rig_problem(i).map(|why| format!("{}{why}", self.prefix(i)))),
         }
     }
 
@@ -1878,27 +1878,60 @@ impl Show {
         }
     }
 
+    /// Whether camera `i` stands on a column the song has no elevation for. Such a column is
+    /// not the song's to move: it is left at the height it stands at.
+    fn column_stays(&self, i: usize) -> bool {
+        let camera = &self.project.cameras[i];
+        match self.entry() {
+            Some(e) => ptz_core::compile::column_stays(&e.song, camera),
+            None => camera.has_column(),
+        }
+    }
+
+    /// Why camera `i`'s rig cannot go live. A column that is left where it stands is not asked.
+    fn rig_problem(&self, i: usize) -> Option<String> {
+        if self.column_stays(i) {
+            self.units[i].rig.head_problem()
+        } else {
+            self.units[i].rig.problem()
+        }
+    }
+
     /// One turn of the live loop for one camera: check the target, send it, compare the rig with it.
     fn tick_live(&mut self, i: usize, now: Instant, dt: f64, target: Pose) -> Step {
-        if let Some(problem) = self.units[i].rig.problem() {
+        if let Some(problem) = self.rig_problem(i) {
             self.fault(i, problem);
             return Step::Faulted;
         }
+        // A column the song has no elevation for is at its target wherever it stands.
+        let column = !self.column_stays(i);
+        let target = if column { target } else { Pose { elevation: self.units[i].rig.pose().elevation, ..target } };
         let positioning = self.transport.output == Output::Positioning;
         let stopped = self.transport.run == Run::Stopped;
         // The project can say that a rig off the timeline is driven on instead of held.
         let carry_on = self.project.on_fault == OnFault::CarryOn;
         let camera = &self.project.cameras[i];
         let scale = if positioning { camera.rig.positioning_speed.clamp(0.01, 1.0) } else { 1.0 };
-        let (axes, tol, window) = (camera.axes, camera.rig.tolerance, Duration::from_millis(camera.rig.tracking_window_ms));
+        let (speeds, limits) = (camera.axes, self.project.limits_of(camera));
+        let (tol, window) = (camera.rig.tolerance, Duration::from_millis(camera.rig.tracking_window_ms));
         let before = self.units[i].live.commanded.unwrap_or_else(|| self.units[i].rig.pose());
         // The rig is told to be where the timeline is, no faster than each axis can go. A move
         // someone accepted as too fast therefore lags by design instead of tripping a fault.
         let next = Pose::from_fn(|a| {
-            let step = axes.get(a).max_speed * scale * dt;
+            if a == Axis::Elevation && !column {
+                return target.elevation;
+            }
+            let step = speeds.get(a).max_speed * scale * dt;
             before.get(a) + (target.get(a) - before.get(a)).clamp(-step, step)
         });
-        if let Some(why) = axes.out_of_range(&next) {
+        // Nothing is sent to a column that stays where it stands, so its height is not held to
+        // the limits: it may rest a little past the lowest or highest height that was measured.
+        let asked = if column {
+            next
+        } else {
+            Pose { elevation: next.elevation.clamp(limits.elevation.min, limits.elevation.max), ..next }
+        };
+        if let Some(why) = limits.out_of_range(&asked) {
             self.fault(i, format!("Limit reached: {why}. The rig is held"));
             return Step::Faulted;
         }
@@ -1910,7 +1943,7 @@ impl Show {
         let velocity = if dt > 1e-6 { Pose::from_fn(|a| (next.get(a) - before.get(a)) / dt) } else { Pose::default() };
         let ride = self.ride(i);
         let unit = &mut self.units[i];
-        unit.rig.drive(&Drive { target: next, velocity, scale, ride });
+        unit.rig.drive(&Drive { target: next, velocity, scale, ride, column });
         unit.live.commanded = Some(next);
         unit.live.history.push_back((now, next));
         while unit.live.history.front().is_some_and(|(at, _)| now.duration_since(*at) > Duration::from_secs(1)) {
@@ -1936,7 +1969,7 @@ impl Show {
             if moved {
                 let travel = Axis::ALL
                     .iter()
-                    .map(|a| (target.get(*a) - reading.pose.get(*a)).abs() / (axes.get(*a).max_speed * scale).max(1e-9))
+                    .map(|a| (target.get(*a) - reading.pose.get(*a)).abs() / (speeds.get(*a).max_speed * scale).max(1e-9))
                     .fold(0.0, f64::max);
                 unit.live.positioning = Some((target, now + Duration::from_secs_f64(travel * 1.5) + POSITIONING_GRACE));
                 unit.live.late = false;

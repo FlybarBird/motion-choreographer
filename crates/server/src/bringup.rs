@@ -527,7 +527,7 @@ fn follow_curve(head: &Fr7, base: Pose, from: f64, to: f64, seconds: f64) -> Cur
         let pan = from + (to - from) * s;
         let target = Pose { pan, ..base };
         let velocity = Pose { pan: (to - from) * slope, ..Pose::default() };
-        head.drive(&Drive { target, velocity, scale: 1.0, ride: None });
+        head.drive(&Drive { target, velocity, scale: 1.0, ride: None, column: true });
         asked.push((t, pan));
         let (reading, times) = head.head();
         if last_read != Some(times.pan_tilt) {

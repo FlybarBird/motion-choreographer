@@ -299,6 +299,8 @@ struct State {
     mode: Mode,
     told_at: Instant,
     starved: bool,
+    /// The column ran away from the height it was sent to. It is not driven again.
+    wrong_way: bool,
     limits: AxisLimits,
     quit: bool,
 }
@@ -313,6 +315,9 @@ const GAIN: f64 = 4.0;
 /// The leg box now and then misses a request on a healthy network. It is only called gone
 /// once it has answered nothing for this long: three requests that ran out of time in a row.
 const GONE_AFTER: Duration = Duration::from_millis(1100);
+/// A column that has gone this far the opposite way to the speed it is being given, and is
+/// still going, answers its speed byte the other way round. Nothing it could coast is this far.
+const WRONG_WAY_MM: f64 = 15.0;
 
 impl AutoPod {
     pub fn start(cfg: PodConfig, limits: AxisLimits) -> AutoPod {
@@ -333,6 +338,7 @@ impl AutoPod {
             mode: Mode::Idle,
             told_at: now,
             starved: false,
+            wrong_way: false,
             limits,
             quit: false,
         }));
@@ -371,6 +377,12 @@ impl AutoPod {
         if let Some(why) = s.calibration.problem() {
             return Some(why.to_string());
         }
+        if s.wrong_way {
+            return Some(
+                "The AutoPod+ column moved away from the height it was sent to and was stopped. It answers its speed commands the other way round, so it is not driven again until the rig is set up again"
+                    .into(),
+            );
+        }
         if self.cfg.map.len() < CAL_POINTS_NEEDED {
             return Some(format!(
                 "The AutoPod+'s height map has {} of the {CAL_POINTS_NEEDED} measured heights it needs. Add them in Show settings, Rig connection",
@@ -403,8 +415,19 @@ impl AutoPod {
         self.lock().limits = *limits;
     }
 
+    /// Leave the column where it stands: a drive that was under way is stopped, and nothing else is sent.
+    pub fn rest(&self) {
+        let mut s = self.lock();
+        if matches!(s.mode, Mode::Drive(_)) {
+            s.mode = Mode::Stop;
+        }
+    }
+
     pub fn drive(&self, cmd: &Drive) {
         let mut s = self.lock();
+        if s.wrong_way {
+            return;
+        }
         s.mode = Mode::Drive(*cmd);
         s.told_at = Instant::now();
         s.starved = false;
@@ -431,6 +454,10 @@ fn run(cfg: PodConfig, state: Arc<Mutex<State>>) {
     let (mut stops_sent, mut still) = (0u32, 0u32);
     let mut was = Mode::Idle;
     let mut heard_at = Instant::now();
+    // The way the column is being sent and the height it had when that began; the height one
+    // reading ago; and how many readings in a row it has gone the other way.
+    let mut sent: Option<(f64, f64)> = None;
+    let (mut last_mm, mut against) = (None::<f64>, 0u32);
     loop {
         if lock().quit {
             let _ = link.stop();
@@ -486,6 +513,10 @@ fn run(cfg: PodConfig, state: Arc<Mutex<State>>) {
                 last_byte = None;
                 was = mode;
             }
+            if !matches!(mode, Mode::Drive(_)) {
+                sent = None;
+            }
+            let before = std::mem::replace(&mut last_mm, mm);
             match mode {
                 Mode::Idle => {}
                 Mode::Drive(cmd) => {
@@ -496,6 +527,25 @@ fn run(cfg: PodConfig, state: Arc<Mutex<State>>) {
                     let scale = cmd.scale.clamp(0.0, 1.0);
                     let speed = (cmd.velocity.elevation + GAIN * (cmd.target.elevation - at)).clamp(-top * scale, top * scale);
                     let byte = speed_byte(speed / top);
+                    // A column that answers the speed byte the other way round runs from its
+                    // target, faster the further it gets. It is stopped a short way out.
+                    let way = (f64::from(byte) - 50.0).signum();
+                    if way == 0.0 {
+                        sent = None;
+                    } else if sent.is_none_or(|(was, _)| was != way) {
+                        sent = Some((way, at));
+                        against = 0;
+                    }
+                    if let Some((way, from)) = sent {
+                        against = if before.is_some_and(|b| (at - b) * way < 0.0) { against + 1 } else { 0 };
+                        if (at - from) * way < -WRONG_WAY_MM && against >= 2 {
+                            let mut s = lock();
+                            s.wrong_way = true;
+                            s.mode = Mode::Stop;
+                            drop(s);
+                            return link.stop();
+                        }
+                    }
                     if last_byte != Some(byte) || cycle - sent_at_cycle >= 10 {
                         link.send(&velocity_command(byte))?;
                         last_byte = Some(byte);

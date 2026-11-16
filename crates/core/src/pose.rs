@@ -673,6 +673,25 @@ impl Project {
         rig
     }
 
+    /// The limits a camera is held to. A column's travel is what was measured on it: from the
+    /// lowest to the highest height in its height map. Elevation limits someone set inside
+    /// that travel are kept; the untouched default, and limits that lie wholly outside the
+    /// measured heights, say nothing about this column and give way to the map.
+    pub fn limits_of(&self, camera: &CameraConfig) -> AxisTable {
+        let mut axes = camera.axes;
+        let map = self.height_map(camera);
+        let measured = map.iter().any(|p| p.raw != map[0].raw);
+        if camera.has_column() && measured {
+            let lowest = map.iter().map(|p| p.mm).fold(f64::INFINITY, f64::min);
+            let highest = map.iter().map(|p| p.mm).fold(f64::NEG_INFINITY, f64::max);
+            let (default, set) = (AxisTable::default().elevation, &mut axes.elevation);
+            let untouched = (set.min, set.max) == (default.min, default.max);
+            let (min, max) = (set.min.max(lowest), set.max.min(highest));
+            (set.min, set.max) = if untouched || min >= max { (lowest, highest) } else { (min, max) };
+        }
+        axes
+    }
+
     pub fn camera(&self, id: &str) -> Option<&CameraConfig> {
         self.cameras.iter().find(|c| c.id == id)
     }
@@ -697,7 +716,7 @@ impl Project {
     /// Limits of a camera. A camera that is no longer in the project gets the defaults,
     /// so its clips can still be drawn and judged.
     pub fn axes_of(&self, id: &str) -> AxisTable {
-        self.camera(id).map(|c| c.axes).unwrap_or_default()
+        self.camera(id).map(|c| self.limits_of(c)).unwrap_or_default()
     }
 
     /// "3 Stage left": the camera's number in the list and its name.

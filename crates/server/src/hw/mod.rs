@@ -78,6 +78,13 @@ impl RigAdapter for HardwareRig {
         self.fr7.as_ref().and_then(|f| f.problem()).or_else(|| self.pod.as_ref().and_then(|p| p.problem()))
     }
 
+    fn head_problem(&self) -> Option<String> {
+        match &self.fr7 {
+            Some(f) => f.problem(),
+            None => self.problem(),
+        }
+    }
+
     fn pose(&self) -> Pose {
         self.reading().pose
     }
@@ -115,7 +122,11 @@ impl RigAdapter for HardwareRig {
             f.drive(cmd);
         }
         if let Some(p) = &self.pod {
-            p.drive(cmd);
+            if cmd.column {
+                p.drive(cmd);
+            } else {
+                p.rest();
+            }
         }
     }
 

@@ -276,6 +276,13 @@ fn rig(ui: &mut Ui, s: &mut Session, camera: &mut CameraConfig, shared: &mut Vec
                 .small(),
             );
             height_map(ui, "height_map", shared, raw, units, "Add the current height");
+            ui.label(
+                RichText::new(
+                    "A column's travel is from the lowest to the highest height measured here. Elevation limits set inside that travel are kept; others give way to it. A column the song has no elevation for is left where it stands.",
+                )
+                .color(MUTED)
+                .small(),
+            );
             egui::CollapsingHeader::new("A height map for this camera only")
                 .id_salt("own_height_map_open")
                 .default_open(!rig.autopod_calibration.is_empty())

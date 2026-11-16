@@ -711,6 +711,9 @@ struct Column {
     power: bool,
     /// Commands starting with this are refused with ER1, as a unit without that feature would.
     refuses: Option<String>,
+    /// Raw position at the lowest height, and counts per millimetre: negative when the raw
+    /// position falls as the column rises.
+    raw_scale: (f64, f64),
 }
 
 impl Column {
@@ -731,7 +734,7 @@ impl Column {
     }
 
     fn raw(&self) -> u16 {
-        (POD_RAW_ZERO + self.mm * POD_RAW_PER_MM).round() as u16
+        (self.raw_scale.0 + self.mm * self.raw_scale.1).round() as u16
     }
 }
 
@@ -764,6 +767,7 @@ impl FakeAutoPod {
             firmware: "V3.49e".into(),
             power: true,
             refuses: None,
+            raw_scale: (POD_RAW_ZERO, POD_RAW_PER_MM),
         }));
         let quit = Arc::new(AtomicBool::new(false));
         let shared = column.clone();
@@ -838,7 +842,7 @@ impl FakeAutoPod {
                 let raw = u16::from_str_radix(&hex[4..], 16).unwrap_or(0);
                 if col.power {
                     col.speed = 0.0;
-                    col.going_to = Some(((raw as f64 - POD_RAW_ZERO) / POD_RAW_PER_MM).clamp(0.0, POD_TRAVEL_MM));
+                    col.going_to = Some(((raw as f64 - col.raw_scale.0) / col.raw_scale.1).clamp(0.0, POD_TRAVEL_MM));
                 }
                 format!("aPC{}", hex.to_uppercase())
             } else if cmd == "#D0" || cmd == "#D1" {
@@ -889,6 +893,12 @@ impl FakeAutoPod {
 
     pub fn set_speed_factor(&self, factor: f64) {
         self.column().speed_factor = factor;
+    }
+
+    /// The raw position the column reports at its lowest height, and how many counts it changes
+    /// by for each millimetre it rises. A real column's raw position falls as it rises.
+    pub fn set_raw_scale(&self, at_lowest: f64, per_mm: f64) {
+        self.column().raw_scale = (at_lowest, per_mm);
     }
 
     /// On, or in standby, where the column answers but does not move.
