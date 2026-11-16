@@ -813,7 +813,7 @@ impl Renderer {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     pub fn shadow_draws(&self) -> usize {
         self.shadow_draws
     }
@@ -916,7 +916,7 @@ mod tests {
     fn smoothing_keeps_box_edges_hard_and_rounds_a_shallow_seam() {
         let mut cube = Mesh::default();
         cube.push_cuboid([-1.0; 3], [1.0; 3], [120; 3]);
-        for vertex in vertices(&cube).chunks_exact(FLOATS_PER_VERTEX) {
+        for vertex in vertices(&cube).as_chunks::<FLOATS_PER_VERTEX>().0 {
             let n = &vertex[3..6];
             assert_eq!(n.iter().filter(|v| v.abs() > 0.99).count(), 1);
             assert_eq!(n.iter().filter(|v| v.abs() < 0.01).count(), 2);
@@ -925,7 +925,7 @@ mod tests {
         bent.push_triangle([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [120; 3]);
         bent.push_triangle([0.0, 0.0, 0.0], [0.0, -1.0, -0.2], [1.0, 0.0, 0.0], [120; 3]);
         let data = vertices(&bent);
-        let shared: Vec<_> = data.chunks_exact(FLOATS_PER_VERTEX).filter(|v| v[..3] == [0.0; 3]).collect();
+        let shared: Vec<_> = data.as_chunks::<FLOATS_PER_VERTEX>().0.iter().filter(|v| v[..3] == [0.0; 3]).copied().collect();
         assert_eq!(&shared[0][3..6], &shared[1][3..6]);
         assert!(shared[0][4].abs() > 0.02 && shared[0][5] > 0.98);
     }
