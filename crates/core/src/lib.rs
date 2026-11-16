@@ -1,4 +1,4 @@
-//! Shared model for PTZ Programmer. Pure functions: no async, no file or
+//! Shared model for Motion Choreographer. Pure functions: no async, no file or
 //! network access, no clock reads. The app links it for instant feedback while
 //! dragging; the server links it to decide what is legal.
 

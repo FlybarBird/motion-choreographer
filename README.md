@@ -1,7 +1,10 @@
-# PTZ Programmer
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="brand/social/readme-banner-dark.png">
+  <img src="brand/social/readme-banner-light.png" alt="Motion Choreographer" width="640">
+</picture>
 
-Timeline programming and playout for up to twelve Sony FR7 cameras, each on an
-AutoPod+ pedestal.
+**Motion Choreographer**: timeline programming and playout for up to twelve
+Sony FR7 cameras, each on an AutoPod+ pedestal.
 
 You build a song by dragging camera presets onto a timeline. Each move takes its
 time from the distance between the two poses and the rig's speed limits, and you
@@ -70,12 +73,14 @@ the ALSA headers (`libasound2-dev`).
 make install-mac
 ```
 
-Builds for this Mac (Apple Silicon or Intel), assembles `PTZ Programmer.app`
+Builds for this Mac (Apple Silicon or Intel), assembles `Motion Choreographer.app`
 with the three command-line tools inside it, signs it ad hoc, copies it to
 `~/Applications` and links `ptz-server`, `ptz-probe`, `ptz-bringup` and `ptz-panel` into
 `~/.local/bin`. Running it again installs a newer version over the old one; it
-asks you to quit the app and stop the server first. `make uninstall-mac`
-removes the app and the links and leaves the show data alone.
+asks you to quit the app and stop the server first. A copy under the app's
+old name, `PTZ Programmer.app`, is removed when the new one goes in. `make
+uninstall-mac` removes the app (under either name) and the links and leaves
+the show data alone.
 
 The ad hoc signature is enough for the Mac that built it. A second Mac, for a
 remote station, builds its own copy the same way.
@@ -90,7 +95,7 @@ Builds for the machine it is run on and writes two installers into `dist/`:
 
 | | On a Mac | On Linux |
 | --- | --- | --- |
-| The app, with the show server as an option | `PTZ-Programmer-<version>-macos-<arch>.pkg` | `ptz-programmer-<version>-linux-<arch>.run` |
+| The app, with the show server as an option | `Motion-Choreographer-<version>-macos-<arch>.pkg` | `motion-choreographer-<version>-linux-<arch>.run` |
 | The show server and tools alone | `PTZ-Server-<version>-macos-<arch>.pkg` | `ptz-server-<version>-linux-<arch>.run` |
 
 The app installer always installs the app. **Show server and tools**
@@ -100,12 +105,13 @@ ticked to start with, and a question in the Linux one (`--with-server` and
 to a server elsewhere; use the server installer on a machine that runs the
 show without a screen.
 
-- **Mac:** the app goes to `/Applications`, the server and tools to
+- **Mac:** the app goes to `/Applications` (replacing a copy under its old
+  name, `PTZ Programmer.app`), the server and tools to
   `/usr/local/ptz-programmer/bin`, which the installer puts on PATH for new
   terminals. The packages are not signed with a Developer ID unless
   `PTZ_INSTALLER_SIGN` names one, so on another Mac open one with a
   right-click and **Open**, or run `sudo installer -pkg <file> -target /`.
-- **Linux:** `sh ptz-programmer-<version>-linux-<arch>.run` installs under
+- **Linux:** `sh motion-choreographer-<version>-linux-<arch>.run` installs under
   `~/.local` (or `--prefix`), with an entry in the applications menu.
   `--uninstall` removes what it installed.
 
@@ -153,7 +159,7 @@ step one frame.
 
 ## Cameras
 
-A show holds one to twelve cameras. The camera bar under the transport lists
+A show holds one to twelve cameras. The camera bar under the song header lists
 them; click one, or press `1` to `9`, `0`, `-` and `=`, to select it. The
 Program monitor, the Presets tab, the Rig controller and Record all follow the
 selected camera. Each camera has its own **Camera move** lane on the timeline,
@@ -732,6 +738,7 @@ run the real server and adapters against the stand-in devices over loopback.
 | `crates/panel` | `ptz-panel`: the Raw Panel protocol, the control map, the controller that turns what is done on a SKAARHOJ panel into the requests the app makes, and a stand-in PTZ Pro for tests. Linked into `ptz-server` for `--panel`. |
 | `crates/app` | `ptz-app`. |
 | `scripts/macos-install.sh` | The Mac installer. |
+| `brand/` | The brand kit: logo, app icon, colours, type and tokens. `brand/BRAND.md` explains them. |
 
 Data folder (`~/PTZProgrammer` by default): `project.json`, `presets.json`,
 `state.json` (which song is open),
@@ -749,3 +756,20 @@ server also takes its key from the `PTZ_ACCESS_KEY` environment variable, and
 
 `LICENSE` is the MIT licence this is released under; `THIRD-PARTY-NOTICES.md`
 lists the fonts and crates built into the app.
+
+## Brand
+
+The logo, app icon, colours, type and tokens are in `brand/`; `brand/BRAND.md`
+says how to use them. The macOS installers put `brand/icon/macos/AppIcon.icns`
+in the app, and the Linux installer gives the menu entry
+`brand/icon/png/app-icon-256.png`.
+
+The repository's social preview, `brand/social/github-social-preview.png`, has
+to be uploaded by hand under the repository's **Settings > Social preview**:
+GitHub has no API for it.
+
+The app was called PTZ Programmer before. The command-line tools (`ptz-server`,
+`ptz-app`, `ptz-probe`, `ptz-bringup`, `ptz-panel`), the bundle identifier
+(`com.ptzprogrammer.app`), the data folder (`~/PTZProgrammer`), the settings
+folder and `/usr/local/ptz-programmer` keep their names, so an existing install
+and its show data carry on as they are.

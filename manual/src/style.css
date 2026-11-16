@@ -1,15 +1,8 @@
+/* Inter, the brand typeface (brand/fonts, SIL Open Font License: fonts/Inter-OFL.txt). */
 @font-face {
   font-family: Inter;
-  src: url("../fonts/Inter-Regular.ttf") format("truetype");
-  font-weight: 400;
-  font-style: normal;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: Inter;
-  src: url("../fonts/Inter-SemiBold.ttf") format("truetype");
-  font-weight: 600;
+  src: url("../fonts/Inter-Variable.ttf") format("truetype");
+  font-weight: 100 900;
   font-style: normal;
   font-display: swap;
 }
@@ -22,18 +15,17 @@
   font-display: swap;
 }
 
+/* The brand's dark theme (brand/tokens/tokens.css): Ink ground, Paper text,
+   Grey 400 secondary text, Grey 800 rules, Signal red as the only accent. */
 :root {
-  --base: #0b0c0e;
-  --panel: #18191c;
-  --panel-dark: #111214;
-  --ink: #e9eaed;
-  --muted: #8c9099;
-  --line: #2c2e34;
-  --control: #26282d;
-  --accent: #f5a623;
-  --blue: #4a90e2;
-  --green: #3ddc74;
-  --red: #ef4747;
+  --base: #0a0a0a;       /* Ink */
+  --panel: #161616;      /* Grey 900 */
+  --panel-dark: #0a0a0a; /* Ink */
+  --ink: #ffffff;        /* Paper */
+  --muted: #a3a3a3;      /* Grey 400 */
+  --line: #2e2e2e;       /* Grey 800 */
+  --control: #2e2e2e;    /* Grey 800 */
+  --accent: #ff3000;     /* Signal */
   --side: 248px;
   --top: 56px;
   color-scheme: dark;
@@ -46,7 +38,7 @@ html, body {
   height: 100%;
   background: var(--base);
   color: var(--ink);
-  font-family: Inter, "Segoe UI", sans-serif;
+  font-family: Inter, "Helvetica Neue", Helvetica, Arial, sans-serif;
   font-size: 16px;
   line-height: 1.55;
 }
@@ -69,22 +61,16 @@ html, body {
 }
 
 .mark {
-  color: var(--ink);
-  text-decoration: none;
-  font-weight: 600;
-  letter-spacing: 0.01em;
-  white-space: nowrap;
+  flex: none;
+  display: block;
+  line-height: 0;
 }
 
-.mark::before {
-  content: "";
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  margin-right: 8px;
-  border-radius: 2px;
-  background: var(--accent);
-  transform: translateY(-1px);
+/* The inline lockup, at its smallest size. */
+.mark img {
+  display: block;
+  height: 24px;
+  width: auto;
 }
 
 .books {
@@ -96,14 +82,14 @@ html, body {
   color: var(--muted);
   text-decoration: none;
   padding: 6px 10px;
-  border-radius: 6px;
+  border-radius: 0;
   font-size: 14px;
 }
 
 .books a.on {
   color: var(--base);
   background: var(--accent);
-  font-weight: 600;
+  font-weight: 700;
 }
 
 .books a:hover:not(.on) { color: var(--ink); background: var(--control); }
@@ -118,7 +104,7 @@ html, body {
   width: 100%;
   height: 34px;
   border: 1px solid var(--line);
-  border-radius: 7px;
+  border-radius: 0;
   background: var(--base);
   color: var(--ink);
   padding: 0 12px;
@@ -141,15 +127,14 @@ html, body {
   overflow: auto;
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 0;
   padding: 6px;
-  box-shadow: 0 16px 40px rgb(0 0 0 / 45%);
 }
 
 .hits a, .hits .none {
   display: block;
   padding: 8px 10px;
-  border-radius: 6px;
+  border-radius: 0;
   text-decoration: none;
   color: var(--ink);
 }
@@ -160,7 +145,7 @@ html, body {
   display: block;
   color: var(--accent);
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
@@ -198,7 +183,7 @@ html, body {
 
 .side-title {
   margin: 4px 8px 0;
-  font-weight: 600;
+  font-weight: 700;
 }
 
 .side-blurb {
@@ -214,7 +199,7 @@ html, body {
   font-size: 13.5px;
   line-height: 1.35;
   padding: 5px 8px;
-  border-radius: 6px;
+  border-radius: 0;
   border-left: 2px solid transparent;
 }
 
@@ -260,19 +245,22 @@ html, body {
 
 .sheet p { margin: 0 0 12px; }
 
-.sheet a { color: var(--blue); }
+.sheet a {
+  color: var(--ink);
+  text-decoration-color: var(--accent);
+  text-underline-offset: 2px;
+}
 
-.sheet a:hover { color: var(--ink); }
+.sheet a:hover { color: var(--accent); }
 
-.sheet strong { font-weight: 600; }
+.sheet strong { font-weight: 700; }
 
 .sheet blockquote {
   margin: 16px 0;
   padding: 10px 14px;
-  border-left: 3px solid var(--accent);
-  background: #241c10;
-  color: #f3e2c4;
-  border-radius: 0 8px 8px 0;
+  border-left: 2px solid var(--accent);
+  background: var(--panel);
+  color: var(--ink);
 }
 
 .sheet blockquote p:last-child { margin-bottom: 0; }
@@ -287,11 +275,11 @@ html, body {
 }
 
 .sheet code {
-  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-family: "JetBrains Mono", ui-monospace, monospace; /* commands and file names only */
   font-size: 0.86em;
   background: var(--control);
   padding: 1px 5px;
-  border-radius: 4px;
+  border-radius: 0;
 }
 
 .sheet pre {
@@ -299,7 +287,7 @@ html, body {
   overflow: auto;
   background: var(--panel-dark);
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 0;
   padding: 12px 14px;
   margin: 0 0 16px;
 }
@@ -316,7 +304,7 @@ html, body {
   overflow-x: auto;
   margin: 0 0 16px;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 0;
 }
 
 .sheet table {
@@ -334,7 +322,7 @@ html, body {
 
 .sheet th {
   color: var(--muted);
-  font-weight: 600;
+  font-weight: 700;
   font-size: 12px;
   letter-spacing: 0.03em;
   text-transform: uppercase;
@@ -365,7 +353,7 @@ html, body {
   .side-books a.on {
     color: var(--base);
     background: var(--accent);
-    font-weight: 600;
+    font-weight: 700;
   }
 
   .contents {
@@ -374,7 +362,7 @@ html, body {
     height: 34px;
     padding: 0 10px;
     border: 1px solid var(--line);
-    border-radius: 7px;
+    border-radius: 0;
     background: var(--control);
     color: var(--ink);
     font: inherit;
@@ -382,6 +370,13 @@ html, body {
   }
 
   .books { display: none; }
+
+  /* Only the mark, the left of the lockup, where the bar is narrow. */
+  .mark img {
+    width: 20px;
+    object-fit: cover;
+    object-position: left center;
+  }
 
   .find { width: auto; flex: 1; }
 
@@ -393,8 +388,7 @@ html, body {
     left: 0;
     width: min(320px, 88vw);
     transform: translateX(-105%);
-    transition: transform 160ms ease;
-    box-shadow: 12px 0 30px rgb(0 0 0 / 40%);
+    transition: transform 160ms ease-out;
   }
 
   body.nav-open .side { transform: none; }

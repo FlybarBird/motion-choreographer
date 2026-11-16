@@ -1,4 +1,4 @@
-# PTZ Programmer: Setup Guide
+# Motion Choreographer: Setup Guide
 
 This guide takes a new installation from nothing to a system that is ready to
 program: software installed, the show server running, the project describing
@@ -101,7 +101,7 @@ That writes two installers into `dist/`, for the kind of machine it was run on:
 
 | Installer | On a Mac | On Linux | Use it on |
 | --- | --- | --- | --- |
-| The app, with the show server as an option | `PTZ-Programmer-<version>-macos-<arch>.pkg` | `ptz-programmer-<version>-linux-<arch>.run` | Every station with a screen |
+| The app, with the show server as an option | `Motion-Choreographer-<version>-macos-<arch>.pkg` | `motion-choreographer-<version>-linux-<arch>.run` | Every station with a screen |
 | The show server alone | `PTZ-Server-<version>-macos-<arch>.pkg` | `ptz-server-<version>-linux-<arch>.run` | A machine that only runs the show |
 
 A Mac installer has to be built on a Mac, because macOS programs cannot be
@@ -132,22 +132,23 @@ needs the app. So:
   installer *without* the server on each remote station.
 
 **On a Mac**, double-click the `.pkg`. The **Installation Type** step lists
-two parts: *PTZ Programmer*, which is always installed, and *Show server and
+two parts: *Motion Choreographer*, which is always installed, and *Show server and
 tools*, which is ticked to start with. Clear it for a station that only
 connects to a server elsewhere.
 
 - The installers are not signed with an Apple Developer ID, so the first time
   macOS will not open one on a double-click. Right-click it and choose
   **Open**, or run `sudo installer -pkg <file> -target /`.
-- The app goes to `/Applications/PTZ Programmer.app`.
+- The app goes to `/Applications/Motion Choreographer.app`. A copy under the
+  app's old name, `PTZ Programmer.app`, is removed.
 - The server and tools (`ptz-server`, `ptz-probe`, `ptz-bringup`, `ptz-panel`) go to
   `/usr/local/ptz-programmer/bin`. New terminal windows find them by name.
 
 **On Linux**, run the installer:
 
 ```sh
-sh ptz-programmer-<version>-linux-<arch>.run        # asks whether to install the server too
-sh ptz-programmer-<version>-linux-<arch>.run --no-server
+sh motion-choreographer-<version>-linux-<arch>.run   # asks whether to install the server too
+sh motion-choreographer-<version>-linux-<arch>.run --no-server
 sh ptz-server-<version>-linux-<arch>.run
 ```
 
@@ -171,7 +172,7 @@ It builds for the Mac it runs on, Apple Silicon or Intel, and stops with the
 command to run if Rust is missing or older than 1.95. The first build takes
 several minutes. When it finishes you have:
 
-- `~/Applications/PTZ Programmer.app`, the desktop app, with the command-line
+- `~/Applications/Motion Choreographer.app`, the desktop app, with the command-line
   tools inside it;
 - `ptz-server`, `ptz-probe`, `ptz-bringup` and `ptz-panel` linked into `~/.local/bin`.
 
@@ -186,7 +187,9 @@ time it reaches a camera. Allow both.
 
 **To install a newer version**, quit the app, stop the server (Ctrl-C in its
 terminal), and run `make install-mac` again. The installer refuses to replace
-the app while it is running. The show data is not touched.
+the app while it is running. The show data is not touched. A copy from
+before the app was renamed, `~/Applications/PTZ Programmer.app`, is removed
+when the new one goes in.
 
 **To remove it**, run `make uninstall-mac`. That removes the app and the three
 links. It leaves the show data (`~/PTZProgrammer`) and the app's settings
@@ -256,7 +259,7 @@ something to look at. Use `--no-seed` for a clean start.
 
 ### Open the app
 
-Open **PTZ Programmer**. It tries the server it last used straight away
+Open **Motion Choreographer**. It tries the server it last used straight away
 (`http://127.0.0.1:8787` the first time). If no server answers, the connect
 screen appears:
 
@@ -1023,7 +1026,7 @@ folder and the app's settings file stay until you delete them.
 
 | Installed with | Remove with |
 | --- | --- |
-| The Mac installers | `sudo rm -rf "/Applications/PTZ Programmer.app" /usr/local/ptz-programmer /etc/paths.d/ptz-programmer`, then `sudo pkgutil --forget com.ptzprogrammer.app` and `sudo pkgutil --forget com.ptzprogrammer.server` |
+| The Mac installers | `sudo rm -rf "/Applications/Motion Choreographer.app" /usr/local/ptz-programmer /etc/paths.d/ptz-programmer`, then `sudo pkgutil --forget com.ptzprogrammer.app` and `sudo pkgutil --forget com.ptzprogrammer.server` |
 | The Linux installers | The same installer with `--uninstall` (the app installer also takes `--with-server` to remove the server with it) |
 | `make install-mac` | `make uninstall-mac` |
 

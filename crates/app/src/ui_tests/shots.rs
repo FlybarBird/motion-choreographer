@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::app::Prompt;
+use egui_kittest::kittest::Queryable as _;
 use ptz_core::api::{AdapterStatus, LogRecord, SongStatus, SongSummary};
 use ptz_core::transport::{Run, TimeMode, TransportState};
 
@@ -488,7 +489,14 @@ fn design_pictures() {
 
         // A tip, under the pointer on the timeline's Fit button.
         let mut r = window(size);
-        let fit = safety::rect_of(&r, "Fit").center();
+        // The timeline's Fit: the lowest of them, now the stage viewer has one too.
+        let fit = r
+            .harness
+            .query_all_by_label("Fit")
+            .map(|n| n.rect())
+            .max_by(|a, b| a.top().total_cmp(&b.top()))
+            .expect("the timeline has a Fit button")
+            .center();
         r.harness.hover_at(fit);
         r.harness.run_steps(90);
         save(&mut r, &dir, &format!("24-tip-{tag}"));

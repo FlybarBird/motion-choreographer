@@ -1,4 +1,4 @@
-# PTZ Programmer: Programming Manual
+# Motion Choreographer: Programming Manual
 
 How to program a show: build songs out of camera moves, shape them, rehearse
 them, and play them live. It assumes the system has been set up as described in

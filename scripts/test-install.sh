@@ -21,11 +21,14 @@ run() {
     bash "$ROOT/scripts/macos-install.sh"
 }
 
+# An install from before the app was renamed: the first run replaces it.
+OLD_APP="$WORK/Applications/PTZ Programmer.app"
+mkdir -p "$OLD_APP/Contents/MacOS"
 run >"$WORK/first.log"
 # A second run over an existing install must also succeed.
 run >"$WORK/second.log"
 
-APP="$WORK/Applications/PTZ Programmer.app"
+APP="$WORK/Applications/Motion Choreographer.app"
 check() {
   if ! "$@"; then
     printf 'install test failed: %s\n' "$*" >&2
@@ -35,6 +38,13 @@ check() {
 check test -x "$APP/Contents/MacOS/ptz-app"
 check test -f "$APP/Contents/Info.plist"
 check grep -q '<string>ptz-app</string>' "$APP/Contents/Info.plist"
+check grep -q '<string>Motion Choreographer</string>' "$APP/Contents/Info.plist"
+check grep -q '<string>com.ptzprogrammer.app</string>' "$APP/Contents/Info.plist"
+grep -A1 'CFBundleIconFile' "$APP/Contents/Info.plist" >"$WORK/icon.txt"
+check grep -q '<string>AppIcon</string>' "$WORK/icon.txt"
+check cmp -s "$ROOT/brand/icon/macos/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+check test ! -e "$OLD_APP"
+check grep -q 'the app under its old name' "$WORK/first.log"
 VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/Cargo.toml" | head -n 1)"
 check grep -q "<string>$VERSION</string>" "$APP/Contents/Info.plist"
 for bin in ptz-server ptz-probe ptz-bringup ptz-panel; do
@@ -77,11 +87,13 @@ fi
 check grep -q 'Rust 1.80 is too old' "$WORK/oldrust.log"
 check grep -q 'rustup update stable' "$WORK/oldrust.log"
 
-# Uninstall removes the app and the links and nothing else.
+# Uninstall removes the app and the links and nothing else, and the app under its old name too.
 touch "$WORK/bin/keep-me"
+mkdir -p "$OLD_APP/Contents/MacOS"
 PTZ_SKIP_CHECKS=1 PTZ_APP_DEST="$WORK/Applications" PTZ_BIN_DEST="$WORK/bin" \
   bash "$ROOT/scripts/macos-install.sh" --uninstall >"$WORK/uninstall.log"
 check test ! -e "$APP"
+check test ! -e "$OLD_APP"
 for bin in ptz-server ptz-probe ptz-bringup ptz-panel; do
   check test ! -e "$WORK/bin/$bin"
 done

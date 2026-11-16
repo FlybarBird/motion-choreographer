@@ -2404,7 +2404,7 @@ impl Controller {
         if !self.server_up {
             return wide("No server", "Reconnecting", &self.server_error);
         }
-        let Some(s) = &self.status else { return wide("PTZ Programmer", "Starting", "") };
+        let Some(s) = &self.status else { return wide("Motion Choreographer", "Starting", "") };
         let title = match &s.song {
             Some(song) => format!("{}{}", fit(&song.name, WIDE - 1), if song.dirty { "*" } else { "" }),
             None => "No song".to_string(),

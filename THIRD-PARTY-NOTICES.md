@@ -1,16 +1,23 @@
 # Third-party notices
 
-PTZ Programmer is released under the MIT licence (see `LICENSE`). A built app
+Motion Choreographer is released under the MIT licence (see `LICENSE`). A built app
 also contains the following, each under its own licence.
 
 ## Fonts built into the app
 
 | Font | Licence | Text |
 | --- | --- | --- |
-| Inter (Regular, SemiBold) | SIL Open Font License 1.1 | `crates/app/assets/fonts/Inter-LICENSE.txt` |
+| Inter (variable, used at 400 and 700) | SIL Open Font License 1.1 | `crates/app/assets/fonts/Inter-LICENSE.txt` |
 | JetBrains Mono (Medium) | SIL Open Font License 1.1 | `crates/app/assets/fonts/JetBrainsMono-OFL.txt` |
 | Phosphor Icons, through the `egui-phosphor` crate | MIT | <https://github.com/phosphor-icons/core/blob/main/LICENSE> |
 | Ubuntu Light, Hack, Noto Emoji and emoji-icon-font, through egui's default fonts | Ubuntu Font Licence 1.0, MIT, SIL Open Font License 1.1, MIT | <https://github.com/emilk/egui/tree/main/crates/epaint_default_fonts/fonts> |
+
+## The brand kit and the manuals site
+
+| Font | Licence | Text |
+| --- | --- | --- |
+| Inter (variable), in `brand/fonts/Inter-Variable.ttf` and the manuals site (`manual/fonts/Inter-Variable.ttf`) | SIL Open Font License 1.1 | `brand/fonts/OFL.txt` (also `manual/fonts/Inter-OFL.txt`) |
+| JetBrains Mono (Medium), for code in the manuals site | SIL Open Font License 1.1 | `manual/fonts/JetBrainsMono-OFL.txt` |
 
 ## Rust crates
 
