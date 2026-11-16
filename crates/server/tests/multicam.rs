@@ -463,6 +463,63 @@ fn a_head_that_stands_still_is_not_recorded_and_one_moved_by_its_own_controller_
 }
 
 #[test]
+fn a_column_is_recorded_with_no_height_map_entered_and_one_map_serves_every_camera() {
+    let t = TestServer::start_with("multicam-record-column", |cfg| cfg.seed = false);
+    let api = t.client("a");
+    api.take_lease("Luke-MacBook", false).unwrap();
+    let rigs: Vec<Rig> = (0..2).map(|_| Rig::start()).collect();
+    for rig in &rigs {
+        rig.fr7.place(0.0, 0.0, 0.1, 0.5);
+        rig.pod.place(10.0);
+    }
+    let mut project = connect(&api, &rigs);
+    let answering = |s: &Status| s.cameras.iter().all(|c| c.adapters.len() == 2 && c.adapters.iter().all(|a| a.connected));
+
+    // No height map anywhere: nothing was measured.
+    for camera in &mut project.cameras {
+        camera.rig.autopod_calibration.clear();
+    }
+    let mut project = api.put_project(&project).unwrap();
+    wait_for(&api, answering);
+    for rig in &rigs {
+        rig.pod.settle_after_connect();
+    }
+    let marks = [
+        store(&api, "cam1", "Wide", Pose { pan: 10.0, ..Pose::home() }),
+        store(&api, "cam2", "Keys", Pose { pan: -35.0, ..Pose::home() }),
+    ];
+    let song = song_with_moves(&api, &project, "Two Columns", &marks);
+
+    seek(&api, 300);
+    record_on(&api, &[Axis::Elevation]);
+    do_act(&api, Action::Play);
+    wait_for(&api, |s| s.frame >= 310);
+    // The second column is raised from its own controller.
+    let mut mm = 10.0;
+    while api.status().unwrap().frame < 360 {
+        mm += 4.0;
+        rigs[1].pod.place(mm);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let st = wait_for(&api, |s| s.frame >= 380);
+    assert_eq!(st.record.moved, ["cam2"]);
+    do_act(&api, Action::Stop);
+    let after = api.working(&song.id).unwrap().song;
+    assert_eq!(passes_on(&after), ["cam2"]);
+    let rose = pose_at(&after, "cam2", 375).elevation - pose_at(&after, "cam2", 305).elevation;
+    assert!(rose > 20.0, "the pass holds the rise the column made, on the assumed scale: {rose}");
+    assert!(rigs.iter().all(|r| r.pod.orders().is_empty()), "recording sends a column nothing");
+
+    // One map in the project is every camera's, and with it the heights are the measured ones.
+    project.autopod_calibration = FakeAutoPod::height_map();
+    api.put_project(&project).unwrap();
+    wait_for(&api, answering);
+    let measured = rigs[1].pod.height_mm();
+    let st = wait_for(&api, |s| answering(s) && (s.cameras[1].rig_pose.elevation - measured).abs() < 1.0);
+    assert!((st.cameras[0].rig_pose.elevation - 10.0).abs() < 1.0);
+}
+
+#[test]
 fn twelve_stand_in_rigs_position_together_play_live_within_tolerance_and_estop_halts_every_one() {
     let t = TestServer::start("multicam-twelve");
     let api = t.client("a");

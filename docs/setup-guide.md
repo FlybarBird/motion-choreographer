@@ -649,7 +649,7 @@ mix real rigs and simulated ones.
 | Query delay | How old a position is when it arrives. Zero uses the round trip measured as it runs. |
 | Arm moves at | The share of top speed used to travel to the playhead when arming. Half to start with. |
 | Tracking fault after, Tolerance | How far and for how long an axis may be off the timeline while live before that camera is held |
-| AutoPod+ height map | Raw leg-box position against measured height, at three heights or more. **Add the current height** takes the raw value from the leg box. |
+| AutoPod+ height map | Raw leg-box position against measured height, at three heights or more. **Add the current height** takes the raw value from the leg box. One map serves every camera's AutoPod+; a camera can have its own instead, under **A height map for this camera only**. With fewer than two heights the height is shown and recorded on an assumed scale, so a column's moves can be recorded before anything is measured; Arm still needs three. |
 
 The camera bar shows the camera's state, and hovering its chip shows each
 device, for example *AutoPod+ V3.49e at 192.168.60.204:80 answers in 3 ms*. An

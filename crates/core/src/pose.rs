@@ -547,6 +547,9 @@ pub struct Project {
     /// The audio output the server plays through, by name. Empty is the one it started with:
     /// the system's default, or the one named when it was started.
     pub audio_device: String,
+    /// The AutoPod+ height map every camera reads its height through, unless the camera's
+    /// rig has one of its own.
+    pub autopod_calibration: Vec<CalPoint>,
     pub freewheel_frames: u32,
     /// LTC generator level, 0 to 1.
     pub ltc_level: f32,
@@ -576,6 +579,7 @@ impl Default for Project {
             rate: FrameRate::F25,
             routing: Routing::default(),
             audio_device: String::new(),
+            autopod_calibration: Vec::new(),
             freewheel_frames: 8,
             ltc_level: 0.5,
             inputs: InputConfig::default(),
@@ -599,6 +603,7 @@ struct ProjectFile {
     rate: Option<FrameRate>,
     routing: Option<Routing>,
     audio_device: String,
+    autopod_calibration: Vec<CalPoint>,
     freewheel_frames: Option<u32>,
     ltc_level: Option<f32>,
     inputs: Option<InputConfig>,
@@ -631,6 +636,7 @@ impl From<ProjectFile> for Project {
             rate: f.rate.unwrap_or(d.rate),
             routing: f.routing.unwrap_or(d.routing),
             audio_device: f.audio_device,
+            autopod_calibration: f.autopod_calibration,
             freewheel_frames: f.freewheel_frames.unwrap_or(d.freewheel_frames),
             ltc_level: f.ltc_level.unwrap_or(d.ltc_level),
             inputs: f.inputs.unwrap_or(d.inputs),
@@ -647,6 +653,24 @@ impl From<ProjectFile> for Project {
 }
 
 impl Project {
+    /// The AutoPod+ height map a camera is read through: its own when it has one, the
+    /// project's otherwise.
+    pub fn height_map<'a>(&'a self, camera: &'a CameraConfig) -> &'a [CalPoint] {
+        if camera.rig.autopod_calibration.is_empty() {
+            &self.autopod_calibration
+        } else {
+            &camera.rig.autopod_calibration
+        }
+    }
+
+    /// The rig the server builds for a camera: the camera's own, with the project's height
+    /// map where it has none.
+    pub fn rig_of(&self, camera: &CameraConfig) -> RigConfig {
+        let mut rig = camera.rig.clone();
+        rig.autopod_calibration = self.height_map(camera).to_vec();
+        rig
+    }
+
     pub fn camera(&self, id: &str) -> Option<&CameraConfig> {
         self.cameras.iter().find(|c| c.id == id)
     }

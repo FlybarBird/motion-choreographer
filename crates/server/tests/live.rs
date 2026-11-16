@@ -35,7 +35,8 @@ impl Rig {
         project.cameras[0].rig.fr7_user = self.fr7.user.clone();
         project.cameras[0].rig.fr7_password = self.fr7.password.clone();
         project.cameras[0].rig.autopod_host = self.pod.addr.to_string();
-        project.cameras[0].rig.autopod_calibration = FakeAutoPod::height_map();
+        // The height map is the one the project holds for every AutoPod+.
+        project.autopod_calibration = FakeAutoPod::height_map();
         let project = api.put_project(&project).unwrap();
         let st = wait_for(api, |s| {
             s.first().adapters.len() == 2

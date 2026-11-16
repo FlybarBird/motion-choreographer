@@ -630,7 +630,7 @@ only be changed while stopped and disarmed.
 | Plain moves | Send a preset move as one absolute move and let the head run it, instead of steering it. |
 | Query delay | How old a position is when it arrives. |
 | Arm moves at, Tracking fault after, tolerances | As described under Going live. |
-| AutoPod+ height map | Raw position against measured height, at three heights or more. **Add the current height** takes the raw value from the leg box. |
+| AutoPod+ height map | Raw position against measured height, at three heights or more. **Add the current height** takes the raw value from the leg box. One map serves every camera's AutoPod+; a camera can have its own instead, under **A height map for this camera only**. With fewer than two heights the height is shown and recorded on an assumed scale, so a column's moves can be recorded before anything is measured; Arm still needs three. |
 
 **Sync from rig** in the Presets tab reads the camera's presets. On the real rig
 the camera has to be recalled to each one so its pose and picture can be read,

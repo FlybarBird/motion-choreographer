@@ -155,7 +155,7 @@ fn keep_out(ui: &mut Ui, camera: &mut CameraConfig, units: Units, editable: bool
 }
 
 /// Which rig the server drives for this camera, how to reach it, and how closely it must follow.
-fn rig(ui: &mut Ui, s: &mut Session, camera: &mut CameraConfig, units: Units, editable: bool) {
+fn rig(ui: &mut Ui, s: &mut Session, camera: &mut CameraConfig, shared: &mut Vec<CalPoint>, units: Units, editable: bool) {
     let t = s.status.transport;
     let parked = t.run == Run::Stopped && t.output == Output::Rehearse && !t.estop;
     if !parked {
@@ -261,7 +261,13 @@ fn rig(ui: &mut Ui, s: &mut Session, camera: &mut CameraConfig, units: Units, ed
 
         if rig.kind == RigKind::Hardware && !rig.autopod_host.is_empty() {
             ui.add_space(U);
-            ui.label(RichText::new("AutoPod+ height map: the leg box's raw position at measured heights").color(MUTED).small());
+            ui.label(
+                RichText::new(
+                    "AutoPod+ height map: the leg box's raw position at measured heights. Every camera's AutoPod+ reads its height through this one, unless it has a map of its own below.",
+                )
+                .color(MUTED)
+                .small(),
+            );
             ui.label(
                 RichText::new(
                     "Measure how far the column is raised above fully down, and type it as the height. Fully down is 0. Double-click a box to type in it.",
@@ -269,77 +275,110 @@ fn rig(ui: &mut Ui, s: &mut Session, camera: &mut CameraConfig, units: Units, ed
                 .color(MUTED)
                 .small(),
             );
-            let not_answering = "The AutoPod+ is not answering, so its raw position is not known";
-            let (mut remove, mut retake) = (None, None);
-            egui::Grid::new("height_map").num_columns(4).spacing([PAD, U]).show(ui, |ui| {
-                if !rig.autopod_calibration.is_empty() {
-                    for head in ["Raw position", "Measured height", "", ""] {
-                        ui.label(RichText::new(head).small().color(MUTED));
+            height_map(ui, "height_map", shared, raw, units, "Add the current height");
+            egui::CollapsingHeader::new("A height map for this camera only")
+                .id_salt("own_height_map_open")
+                .default_open(!rig.autopod_calibration.is_empty())
+                .show(ui, |ui| {
+                    ui.label(
+                        RichText::new("Leave it empty to use the one above. With any height here, this camera reads through these instead.")
+                            .color(MUTED)
+                            .small(),
+                    );
+                    height_map(ui, "own_height_map", &mut rig.autopod_calibration, raw, units, "Add the current height to this camera");
+                    if !rig.autopod_calibration.is_empty()
+                        && ui
+                            .button("Use these for every camera")
+                            .on_hover_text("Make this the map every AutoPod+ reads through, and leave this camera without one of its own")
+                            .clicked()
+                    {
+                        *shared = std::mem::take(&mut rig.autopod_calibration);
                     }
-                    ui.end_row();
-                }
-                for (i, point) in rig.autopod_calibration.iter_mut().enumerate() {
-                    // Each change here sets the rig up again, so a typed number is taken once, when it is finished.
-                    ui.add(egui::DragValue::new(&mut point.raw).speed(10.0).update_while_editing(false))
-                        .on_hover_text("What the leg box reported at this height");
-                    ui.add(height_box(&mut point.mm, units).update_while_editing(false))
-                        .on_hover_text("Set height: what you measured with the column at this raw position");
-                    let update = ui
-                        .add_enabled(raw.is_some(), egui::Button::new("Update to current"))
-                        .on_hover_text("The column is at this height now: take the raw position it reports for this row")
-                        .on_disabled_hover_text(not_answering);
-                    if update.clicked() {
-                        retake = Some(i);
-                    }
-                    if ui.button("Remove").clicked() {
-                        remove = Some(i);
-                    }
-                    ui.end_row();
-                }
-            });
-            if let (Some(i), Some(raw)) = (retake, raw) {
-                // One height for each raw position: a row that already had this one gives way.
-                let mm = rig.autopod_calibration[i].mm;
-                rig.autopod_calibration.remove(i);
-                rig.autopod_calibration.retain(|p| p.raw != raw);
-                rig.autopod_calibration.push(CalPoint { raw, mm });
-                rig.autopod_calibration.sort_by(|a, b| a.raw.total_cmp(&b.raw));
-            }
-            if let Some(i) = remove {
-                rig.autopod_calibration.remove(i);
-            }
-            let id = ui.make_persistent_id("height_now");
-            let mut mm = ui.data_mut(|d| d.get_temp::<f64>(id)).unwrap_or(0.0);
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("The column is now at").small());
-                ui.add(height_box(&mut mm, units).range(0.0..=5000.0))
-                    .on_hover_text("Set height: what you measure with the column where it is now");
-                let add = ui
-                    .add_enabled(raw.is_some(), egui::Button::new("Add the current height"))
-                    .on_hover_text("Measure the column now, enter the height, and add it with the raw position the leg box reports")
-                    .on_disabled_hover_text(not_answering);
-                if let (true, Some(raw)) = (add.clicked(), raw) {
-                    rig.autopod_calibration.retain(|p| p.raw != raw);
-                    rig.autopod_calibration.push(CalPoint { raw, mm });
-                    rig.autopod_calibration.sort_by(|a, b| a.raw.total_cmp(&b.raw));
-                }
-                if let Some(raw) = raw {
-                    ui.label(RichText::new(format!("raw {raw:.0}")).monospace().small().color(MUTED));
-                }
-            });
-            ui.data_mut(|d| d.insert_temp(id, mm));
-            if rig.autopod_calibration.len() < 3 {
+                });
+            let used = if rig.autopod_calibration.is_empty() { shared.len() } else { rig.autopod_calibration.len() };
+            if used < 3 {
                 ui.label(
                     RichText::new(format!(
-                        "{} of 3 heights. Arm is refused until the map has three; ptz-bringup measures them with you.",
-                        rig.autopod_calibration.len()
+                        "{used} of 3 heights. Arm is refused until the map has three; ptz-bringup measures them with you."
                     ))
+                    .color(AMBER)
+                    .small(),
+                );
+            }
+            if used < 2 {
+                ui.label(
+                    RichText::new(
+                        "Until it has two, the height is shown and recorded on an assumed scale: the column's moves can be recorded, but not in measured millimetres.",
+                    )
                     .color(AMBER)
                     .small(),
                 );
             }
         }
     });
+}
+
+/// One AutoPod+ height map: its rows, and the row that adds the height the column is at now.
+fn height_map(ui: &mut Ui, salt: &str, map: &mut Vec<CalPoint>, raw: Option<f64>, units: Units, add_label: &str) {
+    let not_answering = "The AutoPod+ is not answering, so its raw position is not known";
+    let (mut remove, mut retake) = (None, None);
+    egui::Grid::new(salt).num_columns(4).spacing([PAD, U]).show(ui, |ui| {
+        if !map.is_empty() {
+            for head in ["Raw position", "Measured height", "", ""] {
+                ui.label(RichText::new(head).small().color(MUTED));
+            }
+            ui.end_row();
+        }
+        for (i, point) in map.iter_mut().enumerate() {
+            // Each change here sets the rig up again, so a typed number is taken once, when it is finished.
+            ui.add(egui::DragValue::new(&mut point.raw).speed(10.0).update_while_editing(false))
+                .on_hover_text("What the leg box reported at this height");
+            ui.add(height_box(&mut point.mm, units).update_while_editing(false))
+                .on_hover_text("Set height: what you measured with the column at this raw position");
+            let update = ui
+                .add_enabled(raw.is_some(), egui::Button::new("Update to current"))
+                .on_hover_text("The column is at this height now: take the raw position it reports for this row")
+                .on_disabled_hover_text(not_answering);
+            if update.clicked() {
+                retake = Some(i);
+            }
+            if ui.button("Remove").clicked() {
+                remove = Some(i);
+            }
+            ui.end_row();
+        }
+    });
+    if let (Some(i), Some(raw)) = (retake, raw) {
+        // One height for each raw position: a row that already had this one gives way.
+        let mm = map[i].mm;
+        map.remove(i);
+        map.retain(|p| p.raw != raw);
+        map.push(CalPoint { raw, mm });
+        map.sort_by(|a, b| a.raw.total_cmp(&b.raw));
+    }
+    if let Some(i) = remove {
+        map.remove(i);
+    }
+    let id = ui.make_persistent_id((salt, "now"));
+    let mut mm = ui.data_mut(|d| d.get_temp::<f64>(id)).unwrap_or(0.0);
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("The column is now at").small());
+        ui.add(height_box(&mut mm, units).range(0.0..=5000.0))
+            .on_hover_text("Set height: what you measure with the column where it is now");
+        let add = ui
+            .add_enabled(raw.is_some(), egui::Button::new(add_label))
+            .on_hover_text("Measure the column now, enter the height, and add it with the raw position the leg box reports")
+            .on_disabled_hover_text(not_answering);
+        if let (true, Some(raw)) = (add.clicked(), raw) {
+            map.retain(|p| p.raw != raw);
+            map.push(CalPoint { raw, mm });
+            map.sort_by(|a, b| a.raw.total_cmp(&b.raw));
+        }
+        if let Some(raw) = raw {
+            ui.label(RichText::new(format!("raw {raw:.0}")).monospace().small().color(MUTED));
+        }
+    });
+    ui.data_mut(|d| d.insert_temp(id, mm));
 }
 
 /// A page of the Show settings area.
@@ -529,9 +568,10 @@ fn body(ui: &mut Ui, s: &mut Session, page: Page) {
         Page::Rig | Page::Lens | Page::Position | Page::Limits | Page::KeepOut => {
             let at = project.camera_index(&s.active_camera).unwrap_or(0);
             let units = project.units;
+            let shared = &mut project.autopod_calibration;
             let camera = &mut project.cameras[at];
             match page {
-                Page::Rig => rig(ui, s, camera, units, editable),
+                Page::Rig => rig(ui, s, camera, shared, units, editable),
                 Page::Lens => lens(ui, s, camera, units, editable),
                 Page::Position => position(ui, s, camera, units, editable),
                 Page::Limits => limits(ui, camera, units, editable),

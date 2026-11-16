@@ -245,10 +245,10 @@ struct Unit {
 }
 
 impl Unit {
-    fn new(camera: &ptz_core::camera::CameraConfig) -> Unit {
+    fn new(project: &Project, camera: &ptz_core::camera::CameraConfig) -> Unit {
         Unit {
             id: camera.id.clone(),
-            rig: crate::hw::build(&camera.rig, &camera.axes),
+            rig: crate::hw::build(&project.rig_of(camera), &camera.axes),
             live: Live::default(),
             held: false,
             halting: None,
@@ -392,7 +392,7 @@ impl Show {
         let media = media::load_all(&storage.media_root(), project.rate);
         let audio = AudioEngine::start(cfg.audio.for_project(&project));
         let (loaded_tx, loaded_rx) = mpsc::channel();
-        let units = project.cameras.iter().map(Unit::new).collect();
+        let units = project.cameras.iter().map(|c| Unit::new(&project, c)).collect();
         let record_camera = project.first().id.clone();
         let mut show = Show {
             storage,
@@ -951,7 +951,7 @@ impl Show {
         let rebuilt: Vec<String> = project
             .cameras
             .iter()
-            .filter(|c| self.project.camera(&c.id).is_some_and(|was| was.rig != c.rig))
+            .filter(|c| self.project.camera(&c.id).is_some_and(|was| self.project.rig_of(was) != project.rig_of(c)))
             .map(|c| c.id.clone())
             .collect();
         if !same_cameras {
@@ -972,7 +972,7 @@ impl Show {
                 let kept = old.iter().position(|u| u.id == cam.id).filter(|_| !rebuilt.contains(&cam.id));
                 self.units.push(match kept {
                     Some(at) => old.remove(at),
-                    None => Unit::new(cam),
+                    None => Unit::new(&project, cam),
                 });
             }
             // The adapters that are left stop their devices as they are dropped.

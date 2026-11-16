@@ -408,6 +408,28 @@ fn a_missing_device_and_an_uncalibrated_pedestal_are_named() {
     wait_until("the silence is noticed", || rig.problem().is_some_and(|p| p.contains("not answering")));
 }
 
+#[test]
+fn a_pedestal_with_no_height_map_still_reads_a_height_that_moves_with_the_column() {
+    let axes = AxisTable::default();
+    let pod = FakeAutoPod::start();
+    let mut cfg = rig_config(None, Some(&pod));
+    cfg.autopod_calibration.clear();
+    let rig = HardwareRig::start(&cfg, &axes);
+    wait_until("the leg box answers", || rig.status()[0].connected);
+
+    // Nothing was measured, so Arm stays refused, but the column's moves can be seen and recorded.
+    assert!(rig.problem().unwrap().contains("0 of the 3 measured heights"));
+    pod.place(100.0);
+    wait_until("the height is read", || rig.pose().elevation > 0.0);
+    let low = rig.pose().elevation;
+    pod.place(400.0);
+    wait_until("the rise is read", || rig.pose().elevation > low + 1.0);
+    let high = rig.pose().elevation;
+    assert!(axes.elevation.min <= low && high <= axes.elevation.max, "{low} to {high} is outside the limits");
+    let raw = rig.status()[0].raw_position.unwrap();
+    assert_eq!(high, autopod::assumed_mm(&axes.elevation, raw));
+}
+
 /// One raw exchange with the stand-in, as bytes.
 fn raw_exchange(addr: std::net::SocketAddr, request: &[u8]) -> String {
     use std::io::{Read, Write};

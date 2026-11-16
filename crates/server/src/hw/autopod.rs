@@ -135,6 +135,14 @@ pub fn height_mm(map: &[CalPoint], raw: f64) -> Option<f64> {
     Some(a.mm + (b.mm - a.mm) * (raw - a.raw) / (b.raw - a.raw))
 }
 
+/// The height read with no height map to go by: the raw position's share of everything the
+/// leg box can report, spread over the travel the elevation limits allow. It rises and falls
+/// with the column and always lies inside the limits, so a move can be recorded before
+/// anything is measured. It is not a measured height, and Arm is refused until there is one.
+pub fn assumed_mm(limits: &AxisLimits, raw: f64) -> f64 {
+    limits.min + (limits.max - limits.min) * (raw / f64::from(u16::MAX)).clamp(0.0, 1.0)
+}
+
 #[derive(Clone, PartialEq, Debug)]
 pub struct PodConfig {
     /// `host:port` of the leg box.
@@ -275,7 +283,10 @@ enum Mode {
 
 struct State {
     raw: f64,
+    /// The height by the height map, where there is one to say.
     mm: Option<f64>,
+    /// The height to show and record: by the map, or assumed from the raw position without one.
+    shown_mm: f64,
     read_at: Instant,
     connected: bool,
     detail: String,
@@ -309,6 +320,7 @@ impl AutoPod {
         let state = Arc::new(Mutex::new(State {
             raw: 0.0,
             mm: None,
+            shown_mm: limits.min,
             read_at: now,
             connected: false,
             detail: format!("Connecting to {}", cfg.host),
@@ -361,7 +373,7 @@ impl AutoPod {
         }
         if self.cfg.map.len() < CAL_POINTS_NEEDED {
             return Some(format!(
-                "The AutoPod+'s height map has {} of the {CAL_POINTS_NEEDED} measured heights it needs. Add them in the rig settings",
+                "The AutoPod+'s height map has {} of the {CAL_POINTS_NEEDED} measured heights it needs. Add them in Show settings, Rig connection",
                 self.cfg.map.len()
             ));
         }
@@ -371,10 +383,11 @@ impl AutoPod {
         None
     }
 
-    /// Elevation in millimetres and when it was read. Zero until the height map can say.
+    /// Elevation in millimetres and when it was read: by the height map, or assumed from the
+    /// raw position while there is none.
     pub fn elevation(&self) -> (f64, Instant) {
         let s = self.lock();
-        (s.mm.unwrap_or(0.0), s.read_at)
+        (s.shown_mm, s.read_at)
     }
 
     pub fn round_trip_s(&self) -> f64 {
@@ -443,6 +456,7 @@ fn run(cfg: PodConfig, state: Arc<Mutex<State>>) {
                 let moved = s.connected && (raw - s.raw).abs() > 1.0;
                 s.raw = raw;
                 s.mm = mm;
+                s.shown_mm = mm.unwrap_or_else(|| assumed_mm(&s.limits, raw));
                 s.read_at = read_at;
                 s.connected = true;
                 s.round_trip_ms = round_trip_ms;

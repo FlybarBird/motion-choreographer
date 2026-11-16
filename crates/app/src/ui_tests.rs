@@ -1134,9 +1134,15 @@ fn rig_settings_switch_to_hardware_and_take_a_height_from_the_leg_box() {
     r.harness.get_by_label("0 of 3 heights. Arm is refused until the map has three; ptz-bringup measures them with you.");
     r.press("Add the current height");
     let sent = projects(&r);
-    let map = &sent.last().expect("the project was sent").cameras[0].rig.autopod_calibration;
+    // The height goes into the map every camera's AutoPod+ shares, not into this camera's own.
+    let project = sent.last().expect("the project was sent");
+    let map = &project.autopod_calibration;
     assert_eq!(map.len(), 1);
     assert_eq!(map[0].raw, 9120.0);
+    assert!(project.cameras[0].rig.autopod_calibration.is_empty());
+    r.harness.get_by_label(
+        "Until it has two, the height is shown and recorded on an assumed scale: the column's moves can be recorded, but not in measured millimetres.",
+    );
     r.harness.get_by_label("1 of 3 heights. Arm is refused until the map has three; ptz-bringup measures them with you.");
 
     // Armed or playing, the rig cannot be swapped out from under the show.
