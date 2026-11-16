@@ -58,7 +58,9 @@ for remote in $REMOTES; do
   git fetch --quiet "$remote" main
   git merge-base --is-ancestor FETCH_HEAD HEAD || fail "$remote has commits that are not here. Pull them first"
 done
-gh auth status >/dev/null 2>&1 || fail "gh is not signed in to GitHub. Sign in with: gh auth login"
+# Asked of the repository itself: "gh auth status" also fails for a second account that is signed out.
+gh repo view "$REPO" --json name >/dev/null 2>&1 ||
+  fail "gh cannot reach $REPO on GitHub. Sign in with: gh auth login"
 if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then fail "GitHub already has a release $TAG"; fi
 
 NOW="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
