@@ -10,7 +10,7 @@
 use ptz_core::codes::{artnet_parse, CodeRate, CodeReading, MtcDecoder};
 use ptz_core::ltc::LtcDecoder;
 use ptz_core::pose::InputConfig;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -28,7 +28,7 @@ pub trait CodeSource: Send {
     fn poll(&mut self) -> Vec<Stamped>;
     /// Frames between readings while the code rolls: 1 for LTC and Art-Net, 2 for MTC.
     fn interval_frames(&self) -> f64;
-    /// Why the input stopped delivering, when it has failed since it opened.
+    /// Why the input is not delivering, while it is not: it has failed and has not come back.
     fn problem(&self) -> Option<String>;
 }
 
@@ -143,6 +143,8 @@ impl MtcReader {
 enum Item {
     Reading(Stamped),
     Failed(String),
+    /// The input is open again after it failed.
+    Recovered,
 }
 
 /// Stops the input's thread when the source is dropped.
@@ -177,6 +179,11 @@ impl Feeder {
     pub fn fail(&self, why: impl Into<String>) {
         let _ = self.tx.send(Item::Failed(why.into()));
     }
+
+    /// The input that failed is open again.
+    pub fn recovered(&self) {
+        let _ = self.tx.send(Item::Recovered);
+    }
 }
 
 impl Feed {
@@ -199,8 +206,13 @@ impl CodeSource for Feed {
         let mut out = Vec::new();
         while let Ok(item) = self.rx.try_recv() {
             match item {
-                Item::Reading(s) => out.push(s),
+                // Code arriving is an input that works, whatever was wrong with it before.
+                Item::Reading(s) => {
+                    self.problem = None;
+                    out.push(s);
+                }
                 Item::Failed(why) => self.problem = Some(why),
+                Item::Recovered => self.problem = None,
             }
         }
         out
@@ -269,6 +281,84 @@ fn on_thread(
 fn hold_until(stop: &AtomicBool) {
     while !stop.load(Ordering::Relaxed) {
         std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// How an open input tells the thread that tends it how it is doing.
+#[derive(Clone, Default)]
+pub struct Health {
+    lost: Arc<AtomicBool>,
+    heard: Arc<AtomicU64>,
+}
+
+impl Health {
+    /// The device has gone: it was unplugged, or the system took it away.
+    pub fn lost(&self) {
+        self.lost.store(true, Ordering::Relaxed);
+    }
+
+    /// Something arrived from the device, whether or not there was code in it.
+    pub fn heard(&self) {
+        self.heard.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// How often an input that dropped out is tried again, and how long one that delivers all the time
+/// may deliver nothing at all before it is taken for gone.
+const RETRY: Duration = Duration::from_secs(1);
+const QUIET: Duration = Duration::from_secs(3);
+
+/// Keep an input open until `stop`. It must open the first time, or the lock is refused with the
+/// reason. After that an input that is lost, or that has gone `quiet`, is closed and opened again
+/// every `retry` until it is back: a USB interface that is knocked out, or moved to another port,
+/// is read again without the operator unlocking and locking.
+fn tend<S>(
+    what: &str,
+    mut open: impl FnMut(&Health) -> Result<S, String>,
+    feeder: &Feeder,
+    stop: &AtomicBool,
+    ready: Sender<Result<(), String>>,
+    (retry, quiet): (Duration, Duration),
+) {
+    let health = Health::default();
+    let mut input = match open(&health) {
+        Ok(input) => Some(input),
+        Err(why) => {
+            let _ = ready.send(Err(why));
+            return;
+        }
+    };
+    let _ = ready.send(Ok(()));
+    let mut heard = (health.heard.load(Ordering::Relaxed), Instant::now());
+    let mut tried = Instant::now();
+    while !stop.load(Ordering::Relaxed) {
+        std::thread::sleep(Duration::from_millis(50).min(retry));
+        let now = Instant::now();
+        if input.is_some() {
+            let count = health.heard.load(Ordering::Relaxed);
+            if count != heard.0 {
+                heard = (count, now);
+            }
+            let silent = now.duration_since(heard.1) >= quiet;
+            if health.lost.swap(false, Ordering::Relaxed) || silent {
+                input = None;
+                if silent {
+                    feeder.fail(format!("{what} stopped: nothing is arriving from it. Trying it again"));
+                }
+                tried = now;
+            }
+        } else if now.duration_since(tried) >= retry {
+            tried = now;
+            match open(&health) {
+                Ok(opened) => {
+                    health.lost.store(false, Ordering::Relaxed);
+                    heard = (health.heard.load(Ordering::Relaxed), now);
+                    input = Some(opened);
+                    feeder.recovered();
+                }
+                Err(why) => feeder.fail(format!("{what} dropped out and is not back yet. {why}")),
+            }
+        }
     }
 }
 
@@ -381,6 +471,7 @@ mod ltc_in {
         config: cpal::StreamConfig,
         channel: usize,
         feeder: Feeder,
+        health: Health,
     ) -> Result<cpal::Stream, cpal::Error>
     where
         T: SizedSample,
@@ -391,9 +482,11 @@ mod ltc_in {
         let mut reader = LtcReader::new(rate);
         let mut one: Vec<f32> = Vec::new();
         let failed = feeder.clone();
+        let gone = health.clone();
         device.build_input_stream(
             config,
             move |data: &[T], info: &cpal::InputCallbackInfo| {
+                health.heard();
                 one.clear();
                 one.extend(data.iter().skip(channel).step_by(channels.max(1)).map(|s| f32::from_sample(*s)));
                 // The buffer's first sample was captured `lag` ago; its last one a buffer length later.
@@ -409,14 +502,15 @@ mod ltc_in {
             move |err: cpal::Error| {
                 use cpal::ErrorKind::*;
                 if !matches!(err.kind(), Xrun | RealtimeDenied) {
-                    failed.fail(format!("The LTC input stopped: {err}"));
+                    failed.fail(format!("The LTC input stopped: {err}. Trying it again"));
+                    gone.lost();
                 }
             },
             None,
         )
     }
 
-    fn open(want: &str, channel: u32, feeder: Feeder) -> Result<cpal::Stream, String> {
+    fn open(want: &str, channel: u32, feeder: Feeder, health: &Health) -> Result<cpal::Stream, String> {
         if let Some(p) = host_problem() {
             return Err(format!("LTC needs an audio input. {p}"));
         }
@@ -444,15 +538,15 @@ mod ltc_in {
         }
         let format = supported.sample_format();
         let config: cpal::StreamConfig = supported.config();
-        let ch = channel as usize;
+        let (ch, health) = (channel as usize, health.clone());
         let stream = match format {
-            SampleFormat::F32 => build::<f32>(&device, config, ch, feeder),
-            SampleFormat::I16 => build::<i16>(&device, config, ch, feeder),
-            SampleFormat::U16 => build::<u16>(&device, config, ch, feeder),
-            SampleFormat::I32 => build::<i32>(&device, config, ch, feeder),
-            SampleFormat::I8 => build::<i8>(&device, config, ch, feeder),
-            SampleFormat::U8 => build::<u8>(&device, config, ch, feeder),
-            SampleFormat::F64 => build::<f64>(&device, config, ch, feeder),
+            SampleFormat::F32 => build::<f32>(&device, config, ch, feeder, health),
+            SampleFormat::I16 => build::<i16>(&device, config, ch, feeder, health),
+            SampleFormat::U16 => build::<u16>(&device, config, ch, feeder, health),
+            SampleFormat::I32 => build::<i32>(&device, config, ch, feeder, health),
+            SampleFormat::I8 => build::<i8>(&device, config, ch, feeder, health),
+            SampleFormat::U8 => build::<u8>(&device, config, ch, feeder, health),
+            SampleFormat::F64 => build::<f64>(&device, config, ch, feeder, health),
             other => return Err(format!("{name} uses the sample format {other}, which is not supported")),
         }
         .map_err(|e| format!("{name} could not be opened for LTC: {e}"))?;
@@ -461,16 +555,8 @@ mod ltc_in {
     }
 
     pub fn run(want: &str, channel: u32, feeder: Feeder, stop: Arc<AtomicBool>, ready: Sender<Result<(), String>>) {
-        match open(want, channel, feeder) {
-            Ok(stream) => {
-                let _ = ready.send(Ok(()));
-                hold_until(&stop);
-                drop(stream);
-            }
-            Err(why) => {
-                let _ = ready.send(Err(why));
-            }
-        }
+        // An audio input delivers buffers all the time, code or no code, so one that delivers none has gone.
+        tend("The LTC input", |health| open(want, channel, feeder.clone(), health), &feeder, &stop, ready, (RETRY, QUIET));
     }
 }
 
@@ -483,6 +569,71 @@ mod tests {
 
     fn secs(from: Instant, at: Instant) -> f64 {
         at.duration_since(from).as_secs_f64()
+    }
+
+    #[test]
+    fn an_input_that_drops_out_is_opened_again_and_says_what_is_wrong_until_it_is_back() {
+        let (feeder, mut feed) = Feed::scripted(Kind::Ltc);
+        let stop = Arc::new(AtomicBool::new(false));
+        let (ready_tx, ready_rx) = channel();
+        // The device opens, is unplugged, is not there the first time it is tried again, and then is.
+        let (opens, held) = (Arc::new(AtomicU64::new(0)), Arc::new(std::sync::Mutex::new(None::<Health>)));
+        let tending = std::thread::spawn({
+            let (feeder, stop, opens, held) = (feeder.clone(), stop.clone(), opens.clone(), held.clone());
+            move || {
+                let open = |health: &Health| {
+                    *held.lock().unwrap() = Some(health.clone());
+                    match opens.fetch_add(1, Ordering::Relaxed) {
+                        1 => Err("No audio input is named \"Dante\"".to_string()),
+                        _ => Ok(()),
+                    }
+                };
+                tend("The LTC input", open, &feeder, &stop, ready_tx, (Duration::from_millis(20), Duration::from_millis(400)));
+            }
+        });
+        assert_eq!(ready_rx.recv_timeout(Duration::from_secs(2)), Ok(Ok(())));
+        assert_eq!((feed.poll().len(), feed.problem()), (0, None));
+
+        let health = held.lock().unwrap().clone().unwrap();
+        feeder.fail("The LTC input stopped: Device disconnected. Trying it again");
+        health.lost();
+        let mut said = Vec::new();
+        let waited = Instant::now();
+        while opens.load(Ordering::Relaxed) < 3 || feed.problem().is_some() {
+            assert!(waited.elapsed() < Duration::from_secs(3), "{said:?}");
+            feed.poll();
+            said.extend(feed.problem().filter(|p| said.last() != Some(p)));
+            health.heard();
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(
+            said,
+            [
+                "The LTC input stopped: Device disconnected. Trying it again",
+                "The LTC input dropped out and is not back yet. No audio input is named \"Dante\"",
+            ]
+        );
+        assert_eq!(opens.load(Ordering::Relaxed), 3, "it is opened once more and then left alone");
+
+        // An input that is open and delivers nothing at all is taken for gone, and opened again.
+        let waited = Instant::now();
+        while opens.load(Ordering::Relaxed) < 4 {
+            assert!(waited.elapsed() < Duration::from_secs(3));
+            feed.poll();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(waited.elapsed() >= Duration::from_millis(350), "not before it has been quiet a while");
+
+        // Code arriving clears whatever was wrong.
+        feeder.fail("anything");
+        feed.poll();
+        assert!(feed.problem().is_some());
+        let reading = CodeReading { frames: 10.0, rate: CodeRate::F25, locate: false };
+        feeder.send(Stamped { reading, at: Instant::now() });
+        assert_eq!((feed.poll().len(), feed.problem()), (1, None));
+
+        stop.store(true, Ordering::Relaxed);
+        tending.join().unwrap();
     }
 
     #[test]

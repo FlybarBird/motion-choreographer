@@ -357,6 +357,10 @@ frame rate from the project is refused, and the bar says which rate arrived.
 Audio is sought to the code and pulled back in with a short crossfade whenever
 it is more than a frame out.
 
+If the LTC interface is unplugged or drops off its USB port while locked, the
+lock chip says so and the server opens it again by itself as soon as it is
+back, on whichever port it returns to.
+
 The inputs are chosen in Show settings, under **Timecode inputs**: the LTC device and channel, the MIDI port, the Art-Net address to
 listen on. They are devices on the server machine.
 

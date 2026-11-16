@@ -134,6 +134,8 @@ struct External {
     mismatched: u32,
     /// The chase state last written to the run log.
     logged: ChaseState,
+    /// What the input last said was wrong with it, as written to the run log.
+    problem: Option<String>,
 }
 
 /// Readings of the wrong rate family before Lock is given up. One could be a damaged frame.
@@ -1582,7 +1584,8 @@ impl Show {
                         },
                     };
                     let chase = Chase::new(rate, self.project.freewheel_frames, input.interval_frames());
-                    self.external = Some(External { kind, source: input, chase, mismatched: 0, logged: ChaseState::NoCode });
+                    self.external =
+                        Some(External { kind, source: input, chase, mismatched: 0, logged: ChaseState::NoCode, problem: None });
                 } else {
                     return Err(Fail::bad("Lock needs a source: ltc, mtc, artnet or file:<clip id>"));
                 }
@@ -2058,11 +2061,18 @@ impl Show {
             self.poke();
         }
         let Some(ext) = &mut self.external else { return };
-        if let Some(why) = ext.source.problem() {
-            if self.lock_problem.as_deref() != Some(why.as_str()) {
-                self.log("lock_input", json!({ "source": self.lock_source, "problem": why }));
-                self.lock_problem = Some(why);
+        // An input that has failed says so until it is back; the run log hears of each change once.
+        let problem = ext.source.problem();
+        let was = std::mem::replace(&mut ext.problem, problem.clone());
+        if problem != was {
+            self.log("lock_input", json!({ "source": self.lock_source, "problem": problem, "recovered": problem.is_none() }));
+            if problem.is_none() && self.lock_problem == was {
+                self.lock_problem = None;
             }
+            self.poke();
+        }
+        if problem.is_some() && self.lock_problem != problem {
+            self.lock_problem = problem;
         }
         if jumped {
             self.event(Event::Relocated);
