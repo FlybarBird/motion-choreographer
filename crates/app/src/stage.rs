@@ -122,18 +122,28 @@ pub fn view_of(camera: &CameraConfig, pose: &Pose) -> Camera {
     Camera::look(eye, yaw as f32, pitch as f32, camera.lens.hfov_deg(pose.zoom) as f32)
 }
 
-/// A pedestal with a head at lens height, turned to where the camera looks.
+/// A pedestal or suspension with a head at lens height, turned and tilted to where the camera looks.
 pub fn marker(mount: &Mount, pose: &Pose, color: [u8; 3]) -> Mesh {
     let [x, y, lens_z] = mount.lens_position(pose.elevation).map(|v| v as f32);
-    let floor = mount.z as f32;
+    let attachment = mount.z as f32;
+    let direction = if mount.inverted { -1.0 } else { 1.0 };
+    let base_end = attachment + direction * 0.08;
+    let column_end = attachment + direction * (direction * (lens_z - attachment) - 0.12).max(0.1);
     let mut m = Mesh::default();
-    m.push_cuboid([x - 0.3, y - 0.3, floor], [x + 0.3, y + 0.3, floor + 0.08], [70, 72, 84]);
-    m.push_cuboid([x - 0.07, y - 0.07, floor + 0.08], [x + 0.07, y + 0.07, (lens_z - 0.12).max(floor + 0.1)], [120, 122, 134]);
+    m.push_cuboid([x - 0.3, y - 0.3, attachment.min(base_end)], [x + 0.3, y + 0.3, attachment.max(base_end)], [70, 72, 84]);
+    m.push_cuboid(
+        [x - 0.07, y - 0.07, base_end.min(column_end)],
+        [x + 0.07, y + 0.07, base_end.max(column_end)],
+        [120, 122, 134],
+    );
     let mut head = Mesh::default();
     head.push_cuboid([-0.13, -0.19, -0.11], [0.13, 0.15, 0.11], color);
     head.push_cuboid([-0.06, 0.15, -0.06], [0.06, 0.3, 0.06], [230, 232, 236]);
-    let (yaw, _) = mount.view(pose);
-    m.append(&head.transformed(&Transform::rotation_z(yaw as f32).then(&Transform::translation([x, y, lens_z]))));
+    let (yaw, pitch) = mount.view(pose);
+    let view = Camera::look([x, y, lens_z], yaw as f32, pitch as f32, 60.0);
+    let transform =
+        Transform { m: [0, 1, 2].map(|k| [view.right[k] * direction, view.forward[k], view.up[k] * direction]), t: view.eye };
+    m.append(&head.transformed(&transform));
     m
 }
 
@@ -563,7 +573,17 @@ pub fn camera_key(project: &Project, poses: &[Pose], index: usize, view: &Camera
         if i != index {
             let pose = poses.get(i).copied().unwrap_or_else(Pose::home);
             let m = &camera.mount;
-            key = key.floats(&[m.x, m.y, m.z, m.heading_deg, m.base_height_mm, pose.pan, pose.elevation]);
+            key = key.add(m.inverted).floats(&[
+                m.x,
+                m.y,
+                m.z,
+                m.heading_deg,
+                m.tilt_deg,
+                m.base_height_mm,
+                pose.pan,
+                pose.tilt,
+                pose.elevation,
+            ]);
         }
     }
     key.finish()
@@ -707,7 +727,7 @@ mod tests {
 
     #[test]
     fn a_marker_stands_on_its_floor_point_with_its_head_at_lens_height_facing_where_the_camera_looks() {
-        let mount = Mount { x: 3.0, y: -2.0, z: 0.5, heading_deg: 90.0, base_height_mm: 1200.0 };
+        let mount = Mount { x: 3.0, y: -2.0, z: 0.5, heading_deg: 90.0, base_height_mm: 1200.0, ..Mount::default() };
         let pose = Pose { elevation: 300.0, ..Pose::home() };
         let m = marker(&mount, &pose, [1, 2, 3]);
         let b = m.bounds().unwrap();
@@ -720,6 +740,65 @@ mod tests {
         assert_eq!(heading_toward(&mount, [3.0, 10.0, 0.0]), 0.0);
         assert!((heading_toward(&mount, [-7.0, -2.0, 0.0]) - 90.0).abs() < 1e-9);
         assert!((heading_toward(&mount, [13.0, -2.0, 0.0]) + 90.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn an_inverted_marker_hangs_from_its_attachment_and_its_barrel_tracks_the_view() {
+        let mut camera = first();
+        camera.mount = Mount { x: 3.0, y: -2.0, z: 6.0, inverted: true, ..Mount::default() };
+        let pose = Pose { elevation: 300.0, ..Pose::home() };
+        let m = marker(&camera.mount, &pose, [1, 2, 3]);
+        let bounds = m.bounds().unwrap();
+        assert!((bounds.max[2] - 6.0).abs() < 1e-6, "the suspension ends at the ceiling: {bounds:?}");
+        assert!((bounds.min[2] - 4.39).abs() < 1e-5, "the head hangs at lens height: {bounds:?}");
+        assert!(m.validate().is_ok());
+
+        // The barrel's centre must remain along the view ray when either the mounting
+        // angles or pose change, including an upside-down head.
+        for inverted in [false, true] {
+            camera.mount.inverted = inverted;
+            camera.mount.heading_deg = 35.0;
+            camera.mount.tilt_deg = -20.0;
+            for (pan, tilt) in [(0.0, 0.0), (-80.0, -25.0), (45.0, 50.0)] {
+                let pose = Pose { pan, tilt, ..pose };
+                let view = view_of(&camera, &pose);
+                let m = marker(&camera.mount, &pose, [1, 2, 3]);
+                let barrel: Vec<_> = m
+                    .triangles
+                    .iter()
+                    .zip(&m.colors)
+                    .filter(|(_, color)| **color == [230, 232, 236])
+                    .flat_map(|(triangle, _)| triangle.map(|index| m.positions[index as usize]))
+                    .collect();
+                assert!(!barrel.is_empty());
+                let centre = [0, 1, 2].map(|k| {
+                    (barrel.iter().map(|p| p[k]).fold(f32::INFINITY, f32::min)
+                        + barrel.iter().map(|p| p[k]).fold(f32::NEG_INFINITY, f32::max))
+                        * 0.5
+                });
+                for (k, &coordinate) in centre.iter().enumerate() {
+                    assert!((coordinate - view.eye[k] - 0.225 * view.forward[k]).abs() < 1e-5);
+                }
+                assert!(m.validate().is_ok());
+            }
+        }
+    }
+
+    #[test]
+    fn an_inverted_camera_projects_its_tilted_view_upright() {
+        let camera = CameraConfig { mount: Mount { z: 8.0, inverted: true, tilt_deg: -15.0, ..Mount::default() }, ..first() };
+        let pose = Pose { tilt: -15.0, elevation: 600.0, ..Pose::home() };
+        let view = view_of(&camera, &pose);
+        assert!((view.eye[2] - 6.2).abs() < 1e-6);
+        // At a combined -30 degrees the optical axis falls 5 m over a 10 m slant distance.
+        let target = [0.0, 75.0f32.sqrt(), 1.2];
+        let centre = view.project(target, 960, 540).unwrap();
+        assert!((centre[0] - 480.0).abs() < 0.01 && (centre[1] - 270.0).abs() < 0.01, "{centre:?}");
+        let above = view.project([target[0], target[1], target[2] + 1.0], 960, 540).unwrap();
+        let right = view.project([target[0] + 1.0, target[1], target[2]], 960, 540).unwrap();
+        assert!(above[1] < centre[1] && right[0] > centre[0], "image flip keeps up and right on screen");
+        let extended = Pose { elevation: 1000.0, ..pose };
+        assert!(view_of(&camera, &extended).project(target, 960, 540).unwrap()[1] < centre[1]);
     }
 
     #[test]
@@ -837,6 +916,15 @@ mod tests {
         let mut raised = poses.clone();
         raised[1].elevation = 400.0;
         assert_ne!(camera_key(&project, &raised, 0, &view), key);
+        let mut tilted = poses.clone();
+        tilted[1].tilt = 30.0;
+        assert_ne!(camera_key(&project, &tilted, 0, &view), key, "another camera's tilted head changes the picture");
+        let mut mounted = project.clone();
+        mounted.cameras[1].mount.tilt_deg = -15.0;
+        assert_ne!(camera_key(&mounted, &poses, 0, &view), key, "mount tilt also changes the head");
+        mounted.cameras[1].mount = project.cameras[1].mount;
+        mounted.cameras[1].mount.inverted = true;
+        assert_ne!(camera_key(&mounted, &poses, 0, &view), key, "an inverted suspension needs a fresh picture");
         // A camera does not see itself.
         let own = view_of(&project.cameras[1], &poses[1]);
         let own_key = camera_key(&project, &poses, 1, &own);

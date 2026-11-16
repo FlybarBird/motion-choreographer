@@ -91,9 +91,9 @@ impl Mesh {
         let first = *self.positions.first()?;
         let mut bounds = Bounds { min: first, max: first };
         for p in &self.positions {
-            for k in 0..3 {
-                bounds.min[k] = bounds.min[k].min(p[k]);
-                bounds.max[k] = bounds.max[k].max(p[k]);
+            for (k, &value) in p.iter().enumerate() {
+                bounds.min[k] = bounds.min[k].min(value);
+                bounds.max[k] = bounds.max[k].max(value);
             }
         }
         Some(bounds)

@@ -2055,6 +2055,7 @@ fn a_newer_version_is_offered_in_the_view_menu_and_waits_for_the_show_to_stop() 
 }
 
 mod picture;
+mod placement;
 mod safety;
 mod settings;
 mod shots;

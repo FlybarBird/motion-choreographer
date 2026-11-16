@@ -138,6 +138,12 @@ You need the edit lease, and the show must be disarmed, to change this. The
 address is saved with the show, so the server connects to the panel every time
 it starts.
 
+On connection and reconnection, the controller disables the panel's inactivity
+sleep timer and wakes the displays. Network heartbeats only check the connection;
+they do not prevent screen sleep. If the panel reports that it has gone to sleep,
+the controller releases hand control, wakes it and redraws the controls. This
+behavior is tested against the stand-in panel and still needs a real-panel check.
+
 The other ways, if you would rather not use the page:
 
 ```sh

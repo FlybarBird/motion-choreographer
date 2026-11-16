@@ -190,7 +190,7 @@ pub fn reference(ui: &mut Ui, s: &mut Session) {
         return;
     };
     let info = s.media.iter().find(|m| m.id == clip.media_id).cloned();
-    if !info.as_ref().is_some_and(|m| m.proxy_frames > 0) {
+    if info.as_ref().is_none_or(|m| m.proxy_frames == 0) {
         p.text(area.center(), Align2::CENTER_CENTER, "This file has no picture", body(), MUTED);
         return;
     }

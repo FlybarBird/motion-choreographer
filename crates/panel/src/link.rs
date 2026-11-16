@@ -478,6 +478,16 @@ fn serve(
                 FromPanel::Sleeping(false) => {
                     sent.clear();
                     resend = true;
+                    out.push("map".into());
+                }
+                FromPanel::Sleeping(true) => {
+                    // Heartbeats watch the connection; they do not reset the separate
+                    // operator-inactivity timer (reference 4, SleepTimer / WakeUp!).
+                    out.extend(["SleepTimer=0".into(), "WakeUp!".into()]);
+                    shared.hand().release();
+                    if events.send(Event::PanelQuiet).is_err() {
+                        return "The controller is stopping".into();
+                    }
                 }
                 _ => {}
             }
@@ -492,6 +502,8 @@ fn serve(
             last_ask = now;
             last_ping = now;
             out.extend([
+                "SleepTimer=0".to_string(),
+                "WakeUp!".to_string(),
                 "PanelTopology?".to_string(),
                 "map".to_string(),
                 format!("HeartBeatTimer={HEARTBEAT_MS}"),

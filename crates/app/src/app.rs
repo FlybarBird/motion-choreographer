@@ -687,6 +687,7 @@ impl Shell {
 
     pub fn ui(&mut self, ui: &mut Ui) {
         self.session.poll();
+        self.session.stage_view.placement_preview = None;
         if let Some(version) = self.updater.offered().filter(|v| self.update_told.as_ref() != Some(v)) {
             self.session.toast(format!("Version {version} is available: View, then Update"), false);
             self.update_told = Some(version);
@@ -715,6 +716,9 @@ impl Shell {
             .response
             .rect;
         self.stop_corner(ui, cameras);
+        if self.session.settings.is_some() {
+            crate::placement_ui::cancel_drag(&mut self.session);
+        }
         if let Some(lost) = self.session.lost.clone() {
             egui::Panel::top("lost_banner").show_separator_line(false).frame(bar(RED, U + 2.0)).show(ui, |ui| {
                 ui.label(
@@ -751,6 +755,13 @@ impl Shell {
             strip(ui, self, egui::Panel::bottom("transport_bar"));
             crate::settings_ui::area(ui, &mut self.session, &mut page);
             self.session.settings = Some(page);
+        } else if self.session.stage_view.placement && self.front().contains(&Tab::Stage) {
+            // Placement needs the stage and the lens view together. Give them the
+            // workspace while this mode is on; the saved dock layout stays intact.
+            strip(ui, self, egui::Panel::bottom("transport_bar"));
+            egui::CentralPanel::default().frame(egui::Frame::new().fill(BASE)).show(ui, |ui| {
+                crate::stage_ui::show(ui, &mut self.session);
+            });
         } else {
             let half = ((ui.available_height() - TRANSPORT_H) / 2.0).max(120.0);
             egui::Panel::top("upper_dock")
@@ -769,6 +780,9 @@ impl Shell {
             self.layout_changed = true;
         }
         // Whatever was or was not drawn above, this is where a jog is sent, changed or stopped.
+        if self.session.stage_view.placement_preview.is_none() {
+            crate::placement_ui::cancel_drag(&mut self.session);
+        }
         crate::rig_ui::settle(ui.ctx(), &mut self.session);
 
         if let Some(path) = self.session.stage_import_wanted.take() {

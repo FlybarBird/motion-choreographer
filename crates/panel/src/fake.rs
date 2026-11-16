@@ -46,6 +46,10 @@ struct State {
     /// Does not answer `ping`, as a firmware that left that out would not.
     no_ack: bool,
     asleep: BTreeSet<u32>,
+    /// The panel-wide operator inactivity timer is independent of TCP heartbeats.
+    sleep_timer_ms: u32,
+    last_activity: Instant,
+    sleeping: bool,
     edges: bool,
     changes: u64,
 }
@@ -156,6 +160,19 @@ impl Shared {
                     }
                     out.push(format!("_heartBeatTimer={}", if every.is_some() { ms } else { 0 }));
                 }
+                ToPanel::SleepTimer(ms) => {
+                    s.sleep_timer_ms = ms;
+                    s.last_activity = Instant::now();
+                    out.push(format!("_sleepTimer={ms}"));
+                }
+                ToPanel::GetSleepTimer => out.push(format!("_sleepTimer={}", s.sleep_timer_ms)),
+                ToPanel::WakeUp => {
+                    s.last_activity = Instant::now();
+                    if s.sleeping {
+                        s.sleeping = false;
+                        out.push("_isSleeping=0".into());
+                    }
+                }
                 ToPanel::Clear => {
                     s.cells.clear();
                     s.changes += 1;
@@ -253,6 +270,13 @@ impl Shared {
             return;
         }
         let now = Instant::now();
+        if !s.sleeping && s.sleep_timer_ms > 0 && now.duration_since(s.last_activity).as_millis() >= s.sleep_timer_ms as u128 {
+            s.sleeping = true;
+            // Losing the displayed content exercises the controller's wake-up repaint.
+            s.cells.clear();
+            s.changes += 1;
+            s.clients.retain_mut(|c| !c.active || write_line(&mut c.stream, "_isSleeping=1"));
+        }
         s.clients.retain_mut(|c| {
             if c.unanswered.is_some_and(|since| now.duration_since(since) > Duration::from_secs(2)) {
                 let _ = c.stream.shutdown(std::net::Shutdown::Both);
@@ -288,6 +312,9 @@ impl FakePanel {
                 silent: false,
                 no_ack: false,
                 asleep: BTreeSet::new(),
+                sleep_timer_ms: 0,
+                last_activity: Instant::now(),
+                sleeping: false,
                 edges: true,
                 changes: 0,
             }),
@@ -384,6 +411,14 @@ impl FakePanel {
     }
 
     pub fn event_edge(&self, hwc: u32, edge: u8, trigger: Trigger) {
+        let was_sleeping = {
+            let mut s = lock(&self.shared);
+            s.last_activity = Instant::now();
+            std::mem::replace(&mut s.sleeping, false)
+        };
+        if was_sleeping {
+            self.shared.send_all("_isSleeping=0");
+        }
         self.shared.send_all(&codec::format_event(hwc, edge, &trigger));
     }
 
@@ -475,6 +510,17 @@ impl FakePanel {
 
     pub fn connections(&self) -> usize {
         lock(&self.shared).clients.len()
+    }
+
+    /// Set the panel's operator-inactivity timeout, as in its own settings. Zero disables sleep.
+    pub fn set_sleep_timer(&self, milliseconds: u32) {
+        let mut s = lock(&self.shared);
+        s.sleep_timer_ms = milliseconds;
+        s.last_activity = Instant::now();
+    }
+
+    pub fn is_sleeping(&self) -> bool {
+        lock(&self.shared).sleeping
     }
 
     /// Close every connection, as a pulled cable that the network notices.
@@ -624,6 +670,33 @@ mod tests {
         assert!(asked.elapsed() >= Duration::from_millis(250), "the first ping comes one interval later");
         w.send("ack");
         assert_eq!(w.line(), "ping");
+    }
+
+    #[test]
+    fn operator_sleep_is_separate_from_heartbeats_and_can_be_disabled_and_woken() {
+        let panel = FakePanel::start();
+        let mut w = Wire::open(&panel);
+        w.send("SleepTimer=250");
+        assert_eq!(w.line(), "_sleepTimer=250");
+        for _ in 0..5 {
+            w.send("ping");
+            assert_eq!(w.line(), "ack");
+            std::thread::sleep(Duration::from_millis(30));
+        }
+        assert_eq!(w.line(), "_isSleeping=1", "TCP traffic is not operator activity");
+        assert!(panel.is_sleeping());
+        assert_eq!(panel.connections(), 1, "sleep is independent of the connection");
+        w.send("SleepTimer=0");
+        assert_eq!(w.line(), "_sleepTimer=0");
+        assert!(panel.is_sleeping(), "disabling future sleep does not wake an already sleeping panel");
+        w.send("WakeUp!");
+        assert_eq!(w.line(), "_isSleeping=0");
+        std::thread::sleep(Duration::from_millis(300));
+        w.send("ping");
+        assert_eq!(w.line(), "ack");
+        assert!(!panel.is_sleeping());
+        w.send("SleepTimer?");
+        assert_eq!(w.line(), "_sleepTimer=0");
     }
 
     #[test]

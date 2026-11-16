@@ -137,6 +137,10 @@ fn size_of(rect: Rect) -> (usize, usize) {
 }
 
 pub struct View {
+    /// Show a camera-eye preview beside the stage and edit its mounting position.
+    pub placement: bool,
+    pub placement_preview: Option<Probe>,
+    pub preview_drag: Option<(String, Mount)>,
     pub tool: Tool,
     pub angle: Angle,
     /// What dragging the picture does, and the arrows of the view pad.
@@ -171,6 +175,9 @@ pub struct View {
 impl Default for View {
     fn default() -> Self {
         View {
+            placement: false,
+            placement_preview: None,
+            preview_drag: None,
             tool: Tool::Select,
             angle: Angle::Perspective,
             nav: Nav::Turn,
@@ -381,7 +388,7 @@ pub fn wrap_heading(deg: f64) -> f64 {
 }
 
 /// Send a mount changed in this view, remembering what it was.
-fn commit(s: &mut Session, index: usize, from: Mount) {
+pub(crate) fn commit(s: &mut Session, index: usize, from: Mount) {
     let Some(camera) = s.project.cameras.get(index) else { return };
     let (id, to) = (camera.id.clone(), camera.mount);
     if to == from {
@@ -389,6 +396,9 @@ fn commit(s: &mut Session, index: usize, from: Mount) {
     }
     // The change was shown from a local copy; put the old value back so the update is seen as a change.
     s.project.cameras[index].mount = from;
+    if !may_place(s) {
+        return;
+    }
     if let Err(why) = to.validate() {
         s.toast(format!("The camera was not moved: {why}"), true);
         return;
@@ -427,6 +437,12 @@ fn may_place(s: &mut Session) -> bool {
 
 fn toolbar(ui: &mut Ui, s: &mut Session) {
     crate::theme::toolbar(ui, |ui| {
+        if ui.selectable_label(s.stage_view.placement, "Camera placement").clicked() {
+            crate::placement_ui::cancel_drag(s);
+            s.stage_view.placement = !s.stage_view.placement;
+            s.stage_view.fit_requested = true;
+        }
+        ui.separator();
         for tool in Tool::ALL {
             if ui.selectable_label(s.stage_view.tool == tool, tool.label()).on_hover_text(tool.hint()).clicked() {
                 s.stage_view.tool = tool;
@@ -788,6 +804,25 @@ pub fn measured(a: [f32; 3], b: [f32; 3], units: Units) -> String {
 
 pub fn show(ui: &mut Ui, s: &mut Session) {
     toolbar(ui, s);
+    s.stage_view.placement_preview = None;
+    if s.stage_view.placement {
+        let room = ui.available_size();
+        let inspector = (room.x * 0.42).clamp(265.0, 340.0).min(room.x * 0.55);
+        ui.horizontal_top(|ui| {
+            let stage_width = (room.x - inspector - ui.spacing().item_spacing.x).max(60.0);
+            ui.allocate_ui_with_layout(vec2(stage_width, room.y), egui::Layout::top_down(egui::Align::Min), |ui| {
+                show_scene(ui, s);
+            });
+            ui.allocate_ui_with_layout(vec2(inspector, room.y), egui::Layout::top_down(egui::Align::Min), |ui| {
+                crate::placement_ui::show(ui, s);
+            });
+        });
+    } else {
+        show_scene(ui, s);
+    }
+}
+
+fn show_scene(ui: &mut Ui, s: &mut Session) {
     let (resp, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
     let rect = resp.rect;
     painter.rect_filled(rect, 0.0, BASE);
@@ -820,7 +855,15 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
         let reach = s.world.centre_distance(camera, pose).unwrap_or(stage::FRUSTUM_REACH_M).clamp(0.5, 200.0);
         lines.extend(frustum_lines(&lens_view, reach, color, i == selected));
         let m = &camera.mount;
-        key = key.camera(&lens_view).floats(&[m.x, m.y, m.z, m.heading_deg, m.base_height_mm, reach as f64]);
+        key = key.camera(&lens_view).add(m.inverted).floats(&[
+            m.x,
+            m.y,
+            m.z,
+            m.heading_deg,
+            m.tilt_deg,
+            m.base_height_mm,
+            reach as f64,
+        ]);
     }
     if let [a, b] = s.stage_view.measure[..] {
         lines.push((a, b, [241, 242, 238, 255], 2));

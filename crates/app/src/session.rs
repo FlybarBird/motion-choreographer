@@ -243,6 +243,7 @@ impl Session {
 
     pub fn select_camera(&mut self, id: &str) {
         if self.project.camera(id).is_some() && self.active_camera != id {
+            crate::placement_ui::cancel_drag(self);
             self.active_camera = id.to_string();
         }
     }
@@ -391,6 +392,9 @@ impl Session {
                 }
             }
             Event::Project(project) => {
+                // A server refresh supersedes any unfinished local placement preview.
+                // Do not restore its old mount over the authoritative project later.
+                self.stage_view.preview_drag = None;
                 self.project = *project;
                 if self.project.camera(&self.active_camera).is_none() {
                     self.active_camera = self.project.first().id.clone();

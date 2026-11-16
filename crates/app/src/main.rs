@@ -11,6 +11,7 @@ mod media_ui;
 mod monitor;
 mod multiview;
 mod panels;
+mod placement_ui;
 mod rig_ui;
 mod session;
 mod setlist_ui;
