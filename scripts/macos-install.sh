@@ -4,8 +4,11 @@
 #   scripts/macos-install.sh               build and install, or install over an older version
 #   scripts/macos-install.sh --uninstall   remove the app and the tool links; the show data stays
 #
+# The app was called PTZ Programmer before. An install under that name is the same app (same
+# bundle id, data folder and tools): installing removes it, and --uninstall removes either name.
+#
 # Installs:
-#   ~/Applications/Motion Choreographer.app          the desktop app
+#   ~/Applications/Motion Choreographer.app    the desktop app
 #   ~/.local/bin/ptz-server, ptz-probe, ptz-bringup, ptz-panel   links into the bundle
 #
 # Environment (all optional):
@@ -27,8 +30,10 @@ TARGET="${PTZ_TARGET:-$HOST_TARGET}"
 APP_DEST="${PTZ_APP_DEST:-$HOME/Applications}"
 BIN_DEST="${PTZ_BIN_DEST:-$HOME/.local/bin}"
 APP_NAME="Motion Choreographer"
+OLD_APP_NAME="PTZ Programmer"
 BUNDLE_ID="com.ptzprogrammer.app"
 TOOLS=(ptz-server ptz-probe ptz-bringup ptz-panel)
+ICON="$ROOT/brand/icon/macos/AppIcon.icns"
 
 say() { printf '==> %s\n' "$*"; }
 fail() {
@@ -37,15 +42,20 @@ fail() {
 }
 
 INSTALLED="$APP_DEST/$APP_NAME.app"
+OLD_INSTALLED="$APP_DEST/$OLD_APP_NAME.app"
 
 # A server started from the installed app keeps running from the old files after they are replaced.
 running_from_install() {
-  pgrep -fl 'ptz-(server|app)' 2>/dev/null | grep -F "$INSTALLED/" || true
+  pgrep -fl 'ptz-(server|app)' 2>/dev/null | grep -F -e "$INSTALLED/" -e "$OLD_INSTALLED/" || true
 }
 
 if [ "${1:-}" = "--uninstall" ]; then
   if [ "${PTZ_SKIP_CHECKS:-0}" != "1" ] && [ -n "$(running_from_install)" ]; then
-    fail "Motion Choreographer is still running from $INSTALLED. Quit the app and stop ptz-server, then run this again"
+    fail "$APP_NAME is still running from $APP_DEST. Quit the app and stop ptz-server, then run this again"
+  fi
+  if [ -d "$OLD_INSTALLED" ]; then
+    rm -rf "${OLD_INSTALLED:?}"
+    say "Removed $OLD_INSTALLED, the app under its old name"
   fi
   rm -rf "${INSTALLED:?}"
   for bin in "${TOOLS[@]}"; do
@@ -80,7 +90,7 @@ if [ "${PTZ_SKIP_CHECKS:-0}" != "1" ]; then
     fi
   fi
   if [ -n "$(running_from_install)" ]; then
-    fail "Motion Choreographer is still running from $INSTALLED. Quit the app and stop ptz-server (the show data is kept), then run this again"
+    fail "$APP_NAME is still running from $APP_DEST. Quit the app and stop ptz-server (the show data is kept), then run this again"
   fi
 fi
 
@@ -97,6 +107,7 @@ fi
 for bin in ptz-app "${TOOLS[@]}"; do
   [ -x "$RELEASE_DIR/$bin" ] || fail "missing $RELEASE_DIR/$bin. The build did not produce it"
 done
+[ -f "$ICON" ] || fail "missing $ICON, the app icon from the brand kit"
 
 # 3. Assemble the bundle.
 STAGE="$(mktemp -d)"
@@ -104,6 +115,7 @@ trap 'rm -rf "$STAGE"' EXIT
 BUNDLE="$STAGE/$APP_NAME.app"
 mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources"
 cp "$RELEASE_DIR/ptz-app" "$BUNDLE/Contents/MacOS/ptz-app"
+cp "$ICON" "$BUNDLE/Contents/Resources/AppIcon.icns"
 for bin in "${TOOLS[@]}"; do
   cp "$RELEASE_DIR/$bin" "$BUNDLE/Contents/MacOS/$bin"
 done
@@ -112,7 +124,6 @@ done
 mkdir -p "$BUNDLE/Contents/Resources/licenses"
 cp "$ROOT/LICENSE" "$ROOT/THIRD-PARTY-NOTICES.md" "$BUNDLE/Contents/Resources/licenses/"
 cp "$ROOT"/crates/app/assets/fonts/*.txt "$BUNDLE/Contents/Resources/licenses/"
-cp "$ROOT/brand/icon/macos/AppIcon.icns" "$BUNDLE/Contents/Resources/AppIcon.icns"
 
 cat >"$BUNDLE/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -140,9 +151,9 @@ cat >"$BUNDLE/Contents/Info.plist" <<PLIST
   <key>NSHighResolutionCapable</key>
   <true/>
   <key>NSMicrophoneUsageDescription</key>
-  <string>Motion Choreographer reads LTC timecode from an audio input.</string>
+  <string>$APP_NAME reads LTC timecode from an audio input.</string>
   <key>NSLocalNetworkUsageDescription</key>
-  <string>Motion Choreographer talks to the show server, the camera and the pedestal on the local network.</string>
+  <string>$APP_NAME talks to the show server, the camera and the pedestal on the local network.</string>
 </dict>
 </plist>
 PLIST
@@ -155,9 +166,11 @@ fi
 
 # 5. Install.
 mkdir -p "$APP_DEST" "$BIN_DEST"
-rm -rf "${APP_DEST:?}/$APP_NAME.app"
-# The copy under the name the app had up to version 0.1.2.
-rm -rf "${APP_DEST:?}/PTZ Programmer.app"
+rm -rf "${INSTALLED:?}"
+if [ -d "$OLD_INSTALLED" ]; then
+  rm -rf "${OLD_INSTALLED:?}"
+  say "Removed $OLD_INSTALLED, the app under its old name"
+fi
 cp -R "$BUNDLE" "$APP_DEST/"
 for bin in "${TOOLS[@]}"; do
   ln -sf "$INSTALLED/Contents/MacOS/$bin" "$BIN_DEST/$bin"

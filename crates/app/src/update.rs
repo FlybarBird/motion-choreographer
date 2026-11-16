@@ -398,7 +398,7 @@ fn run_installer(installer: &Path, version: &str) -> Result<(), String> {
         script.push_str(" -applyChoiceChangesXML \" & quoted form of (item 3 of argv) & \"");
     }
     script.push_str(" -target /");
-    let prompt = format!("Motion Choreographer is installing version {version}.");
+    let prompt = format!("{} is installing version {version}.", crate::brand::NAME);
     let out = Command::new("/usr/bin/osascript")
         .args(["-e", "on run argv"])
         .args(["-e", &format!("do shell script \"{script}\" with prompt (item 2 of argv) with administrator privileges")])

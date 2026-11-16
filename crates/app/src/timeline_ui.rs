@@ -521,16 +521,6 @@ fn diamond(painter: &Painter, c: Pos2, half: f32, fill: Color32, stroke: Stroke)
     painter.add(egui::Shape::convex_polygon(pts, fill, stroke));
 }
 
-/// A key: a diamond in the ink of its curve. A selected one is white, inside a second diamond.
-pub fn key_mark(painter: &Painter, at: Pos2, selected: bool, ink: Color32) {
-    if selected {
-        diamond(painter, at, 8.0, PANEL_DARK, Stroke::new(RULE, ACCENT));
-        diamond(painter, at, 4.5, ACCENT, Stroke::NONE);
-    } else {
-        diamond(painter, at, 5.0, ink, Stroke::new(RULE, PANEL_DARK));
-    }
-}
-
 fn paint_ruler(painter: &Painter, l: &Layout, s: &Session) {
     let fps = s.project.rate.fps();
     painter.rect_filled(Rect::from_min_max(l.rect.left_top(), pos2(l.rect.right(), l.ruler.bottom())), 0.0, PANEL_DARK);
@@ -572,11 +562,11 @@ fn clip_ink(kind: ClipKind) -> Color32 {
 /// A clip is a dark plate with a little of its kind's colour in it, and more of it when selected.
 /// The full colours are left to the states that are drawn over it.
 fn clip_fill(kind: ClipKind, selected: bool) -> Color32 {
-    mix(PANEL, clip_ink(kind), if selected { 0.42 } else { 0.24 })
+    mix(LANE, clip_ink(kind), if selected { 0.16 } else { 0.07 })
 }
 
 /// The width of the strip down a clip's leading edge.
-const CLIP_EDGE: f32 = 3.0;
+const CLIP_EDGE: f32 = 1.0;
 
 /// The waveform level that suits the zoom: the coarsest with at least one bucket per pixel.
 pub fn peak_level_for(sample_rate: u32, fps: f64, px_per_frame: f32) -> u32 {
@@ -761,7 +751,7 @@ fn paint_clip(painter: &Painter, l: &Layout, c: &ClipBox, song: &Song, s: &Sessi
                 if let Some(level) = s.peaks.get(&m.media_id) {
                     let fps = s.project.rate.fps();
                     let pc = p.with_clip_rect(visible);
-                    let color = if m.muted { with_alpha(OFF_WHITE, 50) } else { with_alpha(OFF_WHITE, 170) };
+                    let color = if m.muted { with_alpha(OFF_WHITE, 25) } else { with_alpha(OFF_WHITE, 75) };
                     let wave = Rect::from_x_y_ranges(c.rect.x_range(), wave.y_range());
                     paint_waveform(&pc, wave, level, m.in_frame as f64 / fps, m.out_frame as f64 / fps, color);
                 }
@@ -814,7 +804,7 @@ fn paint_clip(painter: &Painter, l: &Layout, c: &ClipBox, song: &Song, s: &Sessi
                                 )
                             })
                             .collect();
-                        p.with_clip_rect(visible).line(pts, Stroke::new(RULE, with_alpha(clip_ink(c.kind), 150)));
+                        p.with_clip_rect(visible).line(pts, Stroke::new(1.5, clip_ink(c.kind)));
                     }
                 }
                 if let ClipBody::Keys { curves } = &clip.body {
@@ -858,13 +848,29 @@ fn paint_clip(painter: &Painter, l: &Layout, c: &ClipBox, song: &Song, s: &Sessi
     let stroke = if warn {
         Stroke::new(if selected { RULE_STRONG } else { 1.5 }, AMBER)
     } else if selected {
-        Stroke::new(1.5, Color32::WHITE)
+        Stroke::new(RULE, ACCENT)
     } else {
         Stroke::NONE
     };
     p.rect_stroke(c.rect, RADIUS, stroke, StrokeKind::Inside);
     if selected && warn {
-        p.rect_stroke(c.rect.expand(1.0), RADIUS, Stroke::new(RULE, Color32::WHITE), StrokeKind::Outside);
+        p.rect_stroke(c.rect.expand(1.0), RADIUS, Stroke::new(RULE, ACCENT), StrokeKind::Outside);
+    }
+}
+
+/// Each move's keyframes: a white diamond, the brand's keyframe, where the move begins and where it
+/// arrives, on its curve, as the brand's interface draws them.
+fn paint_key_numbers(p: &Painter, l: &Layout, song: &Song) {
+    for c in l.clips.iter().filter(|c| matches!(c.kind, ClipKind::Move | ClipKind::Keys)) {
+        if !matches!(c.lane, Lane::Motion(_)) || song.motion_clip(&c.id).is_none() || c.rect.width() < 12.0 {
+            continue;
+        }
+        // The curve runs from the bottom of the clip to the top of it.
+        for at in [pos2(c.rect.left(), c.rect.bottom() - 3.0), pos2(c.rect.right(), c.rect.top() + 3.0)] {
+            if l.body.contains(at) {
+                diamond(p, at, 4.0, PAPER, Stroke::new(RULE, INK));
+            }
+        }
     }
 }
 
@@ -927,6 +933,7 @@ fn paint(painter: &Painter, l: &Layout, song: &Song, s: &Session, playhead: f64)
     for c in &l.clips {
         paint_clip(painter, l, c, song, s);
     }
+    paint_key_numbers(&pb, l, song);
 
     // Keys on the axis lanes.
     for k in &l.keys {
@@ -934,7 +941,8 @@ fn paint(painter: &Painter, l: &Layout, song: &Song, s: &Session, playhead: f64)
             continue;
         }
         let selected = s.timeline.key_selection.contains(&(k.clip.clone(), k.axis, k.index));
-        key_mark(&pb, k.pos, selected, axis_color(k.axis));
+        let fill = if selected { OFF_WHITE } else { axis_color(k.axis) };
+        diamond(&pb, k.pos, 5.0, fill, Stroke::new(RULE, if selected { ACCENT } else { PANEL_DARK }));
     }
 
     // Marker flags.
@@ -1030,9 +1038,11 @@ fn paint(painter: &Painter, l: &Layout, song: &Song, s: &Session, playhead: f64)
     // Playhead over everything.
     let x = l.x_of(playhead);
     if x >= l.body.left() - 1.0 && x <= l.rect.right() + 1.0 {
-        let color = playhead_ink(&s.status.transport, s.status.hardware_live);
-        painter.vline(x, l.ruler.top() + 8.0..=l.rect.bottom(), Stroke::new(1.5, color));
-        let head = vec![pos2(x - 6.0, l.ruler.top() + 2.0), pos2(x + 6.0, l.ruler.top() + 2.0), pos2(x, l.ruler.top() + 13.0)];
+        let color = machine_ink(&s.status.transport, s.status.hardware_live).unwrap_or(PLAYHEAD);
+        painter.vline(x, l.ruler.top() + 8.0..=l.rect.bottom(), Stroke::new(RULE, color));
+        // A small flag on the ruler, square-shouldered and pointed.
+        let (top, w) = (l.ruler.top() + 2.0, 5.0);
+        let head = vec![pos2(x - w, top), pos2(x + w, top), pos2(x + w, top + 9.0), pos2(x, top + 14.0), pos2(x - w, top + 9.0)];
         painter.add(egui::Shape::convex_polygon(head, color, Stroke::NONE));
     }
 }

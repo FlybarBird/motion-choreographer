@@ -7,14 +7,16 @@
 #
 # On a Mac (for the kind of Mac it is run on; an Apple Silicon Mac also builds the Intel
 # installers, with PTZ_TARGET=x86_64-apple-darwin):
-#   dist/Motion-Choreographer-<version>-macos-<arch>.pkg   the app. "Show server and tools" is a
-#                                                     checkbox in the installer, ticked to start with
-#   dist/Motion-Choreographer-Server-<version>-macos-<arch>.pkg       the show server and tools only
+#   dist/Motion-Choreographer-<version>-macos-<arch>.pkg          the app. "Show server and tools" is a
+#                                                                 checkbox in the installer, ticked to start with
+#   dist/Motion-Choreographer-Server-<version>-macos-<arch>.pkg   the show server and tools only
 #   They install /Applications/Motion Choreographer.app and /usr/local/ptz-programmer.
+#   The app installer removes an older /Applications/PTZ Programmer.app, the same app
+#   under its old name.
 #
 # On Linux:
-#   dist/motion-choreographer-<version>-linux-<arch>.run   the app. Asks whether to install the server too
-#   dist/motion-choreographer-server-<version>-linux-<arch>.run       the show server and tools only
+#   dist/motion-choreographer-<version>-linux-<arch>.run          the app. Asks whether to install the server too
+#   dist/motion-choreographer-server-<version>-linux-<arch>.run   the show server and tools only
 #   They install under ~/.local, or under --prefix. Run one with --help for its options.
 #
 # Environment (all optional):
@@ -29,11 +31,14 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="Motion Choreographer"
+# The app was called this before; its bundle id, data folder and tool names are unchanged.
 OLD_APP_NAME="PTZ Programmer"
 APP_ID="com.ptzprogrammer.app"
 SERVER_ID="com.ptzprogrammer.server"
 MAC_SERVER_HOME="/usr/local/ptz-programmer"
 TOOLS=(ptz-server ptz-probe ptz-bringup ptz-panel)
+MAC_ICON="$ROOT/brand/icon/macos/AppIcon.icns"
+LINUX_ICON="$ROOT/brand/icon/png/app-icon-256.png"
 
 say() { printf '==> %s\n' "$*"; }
 fail() {
@@ -86,6 +91,9 @@ if [ "${PTZ_SKIP_BUILD:-0}" != "1" ]; then
 fi
 for bin in ptz-app "${TOOLS[@]}"; do
   [ -x "$RELEASE_DIR/$bin" ] || fail "missing $RELEASE_DIR/$bin. The build did not produce it"
+done
+for icon in "$MAC_ICON" "$LINUX_ICON"; do
+  [ -f "$icon" ] || fail "missing $icon, the app icon from the brand kit"
 done
 
 STAGE="$(mktemp -d)"
@@ -165,10 +173,10 @@ package_macos() {
 
   # The app, without the server: the server is its own choice.
   local bundle="$STAGE/app-root/$APP_NAME.app"
-  mkdir -p "$bundle/Contents/MacOS"
+  mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
   cp "$RELEASE_DIR/ptz-app" "$bundle/Contents/MacOS/ptz-app"
+  cp "$MAC_ICON" "$bundle/Contents/Resources/AppIcon.icns"
   licenses_into "$bundle/Contents/Resources/licenses"
-  cp "$ROOT/brand/icon/macos/AppIcon.icns" "$bundle/Contents/Resources/AppIcon.icns"
   cat >"$bundle/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -195,9 +203,9 @@ package_macos() {
   <key>NSHighResolutionCapable</key>
   <true/>
   <key>NSMicrophoneUsageDescription</key>
-  <string>Motion Choreographer reads LTC timecode from an audio input.</string>
+  <string>$APP_NAME reads LTC timecode from an audio input.</string>
   <key>NSLocalNetworkUsageDescription</key>
-  <string>Motion Choreographer talks to the show server, the camera and the pedestal on the local network.</string>
+  <string>$APP_NAME talks to the show server, the camera and the pedestal on the local network.</string>
 </dict>
 </plist>
 PLIST
@@ -225,12 +233,16 @@ PLIST
 </array>
 </plist>
 PLIST
-  # The app was called PTZ Programmer up to version 0.1.2. The copy under that name is taken away,
-  # or there would be two in Applications and the old one would be the one in the Dock.
+  # The app under its old name is the same app: it goes when this one is installed.
   mkdir -p "$STAGE/app-scripts"
   cat >"$STAGE/app-scripts/postinstall" <<SCRIPT
 #!/bin/sh
-rm -rf "/Applications/$OLD_APP_NAME.app"
+old="/Applications/$OLD_APP_NAME.app"
+if [ -d "\$old" ] && [ ! -L "\$old" ] && [ "\$(defaults read "\$old/Contents/Info" CFBundleIdentifier 2>/dev/null)" = "$APP_ID" ]; then
+  rm -rf "\$old"
+  # A copy that updated itself under the old name reopens itself from there: the name leads to the new app.
+  ln -s "/Applications/$APP_NAME.app" "\$old"
+fi
 exit 0
 SCRIPT
   chmod +x "$STAGE/app-scripts/postinstall"
@@ -263,7 +275,7 @@ SCRIPT
   local server_out="$DIST/Motion-Choreographer-Server-$VERSION-macos-$ARCH.pkg"
   distribution "$STAGE/app-distribution.xml" "$APP_NAME $VERSION" "$app_choice" "$server_choice"
   product "$app_out" "$STAGE/app-distribution.xml" app server
-  distribution "$STAGE/server-distribution.xml" "Motion Choreographer show server $VERSION" \
+  distribution "$STAGE/server-distribution.xml" "$APP_NAME show server $VERSION" \
     "server|$SERVER_ID|Show server and tools|$server_text|required"
   product "$server_out" "$STAGE/server-distribution.xml" server
 
@@ -292,8 +304,9 @@ run_file() {
 
 package_linux() {
   local app="$STAGE/app-payload" server="$STAGE/server-payload"
-  mkdir -p "$app/app/bin" "$app/server/bin" "$server/server/bin"
+  mkdir -p "$app/app/bin" "$app/app/share" "$app/server/bin" "$server/server/bin"
   cp "$RELEASE_DIR/ptz-app" "$app/app/bin/"
+  cp "$LINUX_ICON" "$app/app/share/app-icon-256.png"
   for bin in "${TOOLS[@]}"; do
     cp "$RELEASE_DIR/$bin" "$app/server/bin/"
     cp "$RELEASE_DIR/$bin" "$server/server/bin/"

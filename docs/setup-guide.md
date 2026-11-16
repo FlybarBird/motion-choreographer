@@ -139,14 +139,15 @@ connects to a server elsewhere.
 - The installers are not signed with an Apple Developer ID, so the first time
   macOS will not open one on a double-click. Right-click it and choose
   **Open**, or run `sudo installer -pkg <file> -target /`.
-- The app goes to `/Applications/Motion Choreographer.app`.
+- The app goes to `/Applications/Motion Choreographer.app`. A copy under the
+  app's old name, `PTZ Programmer.app`, is removed.
 - The server and tools (`ptz-server`, `ptz-probe`, `ptz-bringup`, `ptz-panel`) go to
   `/usr/local/ptz-programmer/bin`. New terminal windows find them by name.
 
 **On Linux**, run the installer:
 
 ```sh
-sh motion-choreographer-<version>-linux-<arch>.run        # asks whether to install the server too
+sh motion-choreographer-<version>-linux-<arch>.run   # asks whether to install the server too
 sh motion-choreographer-<version>-linux-<arch>.run --no-server
 sh motion-choreographer-server-<version>-linux-<arch>.run
 ```
@@ -186,7 +187,9 @@ time it reaches a camera. Allow both.
 
 **To install a newer version**, quit the app, stop the server (Ctrl-C in its
 terminal), and run `make install-mac` again. The installer refuses to replace
-the app while it is running. The show data is not touched.
+the app while it is running. The show data is not touched. A copy from
+before the app was renamed, `~/Applications/PTZ Programmer.app`, is removed
+when the new one goes in.
 
 **To remove it**, run `make uninstall-mac`. That removes the app and the three
 links. It leaves the show data (`~/PTZProgrammer`) and the app's settings
@@ -698,7 +701,7 @@ remembered.
   who took it, and its header then reads *Watching* and names the new holder.
 - A station that goes silent for ten seconds loses the lease by itself.
 - **E-STOP works from every station**, with or without the lease.
-- If a station loses the server, an amber banner says so. The show keeps running
+- If a station loses the server, a red banner says so. The show keeps running
   on the server; that window is simply not in control until it reconnects.
 
 The sound comes out of the server machine, not the stations.
@@ -1049,7 +1052,7 @@ folder and the app's settings file stay until you delete them.
 | --- | --- | --- |
 | The connect screen: *Could not reach ...* | No server is answering at that address | Start the server, or check the address and port. For another machine, check that the server was started with `--bind` and that the access key matches. |
 | The server will not start with `--bind 0.0.0.0:8787` | It refuses to listen beyond this machine without a key | Add `--access-key` |
-| An amber banner: the server is not reachable | This station lost the server | The show keeps running on the server. Check the network; the app reconnects by itself. |
+| A red banner: the server is not reachable | This station lost the server | The show keeps running on the server. Check the network; the app reconnects by itself. |
 | *Watching. ... holds the edit lease* | Another station is editing | **Take over** if it should be you |
 | A button is disabled | The server will not allow that action now | Hover it. It says why. |
 | *No audio output*, or the bar says the device could not be opened | The server found no output | `ptz-server --list-audio`, then start with `--audio-device`. Until then the show runs silent on the system clock. |
@@ -1064,7 +1067,7 @@ folder and the app's settings file stay until you delete them.
 | Arm is refused: *The AutoPod+ is in standby* | The leg box is switched to standby. The program never switches it on by itself. | Switch it on at the leg box |
 | Arm is refused: *Commit the song first* | Only a committed revision with no unsaved edits can be armed | Save, then Commit |
 | Arm is refused: *Fix or accept N timeline issues first* | Moves break a limit | Click the issue count in the header to go to the first one |
-| A camera is held, with a reason in amber | It strayed from the timeline, would have crossed a limit, or stopped answering | The others carry on. Disarm and Arm again to bring it back, after finding out why. |
+| A camera is held, with a reason in red | It strayed from the timeline, would have crossed a limit, or stopped answering | The others carry on. Disarm and Arm again to bring it back, after finding out why. |
 | *E-STOP LATCHED* | E-Stop was pressed | Make sure it is safe, then **Reset E-Stop** |
 | `ptz-panel`: *No panel answers at ...* | Nothing is listening on the panel's address and port | Check the address, the cable, and that the panel is in Raw Panel mode |
 | `ptz-panel`: *... took the connection but said nothing* | Something answers, but not as a Raw Panel | Switch on Raw Panel mode on the panel; make sure nothing else is connected to it |

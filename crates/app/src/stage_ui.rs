@@ -4,7 +4,7 @@
 use crate::session::Session;
 use crate::stage::{self, Key};
 use crate::theme::*;
-use egui::{vec2, Align2, PointerButton, Pos2, Rect, Sense, Stroke, Ui};
+use egui::{vec2, Align2, PointerButton, Pos2, Rect, Sense, Stroke, StrokeKind, Ui};
 use ptz_core::camera::Mount;
 use ptz_core::pose::{Pose, Units};
 use ptz_scene::mesh::Mesh;
@@ -762,13 +762,13 @@ fn paint_pad(painter: &egui::Painter, nav: Nav, buttons: &[(PadKey, egui::Respon
     for (key, resp) in buttons {
         let on = matches!(key, PadKey::Mode(mode) if *mode == nav);
         let fill = match (on, resp.is_pointer_button_down_on(), resp.hovered()) {
-            (true, _, _) => ACCENT,
+            (true, _, _) => CONTROL_LINE,
             (_, true, _) => CONTROL_LINE,
             (_, _, true) => CONTROL_HOVER,
             _ => CONTROL,
         };
         painter.rect_filled(resp.rect, RADIUS, fill);
-        let ink = if on { ink_on(ACCENT) } else { OFF_WHITE };
+        let ink = if on { ACCENT } else { OFF_WHITE };
         painter.text(resp.rect.center(), Align2::CENTER_CENTER, key.glyph(), icon_font(BODY + 3.0), ink);
     }
 }
@@ -850,9 +850,18 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
         if let Some(at) = probe.screen([lens[0], lens[1], lens[2] + 0.25]).filter(|at| rect.contains(*at)) {
             let on = i == selected;
             let text = format!("{} {}", i + 1, camera.name);
-            let ink = if on { BASE } else { camera_color(i) };
-            let fill = if on { camera_color(i) } else { plate_fill() };
-            labels[i] = crate::monitor::badge(&clipped, at + vec2(0.0, -4.0), Align2::CENTER_BOTTOM, &text, fill, ink);
+            // Every name in its camera's colour on a dark plate; the camera in hand has a rule round it too.
+            labels[i] = crate::monitor::badge(
+                &clipped,
+                at + vec2(0.0, -4.0),
+                Align2::CENTER_BOTTOM,
+                &text,
+                plate_fill(),
+                camera_color(i),
+            );
+            if on {
+                clipped.rect_stroke(labels[i], RADIUS, Stroke::new(RULE, camera_color(i)), StrokeKind::Inside);
+            }
         }
     }
     s.stage_view.labels = labels;

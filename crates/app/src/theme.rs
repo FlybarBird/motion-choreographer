@@ -1,74 +1,76 @@
-//! The look of the whole app: one palette, one type scale, one spacing unit, and the widgets drawn with them.
+//! The look of the whole app, after the Motion Choreographer brand (brand/BRAND.md): one palette, one
+//! type scale, one spacing unit, and the widgets drawn with them.
 //!
-//! It follows the Motion Choreographer brand kit (`brand/BRAND.md`). The ground is ink, divided by
-//! hairline rules, not by boxes or shadows; every corner is square. Type is Inter in two weights,
-//! with figures of one width wherever a number is read. Colour is kept for the state of the machine and
-//! means the same thing wherever it appears: red is live, green is ready, yellow is caution. Nothing
-//! else is coloured: what has the operator's attention is marked in white. Every distance is a
+//! The rules, in short. The ground is Ink and the type is Paper; greys carry structure and nothing else.
+//! Colour does a job: Signal red means live (on air, the rig follows the timeline, and E-STOP and Record,
+//! which act on it at once), green means ready (armed, the next thing to go), amber means a warning.
+//! Nothing else is coloured. Regions are divided by 1 px rules, never by boxes or shadows; corners are
+//! square. Type is Inter in two weights, 400 and 700, with labels in spaced capitals. Every distance is a
 //! multiple of [`U`].
 
 use egui::{Color32, CornerRadius, FontFamily, FontId, RichText, Stroke, StrokeKind, TextStyle};
 
-// ---------------------------------------------------------------- the kit's palette
+// ---------------------------------------------------------------- brand
 
-/// Ink: the ground, and the type on anything bright.
+/// The ground, and type on Paper.
 pub const INK: Color32 = Color32::from_rgb(0x0a, 0x0a, 0x0a);
-/// Paper: type, and what is in front or in hand.
-pub const PAPER: Color32 = Color32::from_rgb(0xff, 0xff, 0xff);
-/// Signal: live. The only accent.
+/// Type on Ink, and the primary control.
+pub const PAPER: Color32 = Color32::WHITE;
+/// Live. The keyframe. The only accent.
 pub const SIGNAL: Color32 = Color32::from_rgb(0xff, 0x30, 0x00);
-pub const GREY_300: Color32 = Color32::from_rgb(0xd4, 0xd4, 0xd4);
+/// Secondary text on dark.
 pub const GREY_400: Color32 = Color32::from_rgb(0xa3, 0xa3, 0xa3);
+/// Text that is there but not in use.
 pub const GREY_600: Color32 = Color32::from_rgb(0x6b, 0x6b, 0x6b);
+/// Rules on dark.
 pub const GREY_800: Color32 = Color32::from_rgb(0x2e, 0x2e, 0x2e);
+/// Surface on dark.
 pub const GREY_900: Color32 = Color32::from_rgb(0x16, 0x16, 0x16);
 
-// ---------------------------------------------------------------- grounds
+// -------------------------------------------- the same, by what they are for
 
-/// The window behind the panels, the wells that values are typed into, and the ink on bright plates.
-pub const BASE: Color32 = INK;
-/// Bars, rulers, tab rows. The same ground as a panel: a rule sets them apart.
+/// The wells that values are typed into, and the ground behind pictures.
+pub const BASE: Color32 = GREY_900;
+/// Bars, rulers, tab rows.
 pub const PANEL_DARK: Color32 = INK;
 /// The surface of a panel.
 pub const PANEL: Color32 = INK;
 /// Timeline lanes, alternating.
-pub const LANE: Color32 = GREY_900;
-pub const LANE_ALT: Color32 = INK;
-/// A hairline rule between regions.
+pub const LANE: Color32 = INK;
+pub const LANE_ALT: Color32 = Color32::from_rgb(0x10, 0x10, 0x10);
+/// A 1 px rule between regions.
 pub const LINE: Color32 = GREY_800;
 
 /// A control at rest, and under the pointer.
 pub const CONTROL: Color32 = GREY_900;
-pub const CONTROL_HOVER: Color32 = GREY_800;
+pub const CONTROL_HOVER: Color32 = Color32::from_rgb(0x22, 0x22, 0x22);
 /// The edge of a control.
-pub const CONTROL_LINE: Color32 = GREY_600;
+pub const CONTROL_LINE: Color32 = GREY_800;
 
 /// Text, and text that only explains.
 pub const OFF_WHITE: Color32 = PAPER;
 pub const MUTED: Color32 = GREY_400;
 
-// ------------------------------------------------------ attention and states
+// ------------------------------------------------------ signals
 
-/// What has the operator's attention: the next thing to do, the tab in front, the control in hand,
-/// what is selected. White, because colour is kept for the state of the machine.
+/// What is in hand and what to do next: Paper. The primary button, the tab in front, the selection.
 pub const ACCENT: Color32 = PAPER;
-/// Live: output reaches the rig. Also the E-Stop button, which is red on yellow and nothing else is,
-/// and Record, which writes over what was programmed.
-pub const RED: Color32 = SIGNAL;
-/// Ready: a rehearsal, which previews the show, and a rig that answers and would go live.
-pub const GREEN: Color32 = Color32::from_rgb(0x00, 0xc2, 0x4e);
+/// The accent under its older name, where it marks a selection or a lock.
+pub const BLUE: Color32 = ACCENT;
+/// The playhead while nothing reaches the rig.
+pub const PLAYHEAD: Color32 = PAPER;
 /// Caution: something is not as programmed, is on its way, or needs a decision.
 pub const AMBER: Color32 = Color32::from_rgb(0xff, 0xb8, 0x00);
-/// What has gone wrong and what is held: a fault, a held camera, a latched E-Stop, a server out of
-/// reach. Caution, and never red: while the show is live every camera is red, and the one in trouble
-/// has to stand out from them.
-pub const FAULT: Color32 = AMBER;
+/// Preview: armed, ready, next.
+pub const GREEN: Color32 = Color32::from_rgb(0x00, 0xc2, 0x4e);
+/// Program: live. E-STOP, faults and Record, which act on what is live, say it in the same red.
+pub const RED: Color32 = SIGNAL;
 
-/// What a clip on the timeline is, on its leading edge. Tones, not hues: a move, keys, sound, picture.
-pub const MOVE_CLIP: Color32 = GREY_400;
-pub const KEYS_CLIP: Color32 = PAPER;
-pub const AUDIO_CLIP: Color32 = GREY_600;
-pub const VIDEO_CLIP: Color32 = GREY_600;
+/// What a clip on the timeline is, on its leading edge. Greys: nothing but state is coloured.
+pub const MOVE_CLIP: Color32 = PAPER;
+pub const KEYS_CLIP: Color32 = Color32::from_rgb(0xd4, 0xd4, 0xd4);
+pub const AUDIO_CLIP: Color32 = GREY_400;
+pub const VIDEO_CLIP: Color32 = GREY_400;
 
 // ------------------------------------------------------------ measures
 
@@ -78,9 +80,9 @@ pub const U: f32 = 4.0;
 pub const GAP: f32 = 2.0 * U;
 /// From the edge of a panel to what is in it.
 pub const PAD: f32 = 3.0 * U;
-/// Every corner is square.
+/// Corners are square.
 pub const RADIUS: u8 = 0;
-/// A hairline, and the rule that marks what is in front or in hand.
+/// A rule, and the rule that marks what is in front or in hand.
 pub const RULE: f32 = 1.0;
 pub const RULE_STRONG: f32 = 2.0;
 /// Control heights: in a toolbar, in a form, and in the transport bar.
@@ -98,17 +100,21 @@ pub const SMALL: f32 = 11.0;
 pub const BODY: f32 = 13.0;
 pub const TITLE: f32 = 16.0;
 pub const DISPLAY: f32 = 22.0;
+pub const HERO: f32 = 28.0;
 
 pub mod icon {
     pub use egui_phosphor::regular::*;
 }
 
-const BOLD: &str = "inter-bold";
+/// Inter at 700, the brand's one other weight. The name is kept from when it was a semibold.
+const SEMIBOLD: &str = "inter-bold";
+/// Figures, in Inter. Where they change while they are read they are also set in fixed cells: see [`figures`].
+const FIGURES: &str = "inter-figures";
 const ICONS: &str = "phosphor";
 
-/// The second of the two weights, for names and headings; egui's `strong` only brightens.
-pub fn bold(size: f32) -> FontId {
-    FontId::new(size, FontFamily::Name(BOLD.into()))
+/// Heavier text for names and headings: Inter Bold.
+pub fn semibold(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Name(SEMIBOLD.into()))
 }
 
 pub fn icon_font(size: f32) -> FontId {
@@ -130,38 +136,71 @@ pub fn micro() -> FontId {
     FontId::proportional(MICRO)
 }
 
-/// Figures: timecode, positions, anything read as a number. Inter with figures of one width, so
-/// that a number does not shift as it changes.
+/// Figures: timecode, positions, anything read as a number. Inter, as everything is.
 pub fn mono(size: f32) -> FontId {
-    FontId::monospace(size)
+    FontId::new(size, FontFamily::Name(FIGURES.into()))
 }
 
-/// How far apart the letters of a label in capitals are set: 0.08 em of the smallest size.
-const TRACKING: f32 = 0.8;
+/// How far apart the letters of a label are set: 0.08 em.
+const TRACKING: f32 = 0.9;
 
-/// The name of a region, in small spaced capitals: a tab, a section, a column of a table.
+/// A label: the name of a region, a section, a column, in spaced capitals.
 pub fn caps(text: &str) -> RichText {
-    RichText::new(text.to_uppercase()).font(bold(MICRO)).extra_letter_spacing(TRACKING)
+    RichText::new(text.to_uppercase()).font(FontId::proportional(SMALL)).extra_letter_spacing(TRACKING)
+}
+
+/// Paint figures that change while they are read, each in a cell as wide as the widest figure, so that
+/// they hold still. Inter's figures are proportional, and egui cannot turn on its tabular ones.
+/// Returns the rectangle they were set in.
+pub fn figures(
+    painter: &egui::Painter,
+    at: egui::Pos2,
+    anchor: egui::Align2,
+    text: &str,
+    font: FontId,
+    color: Color32,
+) -> egui::Rect {
+    let cell = painter.layout_no_wrap("0".into(), font.clone(), color).size();
+    let narrow = |c: char| !c.is_ascii_digit() && c != '-' && c != '+' && c != ' ';
+    let width_of = |c: char| if narrow(c) { painter.layout_no_wrap(c.to_string(), font.clone(), color).size().x } else { cell.x };
+    let width: f32 = text.chars().map(width_of).sum();
+    let rect = anchor.anchor_size(at, egui::vec2(width, cell.y));
+    let mut x = rect.left();
+    for c in text.chars() {
+        let w = width_of(c);
+        painter.text(egui::pos2(x + w / 2.0, rect.top()), egui::Align2::CENTER_TOP, c, font.clone(), color);
+        x += w;
+    }
+    rect
 }
 
 fn fonts() -> egui::FontDefinitions {
+    use egui::epaint::text::{FontTweak, VariationCoords};
     let mut fonts = egui::FontDefinitions::default();
-    let mut add = |name: &str, bytes: &'static [u8]| {
-        fonts.font_data.insert(name.into(), egui::FontData::from_static(bytes).into());
+    let inter: &'static [u8] = include_bytes!("../assets/fonts/Inter-Variable.ttf");
+    let weight = |w: f32| {
+        let mut data = egui::FontData::from_static(inter);
+        data.tweak = FontTweak { coords: VariationCoords::new([(b"wght", w)]), ..Default::default() };
+        data
     };
-    add("inter", include_bytes!("../assets/fonts/Inter-Regular.ttf"));
-    add(BOLD, include_bytes!("../assets/fonts/Inter-Bold.ttf"));
-    // Inter with its tabular figures in place of the plain ones: the text layout applies no OpenType features.
-    add("inter-tabular", include_bytes!("../assets/fonts/Inter-Tabular.ttf"));
-    add(ICONS, egui_phosphor::Variant::Regular.font_bytes());
+    fonts.font_data.insert("inter".into(), weight(400.0).into());
+    fonts.font_data.insert(SEMIBOLD.into(), weight(700.0).into());
+    fonts.font_data.insert(
+        "jetbrains-mono".into(),
+        egui::FontData::from_static(include_bytes!("../assets/fonts/JetBrainsMono-Medium.ttf")).into(),
+    );
+    fonts.font_data.insert(ICONS.into(), egui::FontData::from_static(egui_phosphor::Variant::Regular.font_bytes()).into());
 
     // egui's own fonts stay behind ours for the symbols Inter does not carry.
     let fallback = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
     let with = |first: &[&str]| first.iter().map(|n| n.to_string()).chain(fallback.iter().cloned()).collect::<Vec<_>>();
     fonts.families.insert(FontFamily::Proportional, with(&["inter", ICONS]));
-    fonts.families.insert(FontFamily::Name(BOLD.into()), with(&[BOLD, ICONS]));
+    fonts.families.insert(FontFamily::Name(SEMIBOLD.into()), with(&[SEMIBOLD, ICONS]));
+    fonts.families.insert(FontFamily::Name(FIGURES.into()), with(&["inter"]));
     fonts.families.insert(FontFamily::Name(ICONS.into()), with(&[ICONS]));
-    fonts.families.insert(FontFamily::Monospace, with(&["inter-tabular", ICONS]));
+    // The log and the fields of codes keep a typewriter face, where columns have to line up.
+    let mono = fonts.families.entry(FontFamily::Monospace).or_default();
+    mono.insert(0, "jetbrains-mono".into());
     fonts
 }
 
@@ -176,51 +215,61 @@ pub fn with_alpha(c: Color32, alpha: u8) -> Color32 {
     Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), alpha)
 }
 
-/// The line of an axis's curve. Axes are told apart by their names and their lanes, not by hue.
-pub fn axis_color(_axis: ptz_core::Axis) -> Color32 {
-    GREY_300
-}
-
-/// The tag of a camera: its number is what tells it from the others.
-pub fn camera_color(_index: usize) -> Color32 {
-    GREY_300
-}
-
-/// The ink that reads on a filled plate of this colour.
-pub fn ink_on(fill: Color32) -> Color32 {
-    let luma = 0.299 * fill.r() as f32 + 0.587 * fill.g() as f32 + 0.114 * fill.b() as f32;
-    if luma > 140.0 {
-        BASE
-    } else {
-        Color32::WHITE
+/// One ink per axis, for its curve and its name: steps of grey from Paper, since nothing but state is
+/// coloured. Pan is the brightest.
+pub fn axis_color(axis: ptz_core::Axis) -> Color32 {
+    use ptz_core::Axis::*;
+    match axis {
+        Pan => PAPER,
+        Tilt => Color32::from_rgb(0xd4, 0xd4, 0xd4),
+        Zoom => Color32::from_rgb(0xb4, 0xb4, 0xb4),
+        Focus => Color32::from_rgb(0x94, 0x94, 0x94),
+        Elevation => Color32::from_rgb(0x78, 0x78, 0x78),
     }
 }
 
-/// The state of the machine as one colour, the same wherever it is shown: the rule under the transport,
-/// the clock, the playhead and the frame of a monitor. Red while output reaches the rig and follows the
-/// timeline; yellow while E-Stop is latched and while the rig travels to the playhead by itself. None
-/// in rehearsal, when nothing reaches the rig.
+/// A camera's ink, for its chip, its lane and its marker on the stage. Cameras are told apart by their
+/// numbers and names, not by colour: every camera is the same light grey.
+pub fn camera_color(_index: usize) -> Color32 {
+    Color32::from_rgb(0xd4, 0xd4, 0xd4)
+}
+
+/// The ink that reads on a filled plate of this colour: Ink on Paper, Signal, green and amber, as the
+/// brand sets labels on red; Paper on anything dark.
+pub fn ink_on(fill: Color32) -> Color32 {
+    let luma = 0.299 * fill.r() as f32 + 0.587 * fill.g() as f32 + 0.114 * fill.b() as f32;
+    if luma > 95.0 {
+        INK
+    } else {
+        PAPER
+    }
+}
+
+/// The state of the machine as one colour, the same wherever it is shown: the rules round the transport,
+/// the clock, the playhead and the frame of a monitor. Red when it is live (the rig follows the timeline
+/// as it plays) and while E-Stop is latched; green while it is armed and ready; amber while the rig
+/// travels to the playhead by itself. None in rehearsal, when nothing reaches the rig.
 pub fn machine_ink(t: &ptz_core::transport::TransportState, live: bool) -> Option<Color32> {
-    use ptz_core::transport::Output;
+    use ptz_core::transport::{Output, Run};
     if t.estop {
-        Some(FAULT)
+        Some(RED)
     } else if t.output == Output::Positioning {
         Some(AMBER)
     } else if live || t.output == Output::Armed {
-        Some(RED)
+        Some(if t.run == Run::Playing { RED } else { GREEN })
     } else {
         None
     }
 }
 
-/// The colour of the show's clock wherever it is written: the machine's state, and plain ink in rehearsal.
+/// The colour of the show's clock wherever it is written: the machine's state, and Paper in rehearsal.
 pub fn clock_ink(t: &ptz_core::transport::TransportState, live: bool) -> Color32 {
-    machine_ink(t, live).unwrap_or(OFF_WHITE)
+    machine_ink(t, live).unwrap_or(PAPER)
 }
 
-/// The colour of the playhead: the machine's state, and green in rehearsal, which previews the show.
+/// The colour of the playhead: the machine's state, and Paper in rehearsal.
 pub fn playhead_ink(t: &ptz_core::transport::TransportState, live: bool) -> Color32 {
-    machine_ink(t, live).unwrap_or(GREEN)
+    machine_ink(t, live).unwrap_or(PLAYHEAD)
 }
 
 // --------------------------------------------------------------- style
@@ -234,13 +283,13 @@ pub fn apply(ctx: &egui::Context) {
             (TextStyle::Body, FontId::proportional(BODY)),
             (TextStyle::Button, FontId::proportional(BODY)),
             (TextStyle::Monospace, FontId::monospace(BODY - 1.0)),
-            (TextStyle::Heading, bold(TITLE)),
+            (TextStyle::Heading, semibold(TITLE)),
         ]
         .into();
 
         let v = &mut style.visuals;
         v.dark_mode = true;
-        v.override_text_color = Some(OFF_WHITE);
+        v.override_text_color = None;
         v.panel_fill = PANEL;
         v.window_fill = PANEL;
         v.window_stroke = Stroke::new(RULE, CONTROL_LINE);
@@ -251,9 +300,10 @@ pub fn apply(ctx: &egui::Context) {
         v.code_bg_color = PANEL_DARK;
         v.hyperlink_color = ACCENT;
         v.warn_fg_color = AMBER;
-        v.error_fg_color = FAULT;
-        // What is switched on, chosen from a list, or selected in a field: a grey that white type still reads on.
-        v.selection.bg_fill = GREY_600;
+        v.error_fg_color = RED;
+        // What is switched on, or chosen from a list: the accent, held back so that it does not compete with the next step.
+        // What is switched on: a darker field and the accent in its words, never a filled plate.
+        v.selection.bg_fill = Color32::from_rgb(0x3a, 0x3a, 0x3a);
         v.selection.stroke = Stroke::new(RULE, PAPER);
         v.text_cursor.stroke = Stroke::new(RULE_STRONG, ACCENT);
         // A rule round a menu or a dialog sets it off; nothing casts a shadow.
@@ -268,31 +318,35 @@ pub fn apply(ctx: &egui::Context) {
         w.noninteractive.weak_bg_fill = PANEL;
         w.noninteractive.bg_stroke = Stroke::new(RULE, LINE);
         w.noninteractive.fg_stroke = Stroke::new(RULE, OFF_WHITE);
+        w.noninteractive.bg_stroke = Stroke::new(RULE, LINE);
         w.noninteractive.corner_radius = radius;
 
+        // A button at rest is its words in a 1 px rule, with no ground of its own; a field to type in is
+        // a Grey 900 well in the same rule.
         w.inactive.bg_fill = CONTROL;
-        w.inactive.weak_bg_fill = CONTROL;
-        w.inactive.bg_stroke = Stroke::new(RULE, CONTROL_LINE);
+        w.inactive.weak_bg_fill = Color32::TRANSPARENT;
+        // A control at rest is a field a shade lighter than its panel, with no rule round it.
+        w.inactive.bg_stroke = Stroke::new(RULE, GREY_800);
         w.inactive.fg_stroke = Stroke::new(RULE, OFF_WHITE);
         w.inactive.corner_radius = radius;
 
         w.hovered.bg_fill = CONTROL_HOVER;
         w.hovered.weak_bg_fill = CONTROL_HOVER;
-        w.hovered.bg_stroke = Stroke::new(RULE, MUTED);
-        w.hovered.fg_stroke = Stroke::new(RULE, Color32::WHITE);
+        w.hovered.bg_stroke = Stroke::new(RULE, GREY_400);
+        w.hovered.fg_stroke = Stroke::new(RULE, PAPER);
         w.hovered.corner_radius = radius;
         w.hovered.expansion = 0.0;
 
-        w.active.bg_fill = GREY_600;
-        w.active.weak_bg_fill = GREY_600;
-        w.active.bg_stroke = Stroke::new(RULE, ACCENT);
-        w.active.fg_stroke = Stroke::new(RULE, Color32::WHITE);
+        w.active.bg_fill = GREY_800;
+        w.active.weak_bg_fill = GREY_800;
+        w.active.bg_stroke = Stroke::new(RULE, PAPER);
+        w.active.fg_stroke = Stroke::new(RULE, PAPER);
         w.active.corner_radius = radius;
         w.active.expansion = 0.0;
 
         w.open.bg_fill = CONTROL_HOVER;
         w.open.weak_bg_fill = CONTROL_HOVER;
-        w.open.bg_stroke = Stroke::new(RULE, ACCENT);
+        w.open.bg_stroke = Stroke::new(RULE, GREY_400);
         w.open.fg_stroke = Stroke::new(RULE, OFF_WHITE);
         w.open.corner_radius = radius;
 
@@ -324,8 +378,8 @@ pub fn dock_style(egui_style: &egui::Style) -> egui_dock::Style {
     for (state, fill, text) in [
         (&mut s.tab.active, PANEL_DARK, OFF_WHITE),
         (&mut s.tab.focused, PANEL_DARK, OFF_WHITE),
-        (&mut s.tab.inactive, PANEL_DARK, MUTED),
-        (&mut s.tab.hovered, CONTROL, OFF_WHITE),
+        (&mut s.tab.inactive, PANEL_DARK, GREY_600),
+        (&mut s.tab.hovered, PANEL_DARK, OFF_WHITE),
         (&mut s.tab.active_with_kb_focus, PANEL_DARK, OFF_WHITE),
         (&mut s.tab.inactive_with_kb_focus, PANEL_DARK, OFF_WHITE),
         (&mut s.tab.focused_with_kb_focus, PANEL_DARK, OFF_WHITE),
@@ -335,13 +389,13 @@ pub fn dock_style(egui_style: &egui::Style) -> egui_dock::Style {
         state.outline_color = Color32::TRANSPARENT;
         state.corner_radius = CornerRadius::ZERO;
     }
-    s.separator.color_idle = LINE;
+    s.separator.color_idle = BASE;
     s.separator.color_hovered = ACCENT;
     s.separator.color_dragged = ACCENT;
     s.separator.width = RULE_STRONG;
     s.separator.extra_interact_width = U;
     s.main_surface_border_stroke = Stroke::NONE;
-    s.overlay.selection_color = with_alpha(ACCENT, 40);
+    s.overlay.selection_color = with_alpha(ACCENT, 70);
     s
 }
 
@@ -357,7 +411,7 @@ pub fn tab_title(title: &str) -> egui::WidgetText {
 pub fn tab_in_front(response: &egui::Response) {
     let rect = response.rect;
     let painter = response.ctx.layer_painter(response.layer_id);
-    painter.hline(rect.shrink2(egui::vec2(TAB_PADDING, 0.0)).x_range(), rect.bottom() - RULE, Stroke::new(RULE_STRONG, ACCENT));
+    painter.hline(rect.shrink2(egui::vec2(TAB_PADDING, 0.0)).x_range(), rect.bottom() - RULE, Stroke::new(RULE, PAPER));
 }
 
 // ------------------------------------------------------------- layout
@@ -434,7 +488,7 @@ pub fn dialog_frame() -> egui::Frame {
 
 /// The title of a dialog, with a hairline under it.
 pub fn dialog_title(ui: &mut egui::Ui, text: impl Into<RichText>) {
-    ui.label(text.into().font(bold(TITLE)));
+    ui.label(text.into().font(semibold(TITLE)));
     hairline(ui);
     ui.add_space(U);
 }
@@ -465,14 +519,14 @@ pub fn plate_fill() -> Color32 {
 
 /// A filled button: the answer a dialog is asking for.
 pub fn filled(label: impl Into<String>, fill: Color32) -> egui::Button<'static> {
-    egui::Button::new(RichText::new(label).font(bold(BODY)).color(ink_on(fill))).fill(fill).stroke(Stroke::NONE)
+    egui::Button::new(RichText::new(label).font(semibold(BODY)).color(ink_on(fill))).fill(fill).stroke(Stroke::NONE)
 }
 
 const CHIP_PADDING: egui::Vec2 = egui::vec2(2.0 * GAP, 2.0 * U);
 
 fn chip_job(text: &str, ink: Color32, max_width: f32) -> egui::text::LayoutJob {
-    let format = egui::TextFormat { font_id: bold(MICRO), color: ink, extra_letter_spacing: TRACKING, ..Default::default() };
-    let mut job = egui::text::LayoutJob::single_section(text.to_string(), format);
+    let format = egui::TextFormat { font_id: semibold(MICRO), color: ink, extra_letter_spacing: TRACKING, ..Default::default() };
+    let mut job = egui::text::LayoutJob::single_section(text.to_uppercase(), format);
     job.wrap = egui::text::TextWrapping::truncate_at_width((max_width - CHIP_PADDING.x).max(0.0));
     job
 }
@@ -484,7 +538,7 @@ pub fn chip_width(ui: &egui::Ui, text: &str) -> f32 {
 
 /// How high every chip is.
 pub fn chip_height(ui: &egui::Ui) -> f32 {
-    ui.ctx().fonts_mut(|f| f.row_height(&bold(MICRO))) + CHIP_PADDING.y
+    ui.ctx().fonts_mut(|f| f.row_height(&semibold(MICRO))) + CHIP_PADDING.y
 }
 
 /// A chip of state: a short word on a plate, solid when the state is one to act on.
@@ -495,8 +549,9 @@ pub fn chip(ui: &mut egui::Ui, text: &str, color: Color32, solid: bool) -> egui:
 /// A chip no wider than `max_width`: words that do not fit are cut short with an ellipsis.
 /// A screen reader, and a test, still find all of them.
 pub fn chip_within(ui: &mut egui::Ui, text: &str, color: Color32, solid: bool, max_width: f32) -> egui::Response {
+    // A tag, as the brand's LIVE: the state's colour filled, with Ink on it.
     let (fill, ink, edge) =
-        if solid { (color, ink_on(color), color) } else { (Color32::TRANSPARENT, color, with_alpha(color, 90)) };
+        if solid { (color, ink_on(color), color) } else { (Color32::TRANSPARENT, color, Color32::TRANSPARENT) };
     let galley = ui.painter().layout_job(chip_job(text, ink, max_width));
     // Sized to its word, whatever the height of the row it sits in.
     let (rect, response) = ui.allocate_exact_size(galley.size() + CHIP_PADDING, egui::Sense::hover());
@@ -519,6 +574,8 @@ pub enum Look {
     Solid(Color32),
     /// Outlined in a colour: consequential, but not the next step.
     Outline(Color32),
+    /// A plate filled with the colour: E-STOP alone.
+    Filled(Color32),
 }
 
 /// A button with an icon ahead of its label. The label alone is what a screen reader, and a test, finds.
@@ -550,10 +607,10 @@ pub fn click_only_button(
 /// on a yellow ground that nothing else in the window has: red on yellow is the emergency stop and
 /// only that. `ground` is the whole place kept for it; the button itself is `size` in its middle.
 pub fn stop_button(ui: &mut egui::Ui, glyph: &str, label: &str, ground: egui::Rect, size: egui::Vec2) -> egui::Response {
-    ui.painter().rect_filled(ground, RADIUS, AMBER);
+    hazard(ui.painter(), ground);
     let place = egui::Rect::from_center_size(ground.center(), size);
     ui.scope_builder(egui::UiBuilder::new().max_rect(place), |ui| {
-        icon_button_sensing(ui, true, glyph, label, Look::Solid(RED), size, egui::Sense::click(), TITLE - 1.0)
+        icon_button_sensing(ui, true, glyph, label, Look::Filled(RED), size, egui::Sense::click(), TITLE - 1.0)
     })
     .inner
 }
@@ -564,56 +621,89 @@ pub fn stop_latched(ui: &mut egui::Ui, text: &str, ground: egui::Vec2, size: egu
     let (ground, response) = ui.allocate_exact_size(ground, egui::Sense::hover());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, text));
     let plate = egui::Rect::from_center_size(ground.center(), size);
-    ui.painter().rect_filled(ground, RADIUS, AMBER);
+    hazard(ui.painter(), ground);
     ui.painter().rect_filled(plate, RADIUS, RED);
     let format =
-        egui::TextFormat { font_id: bold(SMALL), color: ink_on(RED), extra_letter_spacing: TRACKING, ..Default::default() };
+        egui::TextFormat { font_id: semibold(SMALL), color: ink_on(RED), extra_letter_spacing: TRACKING, ..Default::default() };
     let galley = ui.painter().layout_job(egui::text::LayoutJob::single_section(text.to_string(), format));
     ui.painter().galley(plate.center() - galley.size() / 2.0, galley, ink_on(RED));
     response
 }
 
+/// The ground kept round E-STOP: black and yellow stripes, which nothing else in the window has.
+pub fn hazard(painter: &egui::Painter, ground: egui::Rect) {
+    let p = painter.with_clip_rect(ground.intersect(painter.clip_rect()));
+    p.rect_filled(ground, 0.0, Color32::from_rgb(0x14, 0x14, 0x14));
+    let (step, width) = (10.0, 5.0);
+    let mut x = ground.left() - ground.height();
+    while x < ground.right() {
+        let stripe = vec![
+            egui::pos2(x, ground.bottom()),
+            egui::pos2(x + width, ground.bottom()),
+            egui::pos2(x + width + ground.height(), ground.top()),
+            egui::pos2(x + ground.height(), ground.top()),
+        ];
+        p.add(egui::Shape::convex_polygon(stripe, AMBER, Stroke::NONE));
+        x += step;
+    }
+}
+
 fn icon_button_sensing(
     ui: &mut egui::Ui,
     enabled: bool,
-    glyph: &str,
+    _glyph: &str,
     label: &str,
     look: Look,
     min_size: egui::Vec2,
     sense: egui::Sense,
     text_size: f32,
 ) -> egui::Response {
-    let id = egui::Id::new("icon_button_glyph");
-    let size = text_size + 3.0;
-    let ink = match look {
-        Look::Solid(c) if enabled => ink_on(c),
-        Look::Outline(c) if enabled => c,
-        _ => OFF_WHITE,
+    // Words only, in Inter Bold capitals, as the brand sets its buttons: a filled plate for the thing to do
+    // next and for GO, a 1 px rule round the others. The glyph is kept by the callers and not drawn.
+    let painter = ui.painter().clone();
+    let words = |ink: Color32| {
+        let format = egui::TextFormat {
+            font_id: semibold(text_size - 2.0),
+            color: ink,
+            extra_letter_spacing: TRACKING,
+            ..Default::default()
+        };
+        painter.layout_job(egui::text::LayoutJob::single_section(label.to_uppercase(), format))
     };
-    let text = RichText::new(label).color(ink);
-    let text = if matches!(look, Look::Solid(_)) { text.font(bold(text_size)) } else { text.size(text_size) };
-    let mut button = egui::Button::new((egui::Atom::custom(id, egui::vec2(size, size)), text)).min_size(min_size).sense(sense);
-    match look {
-        Look::Solid(c) if enabled => button = button.fill(c).stroke(Stroke::NONE),
-        Look::Outline(c) if enabled => button = button.fill(with_alpha(c, 18)).stroke(Stroke::new(RULE, c)),
-        Look::Quiet => button = button.frame_when_inactive(false),
-        _ => {}
-    }
+    let probe = words(PAPER);
+    let want = (probe.size() + egui::vec2(2.0 * PAD, 2.0 * U)).max(min_size).max(egui::vec2(0.0, ui.spacing().interact_size.y));
     ui.add_enabled_ui(enabled, |ui| {
-        let r = button.atom_ui(ui);
-        if let Some(rect) = r.rect(id) {
-            let ink = if enabled { ink } else { ui.visuals().widgets.noninteractive.fg_stroke.color.gamma_multiply(0.4) };
-            ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, glyph, icon_font(size), ink);
+        let (rect, response) = ui.allocate_exact_size(want, sense);
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label));
+        if ui.is_rect_visible(rect) {
+            let hot = enabled && response.hovered();
+            let down = enabled && response.is_pointer_button_down_on();
+            let (fill, edge, ink) = match look {
+                _ if !enabled => (Color32::TRANSPARENT, GREY_800, GREY_600),
+                Look::Solid(c) | Look::Filled(c) => (if down { mix(c, INK, 0.2) } else { c }, Color32::TRANSPARENT, ink_on(c)),
+                Look::Outline(c) => (if down { with_alpha(c, 40) } else { Color32::TRANSPARENT }, c, c),
+                Look::Plain => (if down { GREY_800 } else { Color32::TRANSPARENT }, if hot { PAPER } else { GREY_800 }, PAPER),
+                Look::Quiet => {
+                    (if down { GREY_800 } else { Color32::TRANSPARENT }, Color32::TRANSPARENT, if hot { PAPER } else { GREY_400 })
+                }
+            };
+            let p = ui.painter();
+            p.rect(rect, 0.0, fill, Stroke::new(RULE, edge), StrokeKind::Inside);
+            let galley = words(ink);
+            p.galley(rect.center() - galley.size() / 2.0, galley, ink);
+            if response.has_focus() {
+                p.rect_stroke(rect.expand(2.0), 0.0, Stroke::new(RULE, PAPER), StrokeKind::Inside);
+            }
         }
-        r.response
+        response
     })
     .inner
 }
 
 /// A small square in a colour with a figure on it: a camera's number, wherever the camera is named.
 pub fn number_tag(painter: &egui::Painter, rect: egui::Rect, number: usize, color: Color32) {
-    painter.rect_filled(rect, RADIUS, color);
-    painter.text(rect.center(), egui::Align2::CENTER_CENTER, format!("{number}"), bold(SMALL), ink_on(color));
+    painter.rect_stroke(rect.shrink(0.5), RADIUS, Stroke::new(RULE, color), StrokeKind::Inside);
+    painter.text(rect.center(), egui::Align2::CENTER_CENTER, format!("{number}"), semibold(SMALL), color);
 }
 
 /// The size of a [`number_tag`] in a row of text.
@@ -623,6 +713,6 @@ pub const NUMBER_TAG: egui::Vec2 = egui::vec2(5.0 * U, 4.0 * U + 2.0);
 pub fn level_bar(ui: &mut egui::Ui, width: f32) -> (egui::Rect, egui::Painter) {
     let (bar, _) = ui.allocate_exact_size(egui::vec2(width, U), egui::Sense::hover());
     let painter = ui.painter().clone();
-    painter.rect_filled(bar, 0.0, LINE);
+    painter.rect_filled(bar, 0.0, BASE);
     (bar, painter)
 }

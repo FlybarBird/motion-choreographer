@@ -76,9 +76,9 @@ pub fn lock_menu(ui: &mut Ui, s: &mut Session) {
 pub fn state_chips(ui: &mut Ui, s: &Session, row: f32) {
     let t = s.status.transport;
     let output = match t.output {
-        Output::Rehearse => chip(ui, "REHEARSE", GREEN, false).on_hover_text("Nothing is sent to the rig"),
+        Output::Rehearse => chip(ui, "REHEARSE", MUTED, false).on_hover_text("Nothing is sent to the rig"),
         Output::Positioning => chip(ui, "ARMING", AMBER, true).on_hover_text("The rig is moving to the pose at the playhead"),
-        Output::Armed => chip(ui, "ARMED", RED, true).on_hover_text("Play moves the rig"),
+        Output::Armed => chip(ui, "ARMED", GREEN, true).on_hover_text("Play moves the rig"),
     };
     let gap = ui.spacing().item_spacing.x;
     let rec = if t.record { chip_width(ui, "REC") + gap } else { 0.0 };
@@ -90,7 +90,7 @@ pub fn state_chips(ui: &mut Ui, s: &Session, row: f32) {
             let name = lock.source.as_deref().map(|src| source_name(s, src)).unwrap_or_else(|| "code".into());
             let (word, color, solid) = match (lock.chase, t.run) {
                 (_, Run::WaitingForCode) => ("WAITING FOR", AMBER, true),
-                (ChaseState::Locked, _) => ("LOCKED TO", ACCENT, true),
+                (ChaseState::Locked, _) => ("LOCKED TO", BLUE, true),
                 (ChaseState::Freewheel, _) => ("FREEWHEEL", AMBER, true),
                 _ => ("LOCK:", MUTED, false),
             };

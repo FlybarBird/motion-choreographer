@@ -78,21 +78,9 @@ count, and at the right the edit lease and the View menu.
 Stop, Cue, Lock, Arm or Disarm, Record, the state chips, a one-line hint, the
 audio meters, and E-STOP at the far right.
 
-**Camera bar** (third row): one chip per camera with its number, and a dot
+**Camera bar** (third row): one chip per camera in its own colour, with a dot
 for its state. Click a chip to select that camera. Hover it for detail. At its
 right end is **Show settings**.
-
-**Colour** is kept for the state of the machine, and means the same thing
-wherever it appears:
-
-| Colour | Meaning | Where |
-| --- | --- | --- |
-| Red | Live: output reaches the rig | The clock, the rule under the transport, the playhead, the frame of a monitor, *ARMED*, a camera's dot, Play while armed. Also the E-STOP button, which alone is red on yellow, and Record |
-| Green | Ready: a rehearsal, which previews the show, and a rig that answers | *REHEARSE*, the Rehearse button, the playhead in rehearsal, a camera's dot |
-| Amber | Caution: something is wrong, held, on its way, or needs a decision | A fault, a held camera, a latched E-Stop, a lost server, the rig travelling to the playhead, an issue, *unsaved* |
-
-Everything else is white and grey: what is selected, in front or next to do is
-marked in white, not in a colour.
 
 **Tabs.** The rest of the window is panels you can drag by their tabs, split
 and regroup. **View > Reset layout** puts them back.
@@ -194,7 +182,7 @@ start on the timeline.
 ### The lanes
 
 From the top: the ruler, **Markers**, **Reference video**, **Audio**, then one
-**Camera move** lane for each camera, with its number. The
+**Camera move** lane for each camera, in its colour and with its number. The
 triangle on a camera's lane opens its five axis lanes: Pan, Tilt, Zoom, Focus
 and Elevation.
 
@@ -525,7 +513,7 @@ The header shows the state:
 | Chip | Meaning |
 | --- | --- |
 | *never committed* | No revision exists yet. Cannot be armed. |
-| *revision 3* | What is open is exactly revision 3. Can be armed. |
+| *revision 3* (green) | What is open is exactly revision 3. Can be armed. |
 | *revision 3 + edits* | Revision 3 with changes since. Save and Commit to make revision 4. |
 | *unsaved* (amber) | Changes since the last Save |
 
@@ -583,7 +571,7 @@ tolerance.
 ### When a camera is held
 
 A camera's rig is held where it is and its output is cut, with the reason in
-amber on the bar and in the Rig controller tab, when:
+red on the bar and in the Rig controller tab, when:
 
 - an axis stays further from the timeline than its tolerance for longer than
   the tracking window (2 degrees of pan and tilt for half a second, unless the
@@ -637,7 +625,7 @@ issues is loaded into an armed show; the others say why on their row.
 
 1. Start the server on the show's data folder. Open the app. Take the lease.
 2. Check the camera bar: every real camera connected, none *no answer*.
-3. Load the first song. The header should read *revision N*, with no
+3. Load the first song. The header should read *revision N* in green, with no
    issue count. If it says *+ edits* or *unsaved*, decide now: Commit it or
    Revert it.
 4. If the show is locked: **Lock**, choose the source, and check code arrives.
@@ -648,8 +636,8 @@ issues is loaded into an armed show; the others say why on their row.
 
 6. **Play Live** on the cue, or **Play to code** beforehand and let the
    timecode start the song.
-7. Watch Multiview and the camera bar. A held camera turns amber; the others
-   stay red and carry on.
+7. Watch Multiview and the camera bar. A held camera shows in red; the others
+   carry on.
 8. Between songs: **Stop**, then **Next** on the Set list tab or Page Down, and
    wait for **ARMED**. Check every song's revision on the Set list tab before
    doors. With **Follow timecode** on and Play to code pressed, the timecode

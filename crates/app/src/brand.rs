@@ -1,64 +1,60 @@
-//! The Motion Choreographer mark and lockup, drawn from the brand kit's own files (`brand/`), so that
-//! the wordmark is the kit's outlines and not type set here.
+//! The Motion Choreographer mark and lockup, as the window draws them, and the app's icon.
+//! The pictures are the brand kit's own (brand/logo, brand/icon), bundled with the app.
 
-use egui::{Color32, ColorImage, Rect, Response, Sense, TextureHandle, TextureOptions, Ui};
+use egui::{Context, TextureHandle, TextureOptions};
 
-/// The name of the product, wherever it is written.
+/// The product's name, as the brand writes it.
 pub const NAME: &str = "Motion Choreographer";
+/// The line that goes under the name.
+pub const DESCRIPTOR: &str = "PTZ and camera animation for live production";
 
-/// The mark with heavier stems, which the kit asks for at 24 px and below. White with the red keyframe.
-const MARK_SMALL: &[u8] =
-    include_bytes!("../../../brand/logo/mark-small/png/motion-choreographer-mark-small-color-reversed-48px.png");
-/// The primary lockup: the mark and the name on two lines. White with the red keyframe.
-const LOCKUP: &[u8] =
-    include_bytes!("../../../brand/logo/lockup-horizontal/png/motion-choreographer-lockup-horizontal-color-reversed-256px.png");
-/// The app icon as a full square, for the window where the system asks for one.
-#[cfg(not(target_os = "macos"))]
-const ICON: &[u8] = include_bytes!("../../../brand/icon/png/app-icon-256.png");
+const MARK: &[u8] = include_bytes!("../assets/brand/mark-reversed-128.png");
+const LOCKUP: &[u8] = include_bytes!("../assets/brand/lockup-reversed-256.png");
+const ICON: &[u8] = include_bytes!("../assets/brand/app-icon-256.png");
 
-fn decode(png: &[u8]) -> ColorImage {
-    let picture = image::load_from_memory(png).expect("the brand kit's pictures are PNG files").to_rgba8();
-    ColorImage::from_rgba_unmultiplied([picture.width() as usize, picture.height() as usize], picture.as_raw())
+fn decode(bytes: &[u8]) -> Option<egui::ColorImage> {
+    let image = image::load_from_memory(bytes).ok()?.to_rgba8();
+    let size = [image.width() as usize, image.height() as usize];
+    Some(egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw()))
 }
 
-/// A picture of the kit as a texture, made the first time it is drawn.
-fn texture(ctx: &egui::Context, name: &'static str, png: &'static [u8]) -> TextureHandle {
+fn texture(ctx: &Context, name: &'static str, bytes: &'static [u8]) -> Option<TextureHandle> {
     let id = egui::Id::new(("brand", name));
-    if let Some(made) = ctx.data(|d| d.get_temp::<TextureHandle>(id)) {
-        return made;
+    if let Some(t) = ctx.data(|d| d.get_temp::<TextureHandle>(id)) {
+        return Some(t);
     }
-    let smooth = TextureOptions { mipmap_mode: Some(egui::TextureFilter::Linear), ..TextureOptions::LINEAR };
-    let made = ctx.load_texture(name, decode(png), smooth);
-    ctx.data_mut(|d| d.insert_temp(id, made.clone()));
-    made
+    let t = ctx.load_texture(name, decode(bytes)?, TextureOptions::LINEAR);
+    ctx.data_mut(|d| d.insert_temp(id, t.clone()));
+    Some(t)
 }
 
-fn show(ui: &mut Ui, name: &'static str, png: &'static [u8], height: f32) -> Response {
-    let texture = texture(ui.ctx(), name, png);
-    let [w, h] = texture.size();
-    let size = egui::vec2(height * w as f32 / h as f32, height);
-    let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
+/// The mark: a keyframe held in an M, for dark grounds.
+pub fn mark(ctx: &Context) -> Option<TextureHandle> {
+    texture(ctx, "brand-mark", MARK)
+}
+
+/// The primary lockup, mark and name on two lines, for dark grounds.
+pub fn lockup(ctx: &Context) -> Option<TextureHandle> {
+    texture(ctx, "brand-lockup", LOCKUP)
+}
+
+/// The app icon, for the window.
+pub fn window_icon() -> Option<egui::IconData> {
+    let image = image::load_from_memory(ICON).ok()?.to_rgba8();
+    Some(egui::IconData { width: image.width(), height: image.height(), rgba: image.into_raw() })
+}
+
+/// Draw the mark `height` high at the cursor. A picture that a test, and a screen reader, find by the name.
+pub fn mark_widget(ui: &mut egui::Ui, height: f32) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(height, height), egui::Sense::hover());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, NAME));
-    if ui.is_rect_visible(rect) {
-        let whole = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-        ui.painter().image(texture.id(), rect, whole, Color32::WHITE);
+    if let Some(t) = mark(ui.ctx()) {
+        ui.painter().image(
+            t.id(),
+            rect,
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            egui::Color32::WHITE,
+        );
     }
     response
-}
-
-/// The mark alone, for where the name is already on the screen.
-pub fn mark(ui: &mut Ui, height: f32) -> Response {
-    show(ui, "mark-small", MARK_SMALL, height)
-}
-
-/// The mark and the name, flush left.
-pub fn lockup(ui: &mut Ui, height: f32) -> Response {
-    show(ui, "lockup", LOCKUP, height)
-}
-
-/// The icon of the window.
-#[cfg(not(target_os = "macos"))]
-pub fn window_icon() -> egui::IconData {
-    let picture = decode(ICON);
-    egui::IconData { width: picture.width() as u32, height: picture.height() as u32, rgba: picture.as_raw().to_vec() }
 }

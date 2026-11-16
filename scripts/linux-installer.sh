@@ -79,8 +79,11 @@ if [ "$KIND" = server ]; then
 fi
 
 BIN="$PREFIX/bin"
+# These keep the names from before the app was renamed, so that an older install is found,
+# upgraded in place and removed.
 SHARE="$PREFIX/share/ptz-programmer"
 DESKTOP="$PREFIX/share/applications/ptz-programmer.desktop"
+ICON="$SHARE/app-icon-256.png"
 
 # Each part keeps a list of what it installed, so that removing it removes exactly that.
 remove_part() {
@@ -155,13 +158,17 @@ missing_libraries() {
 if [ "$KIND" = app ]; then
   : >"$SHARE/installed-app.txt.new"
   put app "$WORK/app/bin/ptz-app" "$BIN/ptz-app"
+  cp "$WORK/app/share/app-icon-256.png" "$ICON"
+  chmod 644 "$ICON"
+  printf '%s\n' "$ICON" >>"$SHARE/installed-app.txt.new"
   mkdir -p "$(dirname "$DESKTOP")"
   cat >"$DESKTOP" <<ENTRY
 [Desktop Entry]
 Type=Application
 Name=Motion Choreographer
-Comment=PTZ and camera animation for live production
+Comment=Timeline programming and playout for PTZ cameras
 Exec="$BIN/ptz-app"
+Icon=$ICON
 Terminal=false
 Categories=AudioVideo;Video;
 ENTRY
