@@ -27,3 +27,10 @@ are under the Mozilla Public License 2.0: their source is unmodified and is
 available from <https://crates.io>. None is under a GPL-only licence.
 
 `cargo tree --format "{p} {l}"` lists every crate with its licence.
+
+## Render comparison prototype
+
+The standalone study in `design/render-prototype` includes Three.js 0.170.0
+under the MIT licence; its licence is in
+`design/render-prototype/vendor/THREE-LICENSE.txt`. It is not linked into the
+desktop app.

@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Motion Choreographer · Render study</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+    <header><div><p class="eyebrow">MOTION CHOREOGRAPHER / DESIGN STUDY 01</p><h1>A clearer view of the stage.</h1><p class="intro">Compare the existing stage with a small model and lighting experiment.</p></div><span class="status">Local prototype</span></header>
+    <section class="controls" aria-label="Comparison controls">
+      <label>View<select id="view"><option value="home">Camera 1 · wide</option><option value="lectern">Lectern · close</option><option value="overview">Stage overview</option><option value="rig">Camera model</option></select></label>
+      <fieldset><legend>Candidate geometry</legend><div class="segmented"><label><input type="radio" name="geometry" value="simple"><span>Current blocks</span></label><label><input type="radio" name="geometry" value="detailed" checked><span>Rounded models</span></label></div></fieldset>
+      <fieldset><legend>Candidate lighting</legend><div class="segmented"><label><input type="radio" name="lighting" value="simple"><span>Simple shading</span></label><label><input type="radio" name="lighting" value="studio" checked><span>Materials + shadows</span></label></div></fieldset>
+      <button id="reset" type="button">Reset view</button>
+    </section>
+    <div class="comparison">
+      <section class="card"><div class="card-title"><div><span class="kicker">REFERENCE</span><h2 id="reference-title">Current app · CPU capture</h2></div><span class="tag" id="reference-tag">960 × 540</span></div><div class="viewport" id="reference"><img id="cpu-image" alt="Current CPU renderer at the selected camera framing"><div class="viewport-label" id="baseline-label">Original geometry and renderer</div></div><p class="caption" id="reference-caption">An actual still from the current Rust renderer, at exactly the same lens and position.</p></section>
+      <section class="card"><div class="card-title"><div><span class="kicker candidate">EXPERIMENT</span><h2>WebGL · live preview</h2></div><span class="tag mint" id="candidate-tag">Rounded + materials</span></div><div class="viewport" id="candidate"><canvas id="candidate-canvas" aria-label="Interactive candidate stage rendering"></canvas><div class="viewport-label" id="view-label">Camera 1 · wide</div><div class="error" id="error" hidden></div></div><p class="caption" id="candidate-caption">Same stage dimensions, subject marks, camera position and field of view.</p></section>
+    </div>
+    <section class="readout" aria-label="Preview information"><div><span class="readout-label">FRAMING</span><strong id="framing">Loading…</strong></div><div><span class="readout-label">CANDIDATE GEOMETRY</span><strong id="triangles">—</strong></div><div><span class="readout-label">LOCAL PREVIEW</span><strong id="timing">—</strong></div><div><span class="readout-label">INTERACTION</span><strong id="interaction">Select a shot to compare</strong></div></section>
+    <div class="notes"><p><strong>What to look for</strong><br>Rounded subjects help judge headroom. Shadows anchor people and cameras to the floor. The PTZ model makes the lens direction and ceiling mount easier to read.</p><p><strong>What this comparison proves</strong><br>Visual direction only. Browser timings depend on this machine and can include software rendering. This does not measure the native app, imported venues, or twelve simultaneous previews.</p></div>
+    <footer><span>Experimental models generated in code · Three.js r170 · No external assets</span><span>The production renderer is unchanged.</span></footer>
+  </main>
+  <script type="module" src="prototype.js"></script>
+</body>
+</html>
