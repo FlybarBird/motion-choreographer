@@ -665,6 +665,31 @@ impl Project {
         }
     }
 
+    /// Lowest and highest height measured on this camera's column, in millimetres.
+    pub fn measured_span(&self, camera: &CameraConfig) -> Option<(f64, f64)> {
+        let map = self.height_map(camera);
+        let measured = map.len() >= 2 && map.iter().any(|p| p.raw != map[0].raw);
+        if !(camera.has_column() && measured) {
+            return None;
+        }
+        let low = map.iter().map(|p| p.mm).fold(f64::INFINITY, f64::min);
+        let high = map.iter().map(|p| p.mm).fold(f64::NEG_INFINITY, f64::max);
+        (high - low > 1.0).then_some((low, high))
+    }
+
+    /// 0 is the lowest measured height and 100 the highest. A value already inside that
+    /// travel is left as millimetres; one from 0 to 100 is a share of it.
+    pub fn column_mm(&self, camera: &CameraConfig, elevation: f64) -> Option<f64> {
+        let (low, high) = self.measured_span(camera)?;
+        if elevation >= low - 50.0 {
+            Some(elevation)
+        } else if (0.0..=100.0).contains(&elevation) {
+            Some(low + elevation / 100.0 * (high - low))
+        } else {
+            None
+        }
+    }
+
     /// The rig the server builds for a camera: the camera's own, with the project's height
     /// map where it has none.
     pub fn rig_of(&self, camera: &CameraConfig) -> RigConfig {

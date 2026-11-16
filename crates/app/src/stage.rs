@@ -192,9 +192,26 @@ fn build(model: Option<Arc<Mesh>>, stage: Stage) -> Built {
 
 /// How a camera's lens looks at the world for a pose.
 pub fn view_of(camera: &CameraConfig, pose: &Pose) -> Camera {
-    let eye = camera.mount.lens_position(pose.elevation).map(|v| v as f32);
+    look_from(camera, pose, camera.mount.lens_position(pose.elevation))
+}
+
+/// The same view with the lens at a measured column height, in millimetres above the floor.
+pub fn view_at_height(camera: &CameraConfig, pose: &Pose, height_mm: f64) -> Camera {
+    look_from(camera, pose, camera.mount.lens_at_height(height_mm))
+}
+
+/// What the stage and the monitors use: a column with a height map stands at that measured
+/// height, and 0 to 100 is a share of it. Anything else keeps the mount's own base height.
+pub fn show_view(project: &Project, camera: &CameraConfig, pose: &Pose) -> Camera {
+    match project.column_mm(camera, pose.elevation) {
+        Some(mm) => view_at_height(camera, pose, mm),
+        None => view_of(camera, pose),
+    }
+}
+
+fn look_from(camera: &CameraConfig, pose: &Pose, eye: [f64; 3]) -> Camera {
     let (yaw, pitch) = camera.mount.view(pose);
-    Camera::look(eye, yaw as f32, pitch as f32, camera.lens.hfov_deg(pose.zoom) as f32)
+    Camera::look(eye.map(|v| v as f32), yaw as f32, pitch as f32, camera.lens.hfov_deg(pose.zoom) as f32)
 }
 
 /// Distinct from the housing and trim so both renderers can give the optical glass its own material.
@@ -203,7 +220,16 @@ const CAMERA_GLASS: [u8; 3] = [32, 71, 96];
 /// A rounded PTZ head with a lens barrel, tilt yoke and pedestal or ceiling suspension.
 /// Only the head tilts; the yoke pans and the support stays fixed at the attachment.
 pub fn marker(mount: &Mount, pose: &Pose, color: [u8; 3]) -> Mesh {
-    let [x, y, lens_z] = mount.lens_position(pose.elevation).map(|v| v as f32);
+    marker_at(mount, pose, color, None)
+}
+
+/// `height_mm` is the lens height above the floor. Without it the mount's base height is used.
+pub fn marker_at(mount: &Mount, pose: &Pose, color: [u8; 3], height_mm: Option<f64>) -> Mesh {
+    let eye = match height_mm {
+        Some(mm) => mount.lens_at_height(mm),
+        None => mount.lens_position(pose.elevation),
+    };
+    let [x, y, lens_z] = eye.map(|v| v as f32);
     let attachment = mount.z as f32;
     let direction = if mount.inverted { -1.0 } else { 1.0 };
     let mut m = Mesh::default();
@@ -577,7 +603,11 @@ impl World {
 
     /// Distance from a camera's lens to what the centre of its picture rests on.
     pub fn centre_distance(&self, camera: &CameraConfig, pose: &Pose) -> Option<f32> {
-        let view = view_of(camera, pose);
+        self.distance_along(&view_of(camera, pose))
+    }
+
+    /// How far the centre of a view goes before it meets the stage.
+    pub fn distance_along(&self, view: &Camera) -> Option<f32> {
         self.picker().hit(view.eye, view.forward).map(|h| h.distance)
     }
 
@@ -711,7 +741,7 @@ pub fn camera_picture(
     urgent: bool,
 ) -> Option<egui::TextureId> {
     let camera = s.project.cameras.get(index)?;
-    let view = view_of(camera, poses.get(index)?);
+    let view = show_view(&s.project, camera, poses.get(index)?);
     let key = camera_key(&s.project, poses, index, &view);
     let project = &s.project;
     s.world.scene_picture(
@@ -728,7 +758,7 @@ pub fn camera_picture(
                 .enumerate()
                 .map(|(i, camera)| {
                     let pose = poses.get(i).copied().unwrap_or_else(Pose::home);
-                    marker(&camera.mount, &pose, rgb(crate::theme::camera_color(i)))
+                    marker_at(&camera.mount, &pose, rgb(crate::theme::camera_color(i)), project.column_mm(camera, pose.elevation))
                 })
                 .collect()
         },

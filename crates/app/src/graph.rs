@@ -770,21 +770,23 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
     if resp.double_clicked() {
         if let (Some(p), Some(c)) = (pointer, &clip) {
             if let Hit::Curve { axis, frame } = hit(&plot, &song, clip.as_ref(), &s.graph, &s.timeline.key_selection, p) {
-                let (id, local) = (c.id.clone(), frame.round() as i64 - c.start_frame);
-                if c.is_keys() {
-                    if s.edit(|song, project| edit::add_key_at(song, project, &id, axis, local, None)) {
-                        let index = s
-                            .song
-                            .as_ref()
-                            .and_then(|x| x.motion_clip(&id))
-                            .and_then(|c| c.keys(axis).iter().position(|k| k.frame == local));
+                let camera = c.camera.clone();
+                let at = frame.round() as i64;
+                if s.edit(|song, project| edit::add_key(song, project, &camera, &[axis], at)) {
+                    let index = s.song.as_ref().and_then(|song| {
+                        song.motion
+                            .iter()
+                            .find(|m| m.camera == camera && m.has_axis(axis) && m.start_frame <= at && at <= m.end_frame())
+                    });
+                    if let Some(clip) = index {
+                        let local = at - clip.start_frame;
+                        let id = clip.id.clone();
+                        let key = clip.keys(axis).iter().position(|k| k.frame == local);
                         s.timeline.key_selection.clear();
-                        if let Some(index) = index {
-                            s.timeline.key_selection.insert((id, axis, index));
+                        if let Some(key) = key {
+                            s.timeline.key_selection.insert((id, axis, key));
                         }
                     }
-                } else {
-                    s.toast("Convert this preset move to keys to add keys to it", true);
                 }
             }
         }
@@ -912,21 +914,41 @@ fn paint(painter: &Painter, plot: &Plot, song: &Song, clip: Option<&MotionClip>,
         paint_speed(painter, plot, s, &pg);
     } else {
         let (lo, hi) = plot.ranges[active.index()];
-        // Lines fall on round numbers of what is read: inches for an elevation shown in inches.
+        // Lines fall on round numbers of what is read. A column with a height map is read
+        // from 0 at its lowest measured height to 100 at its highest.
         let units = s.project.units;
-        let per = if active == Axis::Elevation { units.mm_per_short() } else { 1.0 };
-        let step = nice_step((hi - lo) / per, (plot.body.height() / 42.0).max(2.0) as f64) * per;
-        let mut v = (lo / step).ceil() * step;
-        while v <= hi {
-            let y = plot.y_of(active, v);
+        let span = (active == Axis::Elevation)
+            .then(|| s.project.camera(&s.cam_id().to_string()).and_then(|c| s.project.measured_span(c)))
+            .flatten();
+        let (per, to_mm, label): (f64, Box<dyn Fn(f64) -> f64>, Box<dyn Fn(f64) -> String>) = match span {
+            Some((low, high)) => {
+                (1.0, Box::new(move |share| low + share / 100.0 * (high - low)), Box::new(|share| format!("{share:.0}")))
+            }
+            None => {
+                let per = if active == Axis::Elevation { units.mm_per_short() } else { 1.0 };
+                (per, Box::new(|v| v), Box::new(move |v| active.format_in(v, units)))
+            }
+        };
+        let (shown_lo, shown_hi) = match span {
+            Some((low, high)) => ((lo - low) / (high - low) * 100.0, (hi - low) / (high - low) * 100.0),
+            None => (lo / per, hi / per),
+        };
+        let step = nice_step(shown_hi - shown_lo, (plot.body.height() / 42.0).max(2.0) as f64);
+        let mut shown = (shown_lo / step).ceil() * step;
+        while shown <= shown_hi + step * 0.01 {
+            let y = plot.y_of(active, to_mm(shown));
             pb.hline(plot.body.x_range(), y, Stroke::new(RULE, with_alpha(LINE, 130)));
-            pg.text(pos2(gutter.right() - GAP, y), Align2::RIGHT_CENTER, active.format_in(v, units), mono(MICRO), ink);
-            v += step;
+            pg.text(pos2(gutter.right() - GAP, y), Align2::RIGHT_CENTER, label(shown), mono(MICRO), ink);
+            shown += step;
         }
+        let unit = match span {
+            Some(_) => "0–100",
+            None => active.unit_in(units),
+        };
         painter.text(
             pos2(plot.rect.left() + GAP, plot.ruler.center().y),
             Align2::LEFT_CENTER,
-            format!("{} ({})", active.label(), active.unit_in(units)),
+            format!("{} ({unit})", active.label()),
             small(),
             ink,
         );

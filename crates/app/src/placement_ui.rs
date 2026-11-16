@@ -45,7 +45,7 @@ fn preview(ui: &mut Ui, s: &mut Session) {
     let (pose, _) = s.monitor_pose();
     let mut poses = s.poses();
     poses[index] = pose;
-    let camera = crate::stage::view_of(s.cam(), &pose);
+    let camera = crate::stage::show_view(&s.project, s.cam(), &pose);
     s.stage_view.placement_preview = Some(Probe { rect, camera });
     let size = crate::stage::pixel_size(rect, ui.ctx().pixels_per_point(), 720.0);
     let texture = crate::stage::camera_picture(ui.ctx(), s, "placement", index, &poses, size, true);

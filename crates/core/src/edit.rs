@@ -438,15 +438,17 @@ pub fn add_key(song: &Song, project: &Project, camera: &str, axes: &[Axis], fram
             })
             .map(|c| (c.id.clone(), c.is_keys(), frame < c.end_frame()));
         if let Some((id, is_keys, strictly)) = covering {
-            if is_keys {
+            if is_keys || strictly {
+                // A preset move becomes keys, so a key can be added on it by hand.
+                if !is_keys {
+                    to_keys_in_place(&mut next, &id)?;
+                }
                 let c = motion_mut(&mut next, &id)?;
                 let local = frame - c.start_frame;
                 if let ClipBody::Keys { curves } = &mut c.body {
                     insert_key_sorted(curves.entry(axis).or_default(), local, value);
                 }
                 continue;
-            } else if strictly {
-                return Err(Refusal::ConvertFirst(axis));
             }
         }
         // Extend the previous keys clip if nothing is in the way on any of its axes.
@@ -1098,10 +1100,13 @@ mod tests {
     }
 
     #[test]
-    fn key_under_a_preset_move_asks_for_conversion() {
+    fn key_under_a_preset_move_turns_it_into_keys_and_adds_the_key() {
         let (song, p) = base();
         let (song, _) = insert_preset_move(&song, &p, &preset("A", 35.0, 250.0), 20).unwrap();
-        assert_eq!(add_key(&song, &p, CAM, &[Axis::Pan], 30).unwrap_err(), Refusal::ConvertFirst(Axis::Pan));
+        let song = add_key(&song, &p, CAM, &[Axis::Pan], 30).unwrap();
+        assert!(song.motion[0].is_keys());
+        assert!(song.motion[0].keys(Axis::Pan).iter().any(|k| k.frame == 10));
+        assert!((pose_at(&song, CAM, 30).pan - pose_at(&song, CAM, 20).pan).abs() < 35.0);
     }
 
     #[test]
@@ -1232,7 +1237,8 @@ mod tests {
         let keyed = add_key(&song, &p, "cam2", &[Axis::Pan], 200).unwrap();
         assert_eq!(keyed.motion.len(), 2);
         assert_eq!(keyed.motion[1].camera, "cam2");
-        assert_eq!(add_key(&song, &p, CAM, &[Axis::Pan], 200).unwrap_err(), Refusal::ConvertFirst(Axis::Pan));
+        let on_it = add_key(&song, &p, CAM, &[Axis::Pan], 200).unwrap();
+        assert!(on_it.motion[0].is_keys(), "K on a preset move turns that move into keys");
         let keyed = add_key(&keyed, &p, "cam2", &[Axis::Pan], 300).unwrap();
         assert_eq!(keyed.motion.len(), 2, "the second K extends that camera's clip");
         assert_eq!(keyed.motion[1].keys(Axis::Pan).len(), 2);

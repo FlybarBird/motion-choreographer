@@ -848,8 +848,8 @@ fn show_scene(ui: &mut Ui, s: &mut Session) {
     let mut key = Key::new().camera(&view).add(selected);
     for (i, (camera, pose)) in s.project.cameras.iter().zip(&poses).enumerate() {
         let color = stage::rgb(camera_color(i));
-        let lens_view = stage::view_of(camera, pose);
-        let reach = s.world.centre_distance(camera, pose).unwrap_or(stage::FRUSTUM_REACH_M).clamp(0.5, 200.0);
+        let lens_view = stage::show_view(&s.project, camera, pose);
+        let reach = s.world.distance_along(&lens_view).unwrap_or(stage::FRUSTUM_REACH_M).clamp(0.5, 200.0);
         lines.extend(frustum_lines(&lens_view, reach, color, i == selected));
         let m = &camera.mount;
         key = key.camera(&lens_view).add(m.inverted).floats(&[
@@ -884,7 +884,9 @@ fn show_scene(ui: &mut Ui, s: &mut Session) {
                 .iter()
                 .zip(&poses)
                 .enumerate()
-                .map(|(i, (camera, pose))| stage::marker(&camera.mount, pose, stage::rgb(camera_color(i))))
+                .map(|(i, (camera, pose))| {
+                    stage::marker_at(&camera.mount, pose, stage::rgb(camera_color(i)), project.column_mm(camera, pose.elevation))
+                })
                 .collect()
         },
         None,

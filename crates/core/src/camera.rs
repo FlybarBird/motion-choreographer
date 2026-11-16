@@ -51,6 +51,12 @@ impl Mount {
         [self.x, self.y, self.z + direction * (self.base_height_mm + elevation_mm) / 1000.0]
     }
 
+    /// Where the lens is when `height_mm` is its height above the floor, as a measured column gives it.
+    pub fn lens_at_height(&self, height_mm: f64) -> [f64; 3] {
+        let direction = if self.inverted { -1.0 } else { 1.0 };
+        [self.x, self.y, self.z + direction * height_mm / 1000.0]
+    }
+
     /// Yaw and pitch of the view in degrees for a pose: positive pan turns left, positive tilt looks up.
     pub fn view(&self, pose: &Pose) -> (f64, f64) {
         (self.heading_deg + pose.pan, self.tilt_deg + pose.tilt)

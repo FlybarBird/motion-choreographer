@@ -92,27 +92,12 @@ fn preset_menu(ui: &mut Ui, s: &mut Session, preset: &Preset) {
         s.link.send(Cmd::UpdatePreset(preset.id.clone(), Default::default()));
         ui.close();
     }
-    ui.separator();
-    let units = s.project.units;
-    let limits = s.project.axes_of(&preset.camera).elevation;
-    // What is typed is kept until it is set; a preset whose height has changed starts again from that.
-    let id = ui.make_persistent_id(("preset_height", &preset.id, preset.pose.elevation.to_bits()));
-    let mut mm = ui.data_mut(|d| d.get_temp::<f64>(id)).unwrap_or(preset.pose.elevation);
-    ui.horizontal(|ui| {
-        field(ui, "Height");
-        ui.add_enabled(can, crate::units::height_box(&mut mm, units).range(limits.min..=limits.max))
-            .on_hover_text("The column height this preset goes to. Double-click to type it")
-            .on_disabled_hover_text(no_lease);
-        let set = ui
-            .add_enabled(can, egui::Button::new("Set height"))
-            .on_hover_text("Store this column height in the preset. Pan, tilt, zoom and focus stay as they are")
-            .on_disabled_hover_text(no_lease);
-        if set.clicked() {
-            s.link.send(Cmd::UpdatePreset(preset.id.clone(), ptz_core::api::UpdatePreset { pose: None, elevation: Some(mm) }));
-            ui.close();
+    if let Some(camera) = s.project.camera(&preset.camera) {
+        if s.project.measured_span(camera).is_some() {
+            ui.separator();
+            height_slider(ui, s, preset, can, no_lease);
         }
-    });
-    ui.data_mut(|d| d.insert_temp(id, mm));
+    }
     ui.separator();
     if ui.button("Delete preset").clicked() {
         s.link.send(Cmd::DeletePreset(preset.id.clone()));
@@ -120,7 +105,28 @@ fn preset_menu(ui: &mut Ui, s: &mut Session, preset: &Preset) {
     }
 }
 
-fn preset_card(ui: &mut Ui, preset: &Preset, units: Units, picture: Option<egui::TextureId>) -> egui::Response {
+/// A slider from the column's lowest measured height to its highest. 0 is fully down on the
+/// height map, 100 is fully up. The preset keeps the height in millimetres.
+fn height_slider(ui: &mut Ui, s: &mut Session, preset: &Preset, can: bool, no_lease: &str) {
+    let Some(camera) = s.project.camera(&preset.camera).cloned() else { return };
+    let Some((low, high)) = s.project.measured_span(&camera) else { return };
+    let share = if preset.pose.elevation >= low - 50.0 {
+        ((preset.pose.elevation - low) / (high - low) * 100.0).clamp(0.0, 100.0)
+    } else {
+        preset.pose.elevation.clamp(0.0, 100.0)
+    };
+    let mut next = share;
+    let slider = ui
+        .add_enabled(can, egui::Slider::new(&mut next, 0.0..=100.0).text("Height").suffix("%").fixed_decimals(0))
+        .on_hover_text("0 is the lowest height measured on this column, 100 the highest")
+        .on_disabled_hover_text(no_lease);
+    if slider.changed() && (next - share).abs() > 0.05 {
+        let mm = low + next / 100.0 * (high - low);
+        s.link.send(Cmd::UpdatePreset(preset.id.clone(), ptz_core::api::UpdatePreset { pose: None, elevation: Some(mm) }));
+    }
+}
+
+fn preset_card(ui: &mut Ui, preset: &Preset, picture: Option<egui::TextureId>) -> egui::Response {
     let width = (ui.available_width() - PRESET_MENU_W).clamp(120.0, 400.0);
     // A row, not a box: its picture, its name and its pose, with a hairline under it.
     let (rect, resp) = ui.allocate_exact_size(vec2(width, 16.0 * U), Sense::hover());
@@ -134,11 +140,10 @@ fn preset_card(ui: &mut Ui, preset: &Preset, units: Units, picture: Option<egui:
     let x = thumb.right() + PAD;
     p.text(egui::pos2(x, rect.top() + 3.0 * U), egui::Align2::LEFT_TOP, &preset.name, body(), OFF_WHITE);
     let detail = format!(
-        "{}  {}  zoom {}  {}",
+        "{}  {}  zoom {}",
         Axis::Pan.format(preset.pose.pan),
         Axis::Tilt.format(preset.pose.tilt),
         Axis::Zoom.format(preset.pose.zoom),
-        Axis::Elevation.format_in(preset.pose.elevation, units)
     );
     p.text(egui::pos2(x, rect.top() + 8.0 * U), egui::Align2::LEFT_TOP, detail, micro(), MUTED);
     if let Some(n) = preset.camera_number {
@@ -219,8 +224,7 @@ pub fn presets(ui: &mut Ui, s: &mut Session) {
                 ui.spacing_mut().item_spacing.x = 0.0;
                 let id = egui::Id::new(("preset_drag", &preset.id));
                 let picture = preset_picture(ui, s, preset).or_else(|| drawn_picture(ui, s, preset));
-                let units = s.project.units;
-                let inner = ui.dnd_drag_source(id, PresetDrag(preset.clone()), |ui| preset_card(ui, preset, units, picture));
+                let inner = ui.dnd_drag_source(id, PresetDrag(preset.clone()), |ui| preset_card(ui, preset, picture));
                 if !ui.ctx().is_being_dragged(id) {
                     s.probe_presets.push((preset.id.clone(), inner.response.rect));
                 }
@@ -237,6 +241,14 @@ pub fn presets(ui: &mut Ui, s: &mut Session) {
             });
             let rule = row.response.rect;
             ui.painter().hline(ui.max_rect().x_range(), rule.bottom() - 0.5, Stroke::new(RULE, LINE));
+            let camera = s.project.camera(&preset.camera).cloned();
+            if camera.as_ref().is_some_and(|c| s.project.measured_span(c).is_some()) {
+                ui.horizontal(|ui| {
+                    ui.add_space(PAD);
+                    let can = s.status.you_hold_lease && s.lost.is_none();
+                    height_slider(ui, s, preset, can, "Take the edit lease to change presets");
+                });
+            }
         }
         ui.add_space(GAP);
         ui.horizontal(|ui| {
