@@ -2157,7 +2157,6 @@ fn a_newer_version_is_offered_in_the_view_menu_and_waits_for_the_show_to_stop() 
 fn the_live_edit_page_asks_before_it_edits_the_song_that_is_live() {
     use egui_kittest::kittest::Queryable as _;
     let mut r = rig(Song::new("s", "Test Song", "01:00:00:00", 1500));
-    r.harness.get_by_label("LIVE EDIT");
     r.harness.state_mut().show_tab(Tab::LiveEdit);
     r.harness.run_steps(3);
     r.harness.get_by_label("The show is not live.");
