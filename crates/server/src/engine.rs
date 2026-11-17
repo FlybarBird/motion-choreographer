@@ -1218,6 +1218,7 @@ impl Show {
         self.storage.save_presets(&self.presets).map_err(Fail::io)?;
         self.log("preset_updated", json!({ "preset": id, "camera": camera, "by": by, "from": before, "to": pose }));
         self.push(WsMsg::PresetsChanged);
+        self.relink_timeline();
         Ok(preset)
     }
 
@@ -1291,7 +1292,27 @@ impl Show {
         self.storage.save_presets(&self.presets)?;
         self.log("presets_synced", json!({ "camera": camera, "read": count, "count": self.presets.len() }));
         self.push(WsMsg::PresetsChanged);
+        self.relink_timeline();
         Ok(())
+    }
+
+    /// Preset moves on every song take the pose of the preset they were made from, as it is now.
+    fn relink_timeline(&mut self) {
+        let presets = self.presets.clone();
+        let project = self.project.clone();
+        let ids: Vec<String> = self.songs.keys().cloned().collect();
+        for id in ids {
+            let Some(entry) = self.songs.get(&id) else { continue };
+            match edit::adopt_presets(&entry.song, &project, &presets) {
+                Ok(Some(song)) => {
+                    if let Err(fail) = self.replace_working(&id, song, "preset") {
+                        self.log("preset_relink_failed", json!({ "song": id, "reason": fail.msg }));
+                    }
+                }
+                Ok(None) => {}
+                Err(why) => self.log("preset_relink_failed", json!({ "song": id, "reason": why.to_string() })),
+            }
+        }
     }
 
     pub fn preset_thumbnail(&self, id: &str) -> Res<PathBuf> {

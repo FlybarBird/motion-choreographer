@@ -324,6 +324,45 @@ pub fn set_from(song: &Song, project: &Project, id: &str, from: FromPose) -> Edi
     finish(next, project)
 }
 
+/// Give every preset move that was made from one of `presets` that preset's pose and name
+/// as they are now. Auto-timed moves are retimed. Nothing changes when every move already
+/// matches. A move whose preset was deleted is left as it was.
+pub fn adopt_presets(song: &Song, project: &Project, presets: &[Preset]) -> Result<Option<Song>, Refusal> {
+    let mut next = song.clone();
+    let mut changed = false;
+    for clip in &mut next.motion {
+        let mut touch = false;
+        let camera = clip.camera.clone();
+        if let ClipBody::PresetMove { from, to, .. } = &mut clip.body {
+            let apply = |r: &mut PresetRef| {
+                let Some(preset) = presets.iter().find(|p| p.id == r.preset_id && p.camera == camera) else {
+                    return false;
+                };
+                let now = PresetRef::of(preset);
+                if *r == now {
+                    return false;
+                }
+                *r = now;
+                true
+            };
+            if let FromPose::Pinned(r) = from {
+                touch |= apply(r);
+            }
+            touch |= apply(to);
+        }
+        if touch {
+            clip.accepted = None;
+            changed = true;
+        }
+    }
+    if !changed {
+        return Ok(None);
+    }
+    refresh_auto(&mut next, project);
+    next.validate(project.rate).map_err(Refusal::Invalid)?;
+    Ok(Some(next))
+}
+
 pub fn set_to(song: &Song, project: &Project, id: &str, preset: &Preset) -> Edit {
     let mut next = song.clone();
     if next.motion_clip(id).ok_or(Refusal::NotFound)?.camera != preset.camera {
@@ -1296,5 +1335,22 @@ mod tests {
         assert_eq!(moved.motion_clip(&b).unwrap().camera, "cam2");
         assert_eq!(moved.motion_clip(&c).unwrap().camera, CAM);
         assert_eq!(move_clips_to(&song, &p, &[a], 0, Some("cam9")).unwrap_err(), Refusal::NoSuchCamera);
+    }
+
+    #[test]
+    fn a_preset_move_takes_the_preset_again_when_that_preset_is_stored_over() {
+        let (song, p) = base();
+        let wide = preset("Wide", 20.0, 100.0);
+        let (song, id) = insert_preset_move(&song, &p, &wide, 40).unwrap();
+        let mut again = wide.clone();
+        again.pose.pan = 33.0;
+        again.pose.elevation = 180.0;
+        again.name = "Wide".into();
+        let song = adopt_presets(&song, &p, &[again.clone()]).unwrap().expect("the move was behind the preset");
+        match &song.motion_clip(&id).unwrap().body {
+            ClipBody::PresetMove { to, .. } => assert_eq!(to.pose, again.pose),
+            other => panic!("{other:?}"),
+        }
+        assert!(adopt_presets(&song, &p, &[again]).unwrap().is_none(), "adopting the same preset twice changes nothing");
     }
 }

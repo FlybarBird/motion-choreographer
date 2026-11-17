@@ -6,7 +6,8 @@ use common::*;
 use ptz_core::api::*;
 use ptz_core::client::{Api, ApiErr};
 use ptz_core::edit;
-use ptz_core::song::Song;
+use ptz_core::pose::Preset;
+use ptz_core::song::{ClipBody, Song};
 use ptz_core::transport::{Action, Output, Run, TransportState};
 use std::time::Duration;
 
@@ -346,4 +347,37 @@ fn save_writes_every_song_with_unsaved_changes_whichever_is_loaded() {
     // Without the lease nothing is saved.
     let other = t.client("b");
     assert!(matches!(other.save_all(), Err(ApiErr::Refused { .. })));
+}
+
+#[test]
+fn updating_a_preset_updates_every_timeline_move_made_from_it() {
+    let t = TestServer::start("preset-link");
+    let api = t.client("a");
+    api.take_lease("Luke-MacBook", false).unwrap();
+    let project = api.project().unwrap();
+    let presets = api.presets().unwrap();
+    let created = api.new_song("Show", None).unwrap();
+    let (song, clip) = edit::insert_preset_move(&created.song, &project, &presets[1], 40).unwrap();
+    api.put_working(&PutWorking { expected_counter: created.edit_counter, song }).unwrap();
+
+    let mut pose = presets[1].pose;
+    pose.pan += 12.0;
+    let updated: Preset =
+        api.put(&format!("/presets/{}", presets[1].id), &UpdatePreset { pose: Some(pose), elevation: None }).unwrap();
+    let working = api.working(&created.song.id).unwrap();
+    match &working.song.motion_clip(&clip).unwrap().body {
+        ClipBody::PresetMove { to, .. } => assert_eq!(to.pose, updated.pose),
+        other => panic!("{other:?}"),
+    }
+    // A song that is not loaded follows too.
+    let other = api.new_song("Other", None).unwrap();
+    let (song, clip) = edit::insert_preset_move(&other.song, &project, &updated, 10).unwrap();
+    api.put_working(&PutWorking { expected_counter: other.edit_counter, song }).unwrap();
+    pose.tilt = -4.0;
+    api.put::<_, Preset>(&format!("/presets/{}", updated.id), &UpdatePreset { pose: Some(pose), elevation: None }).unwrap();
+    let working = api.working(&other.song.id).unwrap();
+    match &working.song.motion_clip(&clip).unwrap().body {
+        ClipBody::PresetMove { to, .. } => assert!((to.pose.tilt + 4.0).abs() < 1e-9 && (to.pose.pan - pose.pan).abs() < 1e-9),
+        other => panic!("{other:?}"),
+    }
 }

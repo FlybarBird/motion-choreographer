@@ -85,7 +85,7 @@ fn preset_menu(ui: &mut Ui, s: &mut Session, preset: &Preset) {
     let update = ui
         .add_enabled(can, egui::Button::new("Update to the current pose"))
         .on_hover_text(
-            "Store where the rig is now in this preset. Nothing moves. Moves already on the timeline keep the old pose until they are updated",
+            "Store where the rig is now in this preset. Nothing moves. Moves on the timeline that use this preset follow it",
         )
         .on_disabled_hover_text(no_lease);
     if update.clicked() {

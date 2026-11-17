@@ -182,10 +182,10 @@ presets, each with a picture of its framing, its pose and its focal length.
 | Use a preset | Drag it onto the timeline |
 | Delete a preset | Right-click it, **Delete preset** |
 
-A move keeps its own copy of the pose it was made from. Storing over, syncing
-or deleting a preset afterwards does not change the moves already on a
-timeline; to change where a move goes, pick another preset for it in the
-Inspector.
+A move on the timeline stays linked to the preset it was made from. Storing
+over that preset, changing its height, or syncing it from the camera updates
+every such move. Deleting a preset does not remove the moves; they keep the
+pose they had.
 
 A useful habit: build the presets for each camera position first (wide, each
 speaker position, each two-shot), name them for what they frame, and only then
