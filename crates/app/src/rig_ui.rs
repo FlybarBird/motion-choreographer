@@ -420,21 +420,25 @@ fn stored_default(ui: &mut Ui, s: &mut Session) {
         }
         None => note(ui, crate::camera_ui::NO_DEFAULT),
     }
-    let can = s.status.you_hold_lease && s.lost.is_none();
-    let button = ui.add_enabled(can, egui::Button::new("Store default"));
-    let button = if can {
-        button.on_hover_text(
-            "Store where this rig is now as its default position and zoom. A new song starts there. Songs already made stay as they are.",
-        )
-    } else if s.lost.is_some() {
-        button.on_disabled_hover_text("The server is not reachable")
+    let camera = s.status.camera(s.cam_id());
+    let why = if s.lost.is_some() {
+        Some("The server is not reachable")
+    } else if !s.status.you_hold_lease {
+        Some("Take the edit lease to store a default")
+    } else if !camera.is_some_and(|c| c.hardware && c.adapters.iter().any(|a| a.name == "FR7")) {
+        Some("Connect an FR7 to this camera to store its measured position")
+    } else if camera.is_some_and(|c| c.adapters.iter().any(|a| !a.connected)) {
+        Some("Waiting for the selected camera's rig to report its position")
     } else {
-        button.on_disabled_hover_text("Take the edit lease to store a default")
+        None
+    };
+    let button = ui.add_enabled(why.is_none(), egui::Button::new("Store default"));
+    let button = match why {
+        Some(why) => button.on_disabled_hover_text(why),
+        None => button.on_hover_text("Read this camera's current position and zoom for new songs"),
     };
     if button.clicked() {
-        let camera = Some(s.cam_id().to_string());
-        let pose = Some(s.cam_status().rig_pose);
-        s.link.send(Cmd::StoreDefault(StoreDefault { camera, pose }));
+        s.link.send(Cmd::StoreDefault(StoreDefault { camera: Some(s.cam_id().to_string()), pose: None }));
     }
 }
 

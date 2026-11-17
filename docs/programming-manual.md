@@ -365,6 +365,12 @@ The **Rig controller** tab drives the selected camera:
 If the app stops sending (a dropped connection, a closed window) the rig stops
 within a quarter of a second. Hand control is refused while armed.
 
+To set the opening position for future songs, select the camera, frame the shot
+with its hardware controller, and click **Store default** in **Rig controller**.
+The server reads pan, tilt, zoom, and focus from that FR7 and height from its
+AutoPod+ when configured. You can capture in Rehearse. If the rig cannot
+report a current position, the camera keeps its previous default.
+
 ### Recording a pass
 
 1. Open the camera's axis lanes and click the **red dot** on each lane Record
@@ -1054,7 +1060,7 @@ On a Mac, Cmd; elsewhere, Ctrl. Save is both **Cmd-S** and **Ctrl-S**, on every 
 
 | Key | Does |
 | --- | --- |
-| Space | The main transport button: Rehearse, Play Live, Play to code, Stop. When armed, Space is Play Live. |
+| Space | Play or pause at the current frame, including in Live edit. After an armed seek, wait for **ARMED** before pressing Space to play. |
 | Home | Cue to the start |
 | Page Down, Page Up | Load the next song in the set list, or the one before |
 | End | Playhead to the end of the song |

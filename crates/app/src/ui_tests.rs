@@ -1288,45 +1288,35 @@ fn the_camera_bar_and_the_number_keys_select_a_camera_and_presets_store_sync_and
 }
 
 #[test]
-fn store_default_sends_this_cameras_position_and_zoom_and_shows_what_is_stored() {
+fn store_default_requests_a_reading_from_the_selected_hardware_camera() {
     use crate::app::Tab;
-    use egui_kittest::kittest::Queryable as _;
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+    use ptz_core::api::AdapterStatus;
     let (project, presets) = three_cameras();
     let mut r = rig_with(project, presets, Song::new("s", "Test Song", "01:00:00:00", 1500));
-    let pose = Pose { pan: 18.5, tilt: -6.0, zoom: 0.5, focus: 0.25, elevation: 240.0 };
-    {
-        let s = &mut r.harness.state_mut().session;
-        s.status.cameras[1].rig_pose = pose;
-    }
     r.press("2 Centre");
     r.harness.state_mut().show_tab(Tab::Rig);
     r.harness.run_steps(3);
     r.harness.get_by_label(crate::camera_ui::NO_DEFAULT);
+    assert!(r.harness.get_by_label("Store default").accesskit_node().is_disabled(), "a simulator cannot supply a reading");
 
-    let _ = r.cmds.try_iter().count();
-    r.press("Store default");
-    let cmds: Vec<Cmd> = r.cmds.try_iter().collect();
-    let sent = cmds.iter().find_map(|c| if let Cmd::StoreDefault(req) = c { Some(req) } else { None });
-    let sent = sent.expect("Store default was sent");
-    assert_eq!(sent.camera.as_deref(), Some("cam2"));
-    assert_eq!(sent.pose, Some(pose), "the whole pose is stored, including focus and column height");
-
-    {
-        let s = &mut r.harness.state_mut().session;
-        s.project.cameras[1].default_pose = Some(pose);
-        s.status.cameras[1].rig_pose = Pose { pan: -2.0, tilt: 1.0, zoom: 0.1, focus: 0.8, elevation: 10.0 };
-    }
+    let camera = &mut r.harness.state_mut().session.status.cameras[1];
+    camera.hardware = true;
+    camera.adapters = vec![AdapterStatus { name: "FR7".into(), connected: false, ..Default::default() }];
     r.harness.run_steps(3);
-    let line = crate::camera_ui::default_line(pose);
-    assert_eq!(line, "Default: 18.5° pan, -6.0° tilt, zoom 50%");
-    r.harness.get_by_label(&line);
+    assert!(r.harness.get_by_label("Store default").accesskit_node().is_disabled(), "the FR7 is offline");
 
-    let _ = r.cmds.try_iter().count();
+    r.harness.state_mut().session.status.cameras[1].adapters[0].connected = true;
+    r.harness.run_steps(3);
     r.press("Store default");
-    let again: Vec<Cmd> = r.cmds.try_iter().collect();
-    let sent = again.iter().find_map(|c| if let Cmd::StoreDefault(req) = c { Some(req) } else { None }).expect("store over");
+    let sent = r.cmds.try_iter().find_map(|c| if let Cmd::StoreDefault(req) = c { Some(req) } else { None }).unwrap();
     assert_eq!(sent.camera.as_deref(), Some("cam2"));
-    assert_eq!(sent.pose, Some(Pose { pan: -2.0, tilt: 1.0, zoom: 0.1, focus: 0.8, elevation: 10.0 }));
+    assert_eq!(sent.pose, None, "the server reads the rig at capture time");
+
+    let stored = Pose { pan: 18.5, tilt: -6.0, zoom: 0.5, focus: 0.25, elevation: 240.0 };
+    r.harness.state_mut().session.project.cameras[1].default_pose = Some(stored);
+    r.harness.run_steps(3);
+    r.harness.get_by_label(&crate::camera_ui::default_line(stored));
 }
 
 #[test]

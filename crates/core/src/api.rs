@@ -487,7 +487,7 @@ pub struct StoreDefault {
     /// The camera. Omitted is the first.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub camera: Option<String>,
-    /// Omitted stores where the rig stands now. Elevation is millimetres, as a pose always is.
+    /// Older clients send their last displayed pose. The server captures live hardware feedback.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pose: Option<Pose>,
 }

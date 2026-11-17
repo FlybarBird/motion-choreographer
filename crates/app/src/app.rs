@@ -620,18 +620,21 @@ fn transport_key(ctx: &egui::Context, s: &mut Session) {
     if ctx.data(|d| d.get_temp::<bool>(e_stop_has_keyboard_id())).unwrap_or(false) {
         return;
     }
-    // A button that Tab left the keyboard on is not pressed as well: it gives the keyboard up
-    // before it can take the key.
-    if !s.rig.keyboard {
-        ctx.memory_mut(|m| {
-            if let Some(id) = m.focused() {
-                m.surrender_focus(id);
+    // Handle Space before the widgets are drawn. A focused Done button must not see the
+    // same press, and holding the key across a transport status update must not toggle again.
+    let pressed = ctx.input_mut(|input| {
+        let mut pressed = false;
+        input.events.retain(|event| match event {
+            egui::Event::Key { key: Key::Space, pressed: true, repeat, .. } => {
+                pressed |= !repeat;
+                false
             }
+            _ => true,
         });
-    }
-    // Space runs the transport. Releasing the E-Stop latch takes a click on its own button.
-    // A key does what its button would: nothing, while the button is off.
-    if let Some(action) = s.status.guidance.primary.filter(|a| !matches!(a, Action::Estop | Action::ResetEstop)) {
+        pressed
+    });
+    if pressed {
+        let action = if s.status.transport.run == Run::Stopped { Action::Play } else { Action::Stop };
         if s.offers(action) {
             s.act(action);
         }

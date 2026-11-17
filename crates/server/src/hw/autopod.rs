@@ -395,6 +395,14 @@ impl AutoPod {
         None
     }
 
+    pub(super) fn capture_elevation(&self) -> Result<f64, String> {
+        let s = self.lock();
+        if !s.connected || s.read_at.elapsed() > super::MAX_CAPTURE_AGE {
+            return Err("Waiting for the AutoPod+ to report its current height".into());
+        }
+        Ok(s.shown_mm)
+    }
+
     /// Elevation in millimetres and when it was read: by the height map, or assumed from the
     /// raw position while there is none.
     pub fn elevation(&self) -> (f64, Instant) {

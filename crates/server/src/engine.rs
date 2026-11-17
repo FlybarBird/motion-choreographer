@@ -1206,22 +1206,15 @@ impl Show {
         self.require_lease(client)?;
         let i = self.unit_index(req.camera.as_deref())?;
         let id = self.units[i].id.clone();
-        let simulator = self.units[i].rig.is_simulator();
-        let pose = match req.pose {
-            Some(pose) => pose,
-            // With no pose given, hardware stores where the rig stands; the simulator stores the monitor.
-            None if simulator => self.monitor_pose(i).0,
-            None => self.units[i].rig.pose(),
-        };
+        let pose = self.units[i].rig.capture_live_pose().map_err(Fail::refused)?;
         if !pose.is_finite() {
             return Err(Fail::bad("That position is not a usable number"));
         }
-        if let Some(camera) = self.project.camera_mut(&id) {
-            camera.default_pose = Some(pose);
-        } else {
-            return Err(Fail::not_found(format!("No camera with id {id}")));
-        }
-        self.storage.save_project(&self.project).map_err(Fail::io)?;
+        let mut project = self.project.clone();
+        let camera = project.camera_mut(&id).ok_or_else(|| Fail::not_found(format!("No camera with id {id}")))?;
+        camera.default_pose = Some(pose);
+        self.storage.save_project(&project).map_err(Fail::io)?;
+        self.project = project;
         self.log("default_stored", json!({ "camera": id, "pose": pose, "by": self.who(client) }));
         self.push(WsMsg::ProjectChanged);
         self.poke();

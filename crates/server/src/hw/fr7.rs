@@ -1112,6 +1112,8 @@ struct State {
     head: Head,
     read_at: ReadTimes,
     connected: bool,
+    /// A preset move can leave the link connected while the camera refuses position inquiries.
+    last_position_refusal: Option<Instant>,
     detail: String,
     round_trip_ms: f64,
     moving: bool,
@@ -1166,6 +1168,7 @@ impl Fr7 {
             head: Head::default(),
             read_at: ReadTimes { pan_tilt: now, zoom: now, focus: now },
             connected: false,
+            last_position_refusal: None,
             detail: format!("Connecting to {}", cfg.visca),
             round_trip_ms: 0.0,
             moving: false,
@@ -1212,6 +1215,18 @@ impl Fr7 {
     pub fn head(&self) -> (Head, ReadTimes) {
         let s = self.lock();
         (s.head, s.read_at)
+    }
+
+    pub(super) fn capture_head(&self) -> Result<Head, String> {
+        let s = self.lock();
+        if !s.connected {
+            return Err(format!("The FR7 is not answering at {}", self.cfg.visca));
+        }
+        let oldest = s.read_at.pan_tilt.min(s.read_at.zoom).min(s.read_at.focus);
+        if s.last_position_refusal.is_some_and(|at| oldest <= at) || oldest.elapsed() > super::MAX_CAPTURE_AGE {
+            return Err("Waiting for the FR7 to report its current position and zoom".into());
+        }
+        Ok(s.head)
     }
 
     pub fn round_trip_s(&self) -> f64 {
@@ -1533,6 +1548,9 @@ impl Worker {
             s.head = head;
             s.read_at = read_at;
             s.connected = true;
+            if quiet {
+                s.last_position_refusal = Some(Instant::now());
+            }
             s.round_trip_ms = round_trip_ms;
             s.moving = moved || quiet;
             s.detail = if quiet {

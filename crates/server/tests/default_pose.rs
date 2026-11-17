@@ -7,7 +7,8 @@ use common::*;
 use ptz_core::api::StoreDefault;
 use ptz_core::camera::CameraConfig;
 use ptz_core::eval::pose_at;
-use ptz_core::pose::Pose;
+use ptz_core::pose::{Pose, RigKind};
+use ptz_server::hw::fake::{FakeAutoPod, FakeFr7};
 use std::path::Path;
 
 fn file(dir: &Path, id: &str) -> Vec<u8> {
@@ -37,11 +38,13 @@ fn a_new_song_starts_at_each_cameras_stored_default_and_an_old_song_does_not() {
     assert_eq!(refused(watcher.store_default(&no_lease), 409), "Take the edit lease to control the show");
     let missing = StoreDefault { camera: Some("cam9".into()), pose: Some(pose_a) };
     assert_eq!(refused(api.store_default(&missing), 404), "No camera with id cam9");
-    let nan = StoreDefault { camera: Some("cam1".into()), pose: Some(Pose { pan: f64::NAN, ..pose_a }) };
-    assert_eq!(refused(api.store_default(&nan), 400), "That position is not a usable number");
+    let sim = StoreDefault { camera: Some("cam1".into()), pose: Some(pose_a) };
+    assert_eq!(refused(api.store_default(&sim), 409), "Set this camera to a live FR7 to store its default");
     assert!(api.project().unwrap().cameras.iter().all(|c| c.default_pose.is_none()));
 
-    let project = api.store_default(&StoreDefault { camera: Some("cam1".into()), pose: Some(pose_a) }).unwrap();
+    let mut project = api.project().unwrap();
+    project.cameras[0].default_pose = Some(pose_a);
+    let project = api.put_project(&project).unwrap();
     assert_eq!(project.cameras[0].default_pose, Some(pose_a));
     assert_eq!(project.cameras[1].default_pose, None);
     // Saving the rest of the project does not drop the default.
@@ -65,7 +68,9 @@ fn a_new_song_starts_at_each_cameras_stored_default_and_an_old_song_does_not() {
 
     // Storing over replaces the default. The song already made keeps the first one.
     let pose_b = Pose { pan: -4.0, tilt: 2.5, zoom: 0.25, focus: 0.75, elevation: 80.0 };
-    api.store_default(&StoreDefault { camera: Some("cam1".into()), pose: Some(pose_b) }).unwrap();
+    let mut project = api.project().unwrap();
+    project.cameras[0].default_pose = Some(pose_b);
+    api.put_project(&project).unwrap();
     assert_eq!(api.project().unwrap().cameras[0].default_pose, Some(pose_b));
     assert_eq!(api.working(&before.id).unwrap().song, before);
     assert_eq!(api.working(&after.id).unwrap().song, after);
@@ -95,4 +100,90 @@ fn a_new_song_starts_at_each_cameras_stored_default_and_an_old_song_does_not() {
     assert_eq!(pose_at(&again, "cam2", 0), Pose::home());
     assert_eq!(api.working(&before.id).unwrap().song.camera_homes, before.camera_homes);
     assert_eq!(pose_at(&api.working(&after.id).unwrap().song, "cam1", 0), pose_a);
+}
+
+#[test]
+fn store_default_reads_the_selected_live_camera_without_moving_it() {
+    let t = TestServer::start_with("live-default", |cfg| cfg.seed = false);
+    let api = t.client("a");
+    api.take_lease("Desk", false).unwrap();
+    let (fr7, pod) = (FakeFr7::start(), FakeAutoPod::start());
+    let mut project = api.project().unwrap();
+    let mut camera = CameraConfig::new("cam2", "Stage left");
+    camera.rig.kind = RigKind::Hardware;
+    camera.rig.autopod_host = pod.addr.to_string();
+    camera.rig.autopod_calibration = FakeAutoPod::height_map();
+    project.cameras.push(camera);
+    api.put_project(&project).unwrap();
+
+    // Older desks send their last displayed pose. A column without a head cannot supply PTZ.
+    let req = StoreDefault { camera: Some("cam2".into()), pose: Some(Pose::home()) };
+    assert!(refused(api.store_default(&req), 409).contains("FR7 address"));
+    let rig = &mut project.cameras[1].rig;
+    rig.fr7_host = fr7.visca.to_string();
+    rig.fr7_http_port = fr7.http.port();
+    rig.fr7_user = fr7.user.clone();
+    rig.fr7_password = fr7.password.clone();
+    api.put_project(&project).unwrap();
+    wait_for(&api, |s| {
+        let c = s.camera("cam2").unwrap();
+        c.adapters.len() == 2 && c.adapters.iter().all(|a| a.connected)
+    });
+    fr7.settle_after_connect();
+    pod.settle_after_connect();
+    let before = api.new_song("Before", None).unwrap().song;
+    api.load_song(&before.id).unwrap();
+    fr7.place(25.0, -6.0, 0.4, 0.75);
+    pod.place(220.0);
+    let st = wait_for(&api, |s| {
+        let p = s.camera("cam2").unwrap().rig_pose;
+        (p.pan - 25.0).abs() < 0.2
+            && (p.tilt + 6.0).abs() < 0.2
+            && (p.zoom - 0.4).abs() < 0.01
+            && (p.focus - 0.75).abs() < 0.01
+            && (p.elevation - 220.0).abs() < 2.0
+    });
+    let selected = st.camera("cam2").unwrap();
+    assert_ne!(selected.pose, selected.rig_pose, "the rehearsal monitor has a different pose");
+    let project = api.store_default(&req).unwrap();
+    let stored = project.camera("cam2").unwrap().default_pose.unwrap();
+    assert_eq!(stored, selected.rig_pose);
+    assert!(project.camera("cam1").unwrap().default_pose.is_none());
+    assert_eq!(api.working(&before.id).unwrap().song.rest_pose("cam2"), Pose::home());
+    let after = api.new_song("After", None).unwrap().song;
+    assert_eq!(after.rest_pose("cam2"), stored);
+    assert!(fr7.commands().is_empty(), "capture sent a camera movement command");
+    assert!(pod.orders().is_empty(), "capture sent a column movement command");
+
+    // Native preset moves can refuse position inquiries even with a healthy connection.
+    fr7.refuse_position(true);
+    wait_for(&api, |s| s.camera("cam2").unwrap().adapters[0].detail.contains("will answer when it arrives"));
+    assert!(refused(api.store_default(&req), 409).contains("current position"));
+    fr7.refuse_position(false);
+    pod.set_silent(true);
+    wait_for(&api, |s| !s.camera("cam2").unwrap().adapters[1].connected);
+    assert!(refused(api.store_default(&req), 409).contains("AutoPod+"));
+    assert_eq!(api.project().unwrap().camera("cam2").unwrap().default_pose, Some(stored));
+
+    // An FR7 with no column supplies every camera axis itself.
+    let mut project = api.project().unwrap();
+    project.cameras[1].rig.autopod_host.clear();
+    api.put_project(&project).unwrap();
+    wait_for(&api, |s| {
+        let c = s.camera("cam2").unwrap();
+        c.adapters.len() == 1 && c.adapters[0].connected
+    });
+    fr7.settle_after_connect();
+    fr7.place(-40.0, 3.0, 0.1, 0.25);
+    let st = wait_for(&api, |s| {
+        let p = s.camera("cam2").unwrap().rig_pose;
+        (p.pan + 40.0).abs() < 0.2 && (p.zoom - 0.1).abs() < 0.01 && (p.focus - 0.25).abs() < 0.01
+    });
+    let req = StoreDefault { camera: Some("cam2".into()), pose: None };
+    let head_only = api.store_default(&req).unwrap().camera("cam2").unwrap().default_pose.unwrap();
+    assert_eq!(head_only, Pose { elevation: Pose::home().elevation, ..st.camera("cam2").unwrap().rig_pose });
+    fr7.set_silent(true);
+    wait_for(&api, |s| !s.camera("cam2").unwrap().adapters[0].connected);
+    assert!(refused(api.store_default(&req), 409).contains("FR7"));
+    assert_eq!(api.project().unwrap().camera("cam2").unwrap().default_pose, Some(head_only));
 }

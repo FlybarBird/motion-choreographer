@@ -610,6 +610,49 @@ fn undo_and_redo_leave_the_song_alone_while_a_text_field_has_the_keyboard() {
     assert_eq!(*r.song(), before, "and Cmd-Shift-Z puts it back");
 }
 
+#[test]
+fn space_in_live_edit_only_plays_or_pauses() {
+    use crate::app::Tab;
+    use ptz_core::transport::{guidance, Context, Run, TimeMode};
+    let mut r = rig(song());
+    r.harness.state_mut().show_tab(Tab::LiveEdit);
+    r.harness.state_mut().session.status.live_edit = true;
+    for (output, run, time, expected) in [
+        (Output::Positioning, Run::Stopped, TimeMode::FreeRun, None),
+        (Output::Armed, Run::Stopped, TimeMode::FreeRun, Some(Action::Play)),
+        (Output::Armed, Run::Playing, TimeMode::FreeRun, Some(Action::Stop)),
+        (Output::Armed, Run::Stopped, TimeMode::LockedExternal, Some(Action::Play)),
+        (Output::Armed, Run::WaitingForCode, TimeMode::LockedExternal, Some(Action::Stop)),
+    ] {
+        let status = &mut r.harness.state_mut().session.status;
+        (status.transport.output, status.transport.run, status.transport.time) = (output, run, time);
+        status.guidance = guidance(&status.transport, &Context::ready());
+        r.harness.run_steps(2);
+        r.harness.get_by_label("Done").focus();
+        r.harness.run_steps(2);
+        let _ = r.cmds.try_iter().count();
+        r.harness.key_press(egui::Key::Space);
+        r.harness.run_steps(2);
+        assert_eq!(acts(&r), expected.into_iter().collect::<Vec<_>>(), "{output:?} / {run:?} / {time:?}");
+        assert!(r.harness.state().session.status.live_edit, "Space activated Done");
+    }
+
+    // A held key must not pause the playback its first press just started.
+    let status = &mut r.harness.state_mut().session.status;
+    status.transport.run = Run::Stopped;
+    status.guidance = guidance(&status.transport, &Context::ready());
+    r.harness.key_down(egui::Key::Space);
+    r.harness.run_steps(2);
+    assert_eq!(acts(&r), vec![Action::Play]);
+    let status = &mut r.harness.state_mut().session.status;
+    status.transport.run = Run::Playing;
+    status.guidance = guidance(&status.transport, &Context::ready());
+    r.harness.key_down(egui::Key::Space);
+    r.harness.run_steps(2);
+    assert!(acts(&r).is_empty());
+    r.harness.key_up(egui::Key::Space);
+}
+
 /// Space is the transport's key and nothing else's, and Arm, Disarm, E-Stop and Reset E-Stop have no key
 /// at all (programming manual, section 14). So the buttons of the transport bar cannot be reached with
 /// Tab, and Space does not press a button that Tab has left the keyboard on.

@@ -405,7 +405,7 @@ fn live_edit_lets_a_preset_onto_the_armed_song_until_it_is_cancelled() {
 
     let walk = api.working("walk-in").unwrap();
     let frame = walk.song.motion.iter().map(|c| c.end_frame()).max().unwrap_or(0) + 10;
-    let (with_move, clip) = edit::insert_preset_move(&walk.song, &project, &presets[0], frame).unwrap();
+    let (with_move, _) = edit::insert_preset_move(&walk.song, &project, &presets[0], frame).unwrap();
     let put = |song: Song, counter: u64| api.put_working(&PutWorking { expected_counter: counter, song });
     assert_eq!(refused(put(with_move.clone(), walk.edit_counter)), "Disarm to edit the song");
 
@@ -417,7 +417,7 @@ fn live_edit_lets_a_preset_onto_the_armed_song_until_it_is_cancelled() {
     let other = t.client("b");
     assert!(!other.status().unwrap().live_edit);
     assert_eq!(refused(other.confirm_live_edit("walk-in")), "Take the edit lease to control the show");
-    assert_eq!(refused(put(with_move.clone(), walk.edit_counter)), "Disarm to edit the song");
+    assert!(api.status().unwrap().live_edit, "the holder keeps their confirmation");
     // The holder can edit. A watcher cannot, confirmation or not.
     let watcher_put = other.put_working(&PutWorking { expected_counter: walk.edit_counter, song: with_move.clone() });
     assert_eq!(refused(watcher_put), "Take the edit lease to control the show");

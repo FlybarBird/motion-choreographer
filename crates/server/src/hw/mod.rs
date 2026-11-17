@@ -17,6 +17,9 @@ use std::time::{Duration, Instant};
 /// Each device is read and commanded twenty times a second.
 pub const PERIOD: Duration = Duration::from_millis(50);
 
+/// Allow for interleaved lens inquiries and slower replies on a real camera.
+const MAX_CAPTURE_AGE: Duration = Duration::from_millis(1500);
+
 /// `host` with `port` added when it names none.
 pub fn with_port(host: &str, port: u16) -> String {
     if host.contains(':') {
@@ -87,6 +90,16 @@ impl RigAdapter for HardwareRig {
 
     fn pose(&self) -> Pose {
         self.reading().pose
+    }
+
+    fn capture_live_pose(&self) -> Result<Pose, String> {
+        let fr7 = self.fr7.as_ref().ok_or("Set this camera's FR7 address to store its default")?;
+        let head = fr7.capture_head()?;
+        let elevation = match &self.pod {
+            Some(pod) => pod.capture_elevation()?,
+            None => Pose::home().elevation,
+        };
+        Ok(Pose { pan: head.pan, tilt: head.tilt, zoom: head.zoom, focus: head.focus, elevation })
     }
 
     fn reading(&self) -> PoseReading {

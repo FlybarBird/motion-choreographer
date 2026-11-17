@@ -74,6 +74,11 @@ pub trait RigAdapter: Send {
     /// Latest known pose.
     fn pose(&self) -> Pose;
 
+    /// Capture feedback from the physical camera for a new song's default.
+    fn capture_live_pose(&self) -> Result<Pose, String> {
+        Err("Set this camera to a live FR7 to store its default".into())
+    }
+
     /// Latest known pose and when it was read. Hardware answers a few tens of
     /// milliseconds late; the live loop compares against where the target was then.
     fn reading(&self) -> PoseReading {

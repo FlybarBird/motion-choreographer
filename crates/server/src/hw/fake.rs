@@ -191,6 +191,7 @@ struct Head {
     at: Instant,
     last_seq: Option<u32>,
     silent: bool,
+    refuse_position: bool,
     speed_factor: f64,
     /// The camera's own speed scales, 1 to 100, and its slow mode. Pan and tilt run at the scale's share
     /// of every commanded speed.
@@ -284,6 +285,9 @@ impl Head {
         let inquiry = matches!(cmd, Command::PanTiltInquiry | Command::ZoomInquiry | Command::FocusInquiry);
         if inquiry != (kind == visca::TYPE_INQUIRY) {
             return vec![visca::error(0, 0x02)];
+        }
+        if inquiry && self.refuse_position {
+            return vec![visca::error(1, 0x41)];
         }
         let done = vec![visca::ack(1), visca::completion(1)];
         match cmd {
@@ -387,6 +391,7 @@ impl FakeFr7 {
             at: Instant::now(),
             last_seq: None,
             silent: false,
+            refuse_position: false,
             speed_factor: 1.0,
             pan_tilt_scale: 100,
             zoom_scale: 100,
@@ -593,6 +598,11 @@ impl FakeFr7 {
     /// Stop answering, like a pulled cable. The head keeps doing what it was last told.
     pub fn set_silent(&self, silent: bool) {
         self.head().silent = silent;
+    }
+
+    /// Refuse position inquiries while staying connected, as during an on-camera preset move.
+    pub fn refuse_position(&self, refuse: bool) {
+        self.head().refuse_position = refuse;
     }
 
     /// Move at this share of every commanded speed: a head that cannot keep up.
