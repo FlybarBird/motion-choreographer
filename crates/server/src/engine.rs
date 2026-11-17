@@ -179,6 +179,13 @@ struct Lease {
     last_seen: Instant,
 }
 
+/// Editing the loaded song while the show is live, confirmed by the lease holder.
+#[derive(Clone)]
+struct LiveEdit {
+    song: String,
+    client: String,
+}
+
 pub struct Show {
     pub storage: Storage,
     pub project: Project,
@@ -202,6 +209,8 @@ pub struct Show {
     clock: SteadyClock,
     frame_f: f64,
     lease: Option<Lease>,
+    /// Set only after the lease holder confirms on the Live edit page.
+    live_edit: Option<LiveEdit>,
     lease_ttl: Duration,
     /// One per camera of the project, in the project's order.
     units: Vec<Unit>,
@@ -418,6 +427,7 @@ impl Show {
             clock: SteadyClock::default(),
             frame_f: 0.0,
             lease: None,
+            live_edit: None,
             lease_ttl: cfg.lease_ttl,
             units,
             ticks: 0,
@@ -539,6 +549,7 @@ impl Show {
         let previous = self.lease.as_ref().filter(|l| l.client != client).map(|l| l.name.clone());
         self.lease = Some(Lease { client: client.to_string(), name: name.to_string(), last_seen: Instant::now() });
         self.log("lease", json!({ "holder": name, "took_from": previous }));
+        self.settle_live_edit();
         self.poke();
         Ok(())
     }
@@ -547,6 +558,7 @@ impl Show {
         if self.holds_lease(client) {
             let name = self.lease.take().map(|l| l.name);
             self.log("lease", json!({ "released_by": name }));
+            self.settle_live_edit();
             self.poke();
         }
         Ok(())
@@ -631,7 +643,10 @@ impl Show {
         };
         let id = self.storage.unique_song_id(name);
         let length = (rate.fps() * 60.0).round() as i64;
-        let song = Song::new(&id, name, &tc.to_string(), length);
+        let mut song = Song::new(&id, name, &tc.to_string(), length);
+        // The app and the panel both create songs here. Each camera rests at the
+        // default stored then. A song that already exists is not rewritten.
+        song.seed_defaults(&self.project.cameras);
         self.storage.save_working(&song).map_err(Fail::io)?;
         self.storage.save_draft(&song).map_err(Fail::io)?;
         let compiled = compile(&song, &self.project);
@@ -760,6 +775,7 @@ impl Show {
         let _ = self.storage.save_current(self.current.as_deref());
         self.transport = TransportState { estop: self.transport.estop, ..TransportState::IDLE };
         self.rebuild_mix();
+        self.settle_live_edit();
     }
 
     pub fn delete_song(&mut self, client: &str, id: &str) -> Res<()> {
@@ -784,8 +800,64 @@ impl Show {
     }
 
     fn require_editable(&self, id: &str) -> Res<()> {
-        if self.current.as_deref() == Some(id) && self.transport.output != Output::Rehearse {
+        if self.current.as_deref() == Some(id) && self.transport.output != Output::Rehearse && !self.live_edit_open(id) {
             return Err(Fail::refused("Disarm to edit the song"));
+        }
+        Ok(())
+    }
+
+    /// The lease holder has confirmed editing this loaded song while the show is live.
+    fn live_edit_open(&self, id: &str) -> bool {
+        self.live_edit
+            .as_ref()
+            .is_some_and(|edit| edit.song == id && self.lease.as_ref().is_some_and(|l| l.client == edit.client))
+    }
+
+    /// Drop a confirmation that no longer applies: the show left live output, another song
+    /// was loaded, or the edit lease moved.
+    fn settle_live_edit(&mut self) {
+        let Some(edit) = self.live_edit.clone() else { return };
+        let why = if self.current.as_deref() != Some(edit.song.as_str()) {
+            "another song was loaded"
+        } else if !self.lease.as_ref().is_some_and(|l| l.client == edit.client) {
+            "the edit lease moved"
+        } else if self.transport.output == Output::Rehearse {
+            "the show is not live"
+        } else {
+            return;
+        };
+        self.live_edit = None;
+        self.log("live_edit", json!({ "song": edit.song, "ended": why }));
+        self.poke();
+    }
+
+    /// The operator confirmed they are editing the song that is live. Rehearse does not use this.
+    pub fn confirm_live_edit(&mut self, client: &str, id: &str) -> Res<()> {
+        self.require_lease(client)?;
+        if self.current.as_deref() != Some(id) {
+            let name = self.songs.get(id).map(|e| e.song.name.clone()).unwrap_or_else(|| id.to_string());
+            return Err(Fail::refused(format!("{name} is not the song that is live")));
+        }
+        if self.transport.output == Output::Rehearse {
+            return Err(Fail::refused("The show is not live"));
+        }
+        self.song_entry(id)?;
+        if self.live_edit_open(id) {
+            return Ok(());
+        }
+        self.live_edit = Some(LiveEdit { song: id.to_string(), client: client.to_string() });
+        self.log("live_edit", json!({ "song": id, "by": self.who(client), "on": true }));
+        self.poke();
+        Ok(())
+    }
+
+    /// Leave live edit. The loaded song is refused again until the show is disarmed or they confirm.
+    pub fn cancel_live_edit(&mut self, client: &str, id: &str) -> Res<()> {
+        self.require_lease(client)?;
+        if self.live_edit.as_ref().is_some_and(|edit| edit.client == client && edit.song == id) {
+            self.live_edit = None;
+            self.log("live_edit", json!({ "song": id, "by": self.who(client), "on": false }));
+            self.poke();
         }
         Ok(())
     }
@@ -1126,6 +1198,34 @@ impl Show {
             return base;
         }
         (2..).map(|n| format!("{base}-{n}")).find(|id| !self.presets.iter().any(|p| &p.id == id)).unwrap()
+    }
+
+    /// Store where this camera's rig is as the position and zoom a new song starts from.
+    /// The whole pose is kept. Nothing moves, and songs that already exist stay as they are.
+    pub fn store_default(&mut self, client: &str, req: &StoreDefault) -> Res<Project> {
+        self.require_lease(client)?;
+        let i = self.unit_index(req.camera.as_deref())?;
+        let id = self.units[i].id.clone();
+        let simulator = self.units[i].rig.is_simulator();
+        let pose = match req.pose {
+            Some(pose) => pose,
+            // With no pose given, hardware stores where the rig stands; the simulator stores the monitor.
+            None if simulator => self.monitor_pose(i).0,
+            None => self.units[i].rig.pose(),
+        };
+        if !pose.is_finite() {
+            return Err(Fail::bad("That position is not a usable number"));
+        }
+        if let Some(camera) = self.project.camera_mut(&id) {
+            camera.default_pose = Some(pose);
+        } else {
+            return Err(Fail::not_found(format!("No camera with id {id}")));
+        }
+        self.storage.save_project(&self.project).map_err(Fail::io)?;
+        self.log("default_stored", json!({ "camera": id, "pose": pose, "by": self.who(client) }));
+        self.push(WsMsg::ProjectChanged);
+        self.poke();
+        Ok(self.project.clone())
     }
 
     pub fn store_preset(&mut self, client: &str, req: &StorePreset) -> Res<Preset> {
@@ -1760,6 +1860,7 @@ impl Show {
         let frame = self.frame_f.floor() as i64;
         self.log("transport", json!({ "action": action.key(), "by": self.who(client), "frame": frame, "state": self.transport }));
         self.sync_capture();
+        self.settle_live_edit();
         // A virtual rig follows a moved playhead at once, not a tick later.
         if self.transport.output == Output::Rehearse && self.captures.is_empty() {
             for i in 0..self.units.len() {
@@ -1794,6 +1895,7 @@ impl Show {
         self.transport = after;
         self.log("event", json!({ "event": format!("{event:?}"), "frame": self.frame_f.floor() as i64, "state": after }));
         self.sync_capture();
+        self.settle_live_edit();
         self.poke();
     }
 
@@ -2309,6 +2411,34 @@ impl Show {
         }
     }
 
+    /// Play is pressed and trusted code is not in the loaded song. Names the code, and the song it is in.
+    fn where_code_sits(&self) -> Option<String> {
+        let ext = self.external.as_ref()?;
+        if !matches!(ext.chase.state(), ChaseState::Locked | ChaseState::Freewheel) {
+            return None;
+        }
+        let code = ext.chase.code_at(self.started.elapsed().as_secs_f64())?;
+        let rate = self.rate();
+        let tc = Timecode::from_frames(code.floor() as i64, rate);
+        let song = &self.entry()?.song;
+        let clock = song.clock(rate);
+        if (0.0..song.length_frames as f64).contains(&clock.offset_of(code)) {
+            return None;
+        }
+        let other = self
+            .songs
+            .values()
+            .find(|e| e.song.id != song.id && (0.0..e.song.length_frames as f64).contains(&e.song.clock(rate).offset_of(code)));
+        let text = match other {
+            Some(e) => format!("Timecode {tc} is in {}, not in {}.", e.song.name, song.name),
+            None => {
+                let last = clock.timecode_at((song.length_frames - 1).max(0));
+                format!("Timecode {tc} is not in a song. {} is {} to {last}.", song.name, song.start_tc)
+            }
+        };
+        Some(text)
+    }
+
     fn lock_status(&self) -> LockStatus {
         let rate = self.rate();
         let problem = self.lock_problem.clone();
@@ -2696,7 +2826,7 @@ impl Show {
         let Some(e) = self.entry() else { return Pose::home() };
         let poses = e.compiled.poses(camera);
         if poses.is_empty() {
-            return e.song.home_pose;
+            return e.song.rest_pose(camera);
         }
         let f = self.frame_f.clamp(0.0, (poses.len() - 1) as f64);
         let i = f.floor() as usize;
@@ -2727,6 +2857,7 @@ impl Show {
         if self.lease.as_ref().is_some_and(|l| now.duration_since(l.last_seen) > self.lease_ttl) {
             let name = self.lease.take().map(|l| l.name);
             self.log("lease", json!({ "expired": name }));
+            self.settle_live_edit();
             self.poke();
         }
         if self.panel.as_ref().is_some_and(|(_, _, seen)| now.duration_since(*seen) > PANEL_TTL) {
@@ -2841,6 +2972,15 @@ impl Show {
             None => Timecode::from_frames(0, rate).to_string(),
         };
         let now = Instant::now();
+        let mut guidance = transport::guidance(&self.transport, &self.context(client));
+        if self.transport.run == Run::WaitingForCode {
+            // The generic hint says code has not arrived. When it has, say where it is.
+            if let Some(why) = self.lock_problem.clone().filter(|p| p.starts_with("Code is in a song")) {
+                guidance.hint = why;
+            } else if let Some(why) = self.where_code_sits() {
+                guidance.hint = why;
+            }
+        }
         Status {
             server_time_ms: now.duration_since(self.started).as_millis() as u64,
             song: entry.map(|e| SongStatus {
@@ -2868,7 +3008,8 @@ impl Show {
                 expires_in_ms: self.lease_ttl.saturating_sub(now.duration_since(l.last_seen)).as_millis() as u64,
             }),
             you_hold_lease: self.holds_lease(client),
-            guidance: transport::guidance(&self.transport, &self.context(client)),
+            live_edit: self.current.as_deref().is_some_and(|id| self.holds_lease(client) && self.live_edit_open(id)),
+            guidance,
             audio: self.audio_status(),
             lock: self.lock_status(),
             record: RecordStatus {

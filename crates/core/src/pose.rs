@@ -175,6 +175,11 @@ impl Pose {
     pub fn home() -> Pose {
         Pose { pan: 0.0, tilt: 0.0, zoom: 0.0, focus: 0.5, elevation: 0.0 }
     }
+
+    /// False when any axis is NaN or infinite. A stored pose has to be a real number.
+    pub fn is_finite(self) -> bool {
+        Axis::ALL.iter().all(|axis| self.get(*axis).is_finite())
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
@@ -807,6 +812,9 @@ impl Project {
                 return Err(format!("{label} needs a name"));
             }
             let label = format!("{} {}", i + 1, cam.name.trim());
+            if cam.default_pose.is_some_and(|pose| !pose.is_finite()) {
+                return Err(format!("{label}: the stored default is not a usable number"));
+            }
             for a in Axis::ALL {
                 let l = cam.axes.get(a);
                 let usable = l.min < l.max && l.max_speed > 0.0 && l.max_accel > 0.0 && l.settle_s >= 0.0;
@@ -1018,5 +1026,23 @@ mod tests {
         )
         .unwrap();
         assert_eq!(preset.camera, FIRST_CAMERA);
+    }
+
+    #[test]
+    fn a_stored_default_is_optional_and_must_be_a_real_pose() {
+        use crate::camera::CameraConfig;
+        let bare: CameraConfig = serde_json::from_str(r#"{"id":"cam1","name":"Camera 1"}"#).unwrap();
+        assert_eq!(bare.default_pose, None);
+        let stored = Pose { pan: 12.0, tilt: -3.0, zoom: 0.5, focus: 0.25, elevation: 180.0 };
+        let camera = CameraConfig { default_pose: Some(stored), ..bare };
+        let back: CameraConfig = serde_json::from_str(&serde_json::to_string(&camera).unwrap()).unwrap();
+        assert_eq!(back.default_pose, Some(stored));
+        assert!(serde_json::to_value(CameraConfig::default()).unwrap().get("default_pose").is_none());
+
+        let mut project = Project::default();
+        project.cameras[0].default_pose = Some(Pose { tilt: f64::NAN, ..Pose::home() });
+        assert_eq!(project.validate().unwrap_err(), "1 Camera 1: the stored default is not a usable number");
+        project.cameras[0].default_pose = Some(stored);
+        assert!(project.validate().is_ok());
     }
 }

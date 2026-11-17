@@ -6,6 +6,7 @@ use crate::theme::*;
 use egui::{RichText, Ui};
 use ptz_core::api::TransportRequest;
 use ptz_core::chase::ChaseState;
+use ptz_core::time::{SongPos, Timecode};
 use ptz_core::transport::{Action, Output, Run, TimeMode};
 
 /// What a lock source id reads as: `file:<clip>` becomes the clip's name.
@@ -88,21 +89,33 @@ pub fn state_chips(ui: &mut Ui, s: &Session, row: f32) {
         _ => {
             let lock = &s.status.lock;
             let name = lock.source.as_deref().map(|src| source_name(s, src)).unwrap_or_else(|| "code".into());
-            let (word, color, solid) = match (lock.chase, t.run) {
-                (_, Run::WaitingForCode) => ("WAITING FOR", AMBER, true),
-                (ChaseState::Locked, _) => ("LOCKED TO", BLUE, true),
-                (ChaseState::Freewheel, _) => ("FREEWHEEL", AMBER, true),
-                _ => ("LOCK:", MUTED, false),
+            let (text, color, solid) = if let Some(word) = waiting_outside(s) {
+                (word, AMBER, true)
+            } else {
+                let (word, color, solid) = match (lock.chase, t.run) {
+                    (_, Run::WaitingForCode) => ("WAITING FOR", AMBER, true),
+                    (ChaseState::Locked, _) => ("LOCKED TO", BLUE, true),
+                    (ChaseState::Freewheel, _) => ("FREEWHEEL", AMBER, true),
+                    _ => ("LOCK:", MUTED, false),
+                };
+                (format!("{word} {name}"), color, solid)
             };
-            let text = format!("{word} {name}");
             let cut = chip_width(ui, &text) > room;
             let r = chip_within(ui, &text, color, solid, room);
-            let mut tip = match &lock.last_code {
-                Some(code) => format!("Last code {code}"),
-                None => "No code has arrived yet".to_string(),
+            let explained =
+                s.status.guidance.hint.starts_with("Timecode ") || s.status.guidance.hint.starts_with("Code is in a song");
+            let mut tip = if explained {
+                s.status.guidance.hint.clone()
+            } else {
+                match &lock.last_code {
+                    Some(code) => format!("Last code {code}"),
+                    None => "No code has arrived yet".to_string(),
+                }
             };
-            if let Some(rate) = &lock.announced_rate {
-                tip.push_str(&format!(", {rate} fps"));
+            if !explained {
+                if let Some(rate) = &lock.announced_rate {
+                    tip.push_str(&format!(", {rate} fps"));
+                }
             }
             if let Some(p) = &lock.problem {
                 tip = p.clone();
@@ -116,4 +129,30 @@ pub fn state_chips(ui: &mut Ui, s: &Session, row: f32) {
     if t.record {
         chip(ui, "REC", RED, true).on_hover_text("Play writes the rig's movement onto the record axes");
     }
+}
+
+/// Play is pressed and the arriving code is not in the loaded song. The chip says which side it is on.
+fn waiting_outside(s: &Session) -> Option<String> {
+    if s.status.transport.run != Run::WaitingForCode {
+        return None;
+    }
+    let hint = s.status.guidance.hint.as_str();
+    if hint.starts_with("Timecode ") && hint.contains(" is not in a song") {
+        let word = match code_side(s) {
+            Some(SongPos::Before) => "BEFORE SONG",
+            Some(SongPos::After) => "AFTER SONG",
+            _ => "OUTSIDE SONG",
+        };
+        return Some(word.to_string());
+    }
+    if (hint.starts_with("Timecode ") && hint.contains(" is in ")) || hint.starts_with("Code is in a song") {
+        return Some("OTHER SONG".to_string());
+    }
+    None
+}
+
+fn code_side(s: &Session) -> Option<SongPos> {
+    let song = s.song.as_ref()?;
+    let tc = Timecode::parse_at(s.status.lock.last_code.as_deref()?, s.project.rate)?;
+    Some(song.clock(s.project.rate).locate_tc(tc))
 }

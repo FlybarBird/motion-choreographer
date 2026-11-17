@@ -155,12 +155,13 @@ impl<'a> Evaluator<'a> {
     pub fn new(song: &'a Song, camera: &str) -> Evaluator<'a> {
         let mut order: Vec<usize> = (0..song.motion.len()).filter(|i| song.motion[*i].camera == camera).collect();
         order.sort_by_key(|i| (song.motion[*i].start_frame, *i));
-        // Home, unless the camera's first move on the axis is a recorded pass: the rig was
+        // The camera's rest, unless its first move on the axis is a recorded pass: the rig was
         // already standing where the pass starts, so that is where the timeline has it wait.
+        let rest_pose = song.rest_pose(camera);
         let rest = Axis::ALL.map(|axis| {
             let first = order.iter().map(|i| &song.motion[*i]).find(|c| c.has_axis(axis));
             let recorded = first.filter(|c| c.recorded_pass.is_some()).and_then(|c| c.keys(axis).first());
-            recorded.map(|k| k.value).unwrap_or(song.home_pose.get(axis))
+            recorded.map(|k| k.value).unwrap_or(rest_pose.get(axis))
         });
         let lanes = Axis::ALL.map(|axis| {
             let mut lane = Vec::new();
@@ -235,7 +236,7 @@ impl<'a> Evaluator<'a> {
         Pose::from_fn(|a| self.axis_at(a, frame))
     }
 
-    /// Where the axis waits before its first move: the start of a recorded pass, else home.
+    /// Where the axis waits before its first move: the start of a recorded pass, else the camera's rest.
     pub fn rest(&self, axis: Axis) -> f64 {
         self.rest[axis.index()]
     }
@@ -540,5 +541,69 @@ mod tests {
                 assert!((orig - got).abs() < 1e-7, "frame {f} at split {at}: {orig} vs {got}");
             }
         }
+    }
+
+    #[test]
+    fn a_new_song_rests_each_camera_at_its_stored_default_and_an_old_song_does_not() {
+        use crate::camera::CameraConfig;
+        use crate::compile::compile;
+        use crate::pose::Project;
+
+        let stored = Pose { pan: 18.5, tilt: -6.0, zoom: 0.5, focus: 0.25, elevation: 240.0 };
+        let mut project = Project::default();
+        project.cameras[0].default_pose = Some(stored);
+        project.cameras.push(CameraConfig::new("cam2", "Centre"));
+
+        let mut song = Song::new("new", "New", "01:00:00:00", 500);
+        song.seed_defaults(&project.cameras);
+        assert_eq!(pose_at(&song, CAM, 0), stored);
+        assert_eq!(pose_at(&song, CAM, 499), stored);
+        assert_eq!(pose_at(&song, "cam2", 0), Pose::home());
+        assert_eq!(song.home_pose, Pose::home());
+
+        // The first move leaves from the stored default, not from pan 0.
+        song.motion.push(mv("a", 100, 50, &preset("A", 40.0)));
+        assert_eq!(pose_at(&song, CAM, 50).pan, stored.pan);
+        assert_eq!(Evaluator::new(&song, CAM).value_before(&song.motion[0], Axis::Pan), stored.pan);
+        assert_eq!(pose_at(&song, "cam2", 50), Pose::home());
+
+        let compiled = compile(&song, &project);
+        assert_eq!(compiled.poses(CAM)[0], pose_at(&song, CAM, 0));
+        assert!(compiled.poses("cam2").iter().all(|pose| *pose == Pose::home()));
+
+        // Nothing programmed: the whole song is the default, and the other camera stays at home.
+        let mut idle = Song::new("idle", "Idle", "01:00:00:00", 10);
+        idle.seed_defaults(&project.cameras);
+        let compiled = compile(&idle, &project);
+        assert!(compiled.issues.is_empty(), "{:?}", compiled.issues);
+        assert!(compiled.poses(CAM).iter().all(|pose| *pose == stored));
+        assert!(compiled.poses("cam2").iter().all(|pose| *pose == Pose::home()));
+
+        // A song from before defaults, including one whose home was set, is unchanged.
+        let mut old = Song::new("old", "Old", "01:00:00:00", 10);
+        old.home_pose = Pose { pan: 3.0, tilt: 1.0, ..Pose::home() };
+        assert!(old.camera_homes.is_empty());
+        assert_eq!(pose_at(&old, CAM, 4), old.home_pose);
+        assert!(compile(&old, &project).poses("cam2").iter().all(|pose| *pose == old.home_pose));
+
+        // Seeding copies what is stored then. Changing the camera later does not rewrite the song.
+        project.cameras[0].default_pose = Some(Pose { pan: 1.0, ..Pose::home() });
+        assert_eq!(pose_at(&idle, CAM, 0), stored);
+
+        let legacy: Song = serde_json::from_str(
+            r#"{"id":"s","name":"S","start_tc":"01:00:00:00","length_frames":10,"home_pose":{"pan":0,"tilt":0,"zoom":0,"focus":0.5,"elevation":0}}"#,
+        )
+        .unwrap();
+        assert!(legacy.camera_homes.is_empty());
+        assert_eq!(legacy.rest_pose(CAM), Pose::home());
+        assert!(serde_json::to_value(&Song::new("s", "S", "01:00:00:00", 10)).unwrap().get("camera_homes").is_none());
+        let written = serde_json::to_value(&idle).unwrap();
+        let home = &written["camera_homes"]["cam1"];
+        assert_eq!(home["pan"].as_f64(), Some(18.5));
+        assert_eq!(home["tilt"].as_f64(), Some(-6.0));
+        assert_eq!(home["zoom"].as_f64(), Some(0.5));
+        assert_eq!(home["focus"].as_f64(), Some(0.25));
+        assert_eq!(home["elevation"].as_f64(), Some(240.0));
+        assert!(written["camera_homes"].get("cam2").is_none());
     }
 }

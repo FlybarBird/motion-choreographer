@@ -8,7 +8,7 @@ use crate::panels::{note, section};
 use crate::session::Session;
 use crate::theme::*;
 use egui::{pos2, vec2, Align2, Key, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Ui};
-use ptz_core::api::{Jog, StorePreset};
+use ptz_core::api::{Jog, StoreDefault, StorePreset};
 use ptz_core::pose::Axis;
 use ptz_core::transport::{Output, Run};
 use std::time::{Duration, Instant};
@@ -412,6 +412,32 @@ fn live_state(ui: &mut Ui, s: &Session) {
     });
 }
 
+/// The stored position and zoom, and the control that stores where the rig is now over it.
+fn stored_default(ui: &mut Ui, s: &mut Session) {
+    match s.cam().default_pose {
+        Some(pose) => {
+            ui.label(crate::camera_ui::default_line(pose));
+        }
+        None => note(ui, crate::camera_ui::NO_DEFAULT),
+    }
+    let can = s.status.you_hold_lease && s.lost.is_none();
+    let button = ui.add_enabled(can, egui::Button::new("Store default"));
+    let button = if can {
+        button.on_hover_text(
+            "Store where this rig is now as its default position and zoom. A new song starts there. Songs already made stay as they are.",
+        )
+    } else if s.lost.is_some() {
+        button.on_disabled_hover_text("The server is not reachable")
+    } else {
+        button.on_disabled_hover_text("Take the edit lease to store a default")
+    };
+    if button.clicked() {
+        let camera = Some(s.cam_id().to_string());
+        let pose = Some(s.cam_status().rig_pose);
+        s.link.send(Cmd::StoreDefault(StoreDefault { camera, pose }));
+    }
+}
+
 pub fn show(ui: &mut Ui, s: &mut Session) {
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         egui::Frame::new().inner_margin(panel_margin()).show(ui, |ui| {
@@ -509,6 +535,7 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
                     ui.end_row();
                 }
             });
+            stored_default(ui, s);
 
             section(ui, "Store preset");
             ui.horizontal(|ui| {

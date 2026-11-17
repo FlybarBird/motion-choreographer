@@ -4,7 +4,20 @@ use crate::session::Session;
 use crate::theme::*;
 use egui::{vec2, Key, RichText, Stroke, Ui};
 use ptz_core::api::CameraStatus;
+use ptz_core::pose::{Axis, Pose};
 use ptz_core::transport::Output;
+
+/// What the rig page and the camera bar say when a default position and zoom is stored.
+pub fn default_line(pose: Pose) -> String {
+    format!(
+        "Default: {} pan, {} tilt, zoom {}",
+        Axis::Pan.format(pose.pan),
+        Axis::Tilt.format(pose.tilt),
+        Axis::Zoom.format(pose.zoom)
+    )
+}
+
+pub const NO_DEFAULT: &str = "No default stored. A new song starts this camera at home.";
 
 /// The keys that select cameras 1 to 12.
 pub const KEYS: [Key; 12] = [
@@ -67,6 +80,9 @@ fn detail(s: &Session, index: usize) -> String {
             }
         }
         None => lines.push("The server has not reported this camera yet.".into()),
+    }
+    if let Some(pose) = camera.default_pose {
+        lines.push(default_line(pose));
     }
     lines.join("\n")
 }

@@ -178,6 +178,9 @@ pub struct Status {
     pub hardware_live: bool,
     pub lease: Option<LeaseStatus>,
     pub you_hold_lease: bool,
+    /// This station has confirmed it is editing the loaded song while the show is live.
+    #[serde(default)]
+    pub live_edit: bool,
     pub guidance: Guidance,
     pub audio: AudioStatus,
     pub lock: LockStatus,
@@ -475,6 +478,18 @@ pub struct Captured {
     pub reused: bool,
     /// The pose the rig stood at.
     pub pose: Pose,
+}
+
+/// Store a camera's current position and zoom as the pose a new song starts from.
+/// The whole pose is kept. Songs that already exist are not changed.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+pub struct StoreDefault {
+    /// The camera. Omitted is the first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera: Option<String>,
+    /// Omitted stores where the rig stands now. Elevation is millimetres, as a pose always is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pose: Option<Pose>,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]

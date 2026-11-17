@@ -228,6 +228,16 @@ impl Api {
         self.post_empty(&format!("/songs/{id}/commit"))
     }
 
+    /// Confirm editing the loaded song while the show is live. Opening a page does not do this.
+    pub fn confirm_live_edit(&self, id: &str) -> ApiResult<Status> {
+        self.post_empty(&format!("/songs/{id}/live_edit"))
+    }
+
+    /// Leave live edit. The loaded song is refused again while the show stays live.
+    pub fn cancel_live_edit(&self, id: &str) -> ApiResult<Status> {
+        self.delete(&format!("/songs/{id}/live_edit"))
+    }
+
     pub fn delete_song(&self, id: &str) -> ApiResult<Vec<SongSummary>> {
         self.delete(&format!("/songs/{id}"))
     }
@@ -238,6 +248,11 @@ impl Api {
 
     pub fn put_project(&self, project: &Project) -> ApiResult<Project> {
         self.put("/project", project)
+    }
+
+    /// Store a camera's position and zoom as the pose a new song starts from.
+    pub fn store_default(&self, req: &StoreDefault) -> ApiResult<Project> {
+        self.post("/cameras/default", req)
     }
 
     pub fn presets(&self) -> ApiResult<Vec<Preset>> {

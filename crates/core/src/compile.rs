@@ -187,8 +187,10 @@ fn compile_camera(
     let n = song.length_frames.max(0) as usize;
     let idle = !song.motion.iter().any(|c| c.camera == camera);
     let ev = Evaluator::new(song, camera);
-    // A camera with no moves stands at home for the whole song: one pose to judge, not one per frame.
-    let poses: Vec<Pose> = if idle { vec![song.home_pose; n + 1] } else { (0..=n).map(|f| ev.pose_at(f as f64)).collect() };
+    // A camera with no moves stands at its rest for the whole song: the default it was
+    // given when the song was created, or home. One pose to judge, not one per frame.
+    let rest = song.rest_pose(camera);
+    let poses: Vec<Pose> = if idle { vec![rest; n + 1] } else { (0..=n).map(|f| ev.pose_at(f as f64)).collect() };
     let last = if idle { 0 } else { n };
 
     for axis in Axis::ALL {

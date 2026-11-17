@@ -364,6 +364,26 @@ fn play_ltc(feeder: Feeder, rate: FrameRate, first: i64, frames: i64, t0: Instan
 }
 
 #[test]
+fn play_names_the_code_when_it_is_not_in_the_loaded_song() {
+    let (t, api, _) = server_with_song("lock-where");
+    api.new_song("Later", Some("04:00:00:00")).unwrap();
+    let feeder = lock_scripted(&t, Kind::Ltc);
+    do_act(&api, Action::Play);
+
+    let tape = play_ltc(feeder.clone(), RATE, code("03:00:00:00"), 10, Instant::now());
+    let st = wait_for(&api, |s| s.guidance.hint.contains("not in a song"));
+    assert!(st.guidance.hint.starts_with("Timecode 03:00:00:"), "{}", st.guidance.hint);
+    assert!(st.guidance.hint.contains("Lock Test is 01:00:00:00 to "), "{}", st.guidance.hint);
+    assert_eq!(st.transport.run, Run::WaitingForCode);
+    tape.join().unwrap();
+
+    let tape = play_ltc(feeder, RATE, code("04:00:00:05"), 12, Instant::now());
+    let st = wait_for(&api, |s| s.guidance.hint.contains("is in Later"));
+    assert!(st.guidance.hint.contains("not in Lock Test"), "{}", st.guidance.hint);
+    tape.join().unwrap();
+}
+
+#[test]
 fn ltc_audio_locks_the_playhead_to_the_frame() {
     let (t, api, _song) = server_with_song("lock-ltc");
     let feeder = lock_scripted(&t, Kind::Ltc);

@@ -1072,7 +1072,8 @@ folder and the app's settings file stay until you delete them.
 | The stage model is enormous or tiny | Wrong unit | Change **One unit is** |
 | The stage model lies on its side | Wrong up axis | Change **Up** |
 | Lock: the bar names a different rate | Code is arriving at a rate that is not the project's | Fix the source, or the project's frame rate |
-| Lock stays on WAITING FOR | No code is arriving, or it is outside the song | Check the input device and channel under **Timecode inputs**; check the song's start timecode |
+| Lock stays on WAITING FOR | No usable code is arriving | Check the input device and channel under **Timecode inputs** |
+| BEFORE SONG, AFTER SONG, or OTHER SONG | Code is arriving, and it is not in the loaded song | The line under the buttons names the code and the song it falls in. Check that song's start timecode |
 | A camera chip says *no answer* | A device is not answering | Hover the chip to see which. Check power, cabling and the address under **Rig**. |
 | Arm is refused: *AutoPod+ is not calibrated* | The leg box reports that it has not been calibrated | Calibrate it at the AutoPod+ |
 | Arm is refused: *The AutoPod+ is in standby* | The leg box is switched to standby. The program never switches it on by itself. | Switch it on at the leg box |

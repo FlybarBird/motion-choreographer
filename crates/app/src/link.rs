@@ -37,6 +37,10 @@ pub enum Cmd {
     SaveAll,
     Revert(String),
     Commit(String),
+    /// Confirm editing the loaded song while the show is live.
+    ConfirmLiveEdit(String),
+    /// Leave that confirmation.
+    CancelLiveEdit(String),
     CopySong {
         id: String,
         name: String,
@@ -44,6 +48,8 @@ pub enum Cmd {
     DeleteSong(String),
     PutProject(Box<Project>),
     StorePreset(StorePreset),
+    /// Store this camera's position and zoom as the pose a new song starts from.
+    StoreDefault(StoreDefault),
     /// Change one stored preset: its id, and what to change.
     UpdatePreset(String, UpdatePreset),
     DeletePreset(String),
@@ -514,6 +520,14 @@ impl Worker {
                 }
                 Err(e) => self.refused("Commit", e),
             },
+            Cmd::ConfirmLiveEdit(id) => match self.api.confirm_live_edit(&id) {
+                Ok(status) => self.emit(Event::Status(Box::new(status))),
+                Err(e) => self.refused("Live edit", e),
+            },
+            Cmd::CancelLiveEdit(id) => match self.api.cancel_live_edit(&id) {
+                Ok(status) => self.emit(Event::Status(Box::new(status))),
+                Err(e) => self.refused("Live edit", e),
+            },
             Cmd::CopySong { id, name } => match self.api.copy_song(&id, &name) {
                 Ok(w) => {
                     let r = self.api.load_song(&w.song.id);
@@ -537,6 +551,13 @@ impl Worker {
             Cmd::StorePreset(req) => match self.api.post::<_, Preset>("/presets", &req) {
                 Ok(p) => self.emit(Event::Info(format!("Stored preset {}", p.name))),
                 Err(e) => self.refused("Store preset", e),
+            },
+            Cmd::StoreDefault(req) => match self.api.store_default(&req) {
+                Ok(p) => {
+                    self.emit(Event::Info("Stored the default position and zoom".into()));
+                    self.emit(Event::Project(Box::new(p)));
+                }
+                Err(e) => self.refused("Store default", e),
             },
             Cmd::UpdatePreset(id, req) => match self.api.put::<_, Preset>(&format!("/presets/{id}"), &req) {
                 Ok(p) => {

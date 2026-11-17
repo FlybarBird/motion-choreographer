@@ -549,13 +549,17 @@ chips tell you where it is:
 
 | Chip | Meaning |
 | --- | --- |
-| WAITING FOR ... | Play to code is pressed; no usable code yet |
+| WAITING FOR ... | Play to code is pressed, and no usable code is arriving |
+| BEFORE SONG | Code is arriving, earlier than this song |
+| AFTER SONG | Code is arriving, later than this song |
+| OTHER SONG | Code is arriving inside a different song |
 | LOCKED TO ... | Following |
 | FREEWHEEL | Code dropped out; carrying on for a few frames before stopping to wait again |
 
-If code jumps, the playhead jumps with it. Code from before the song's first
-frame or after its last holds the playhead at that end. Code at a different
-frame rate from the project is refused, and the bar says which rate arrived.
+If code jumps, the playhead jumps with it. Code that has not reached this song,
+or has passed it, leaves Play pressed and the line under the buttons names that
+code. Code at a different frame rate from the project is refused, and the bar
+says which rate arrived.
 
 **Follow timecode** (a tick box on the Set list tab) takes this from song to
 song. Locked to an input with **Play to code** pressed, when the code leaves the

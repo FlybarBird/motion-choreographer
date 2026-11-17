@@ -1,7 +1,7 @@
 //! The song file: one frame timeline holding its SMPTE start, markers, media
 //! clips and motion clips. Clip-local key frames, so moving a clip moves its keys.
 
-use crate::camera::{first_camera, is_first_camera};
+use crate::camera::{first_camera, is_first_camera, CameraConfig};
 use crate::pose::{Axis, Pose, Preset};
 use crate::time::{FrameRate, SongClock, Timecode};
 use serde::{Deserialize, Serialize};
@@ -15,6 +15,11 @@ pub struct Song {
     pub start_tc: String,
     pub length_frames: i64,
     pub home_pose: Pose,
+    /// Per-camera rest, copied from each camera's stored default when the song
+    /// is created. A camera with no entry rests at `home_pose`. Empty on a song
+    /// from before this, and when no camera had a default yet.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub camera_homes: BTreeMap<String, Pose>,
     #[serde(default)]
     pub markers: Vec<Marker>,
     #[serde(default)]
@@ -311,10 +316,24 @@ impl Song {
             start_tc: start_tc.into(),
             length_frames,
             home_pose: Pose::home(),
+            camera_homes: BTreeMap::new(),
             markers: Vec::new(),
             media: Vec::new(),
             motion: Vec::new(),
         }
+    }
+
+    /// Where this camera rests before its first move: the default copied in when
+    /// the song was created, or `home_pose` when it has none.
+    pub fn rest_pose(&self, camera: &str) -> Pose {
+        self.camera_homes.get(camera).copied().unwrap_or(self.home_pose)
+    }
+
+    /// Copy each camera's stored default in as that camera's rest. Called when a
+    /// song is created, so a later change to a default does not move this song.
+    /// A camera with no default is left out and rests at `home_pose`.
+    pub fn seed_defaults(&mut self, cameras: &[CameraConfig]) {
+        self.camera_homes = cameras.iter().filter_map(|c| c.default_pose.map(|pose| (c.id.clone(), pose))).collect();
     }
 
     pub fn start(&self, rate: FrameRate) -> Timecode {

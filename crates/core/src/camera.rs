@@ -94,6 +94,10 @@ pub struct CameraConfig {
     pub rig: RigConfig,
     pub lens: Lens,
     pub mount: Mount,
+    /// Where a new song starts this camera. The whole pose, so focus and the
+    /// column height stay with the position and zoom. None keeps today's home.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_pose: Option<Pose>,
 }
 
 impl Default for CameraConfig {
@@ -130,6 +134,7 @@ impl CameraConfig {
             rig: RigConfig::default(),
             lens: Lens::default(),
             mount: Mount::default(),
+            default_pose: None,
         }
     }
 }

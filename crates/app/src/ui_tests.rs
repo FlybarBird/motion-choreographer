@@ -1288,6 +1288,48 @@ fn the_camera_bar_and_the_number_keys_select_a_camera_and_presets_store_sync_and
 }
 
 #[test]
+fn store_default_sends_this_cameras_position_and_zoom_and_shows_what_is_stored() {
+    use crate::app::Tab;
+    use egui_kittest::kittest::Queryable as _;
+    let (project, presets) = three_cameras();
+    let mut r = rig_with(project, presets, Song::new("s", "Test Song", "01:00:00:00", 1500));
+    let pose = Pose { pan: 18.5, tilt: -6.0, zoom: 0.5, focus: 0.25, elevation: 240.0 };
+    {
+        let s = &mut r.harness.state_mut().session;
+        s.status.cameras[1].rig_pose = pose;
+    }
+    r.press("2 Centre");
+    r.harness.state_mut().show_tab(Tab::Rig);
+    r.harness.run_steps(3);
+    r.harness.get_by_label(crate::camera_ui::NO_DEFAULT);
+
+    let _ = r.cmds.try_iter().count();
+    r.press("Store default");
+    let cmds: Vec<Cmd> = r.cmds.try_iter().collect();
+    let sent = cmds.iter().find_map(|c| if let Cmd::StoreDefault(req) = c { Some(req) } else { None });
+    let sent = sent.expect("Store default was sent");
+    assert_eq!(sent.camera.as_deref(), Some("cam2"));
+    assert_eq!(sent.pose, Some(pose), "the whole pose is stored, including focus and column height");
+
+    {
+        let s = &mut r.harness.state_mut().session;
+        s.project.cameras[1].default_pose = Some(pose);
+        s.status.cameras[1].rig_pose = Pose { pan: -2.0, tilt: 1.0, zoom: 0.1, focus: 0.8, elevation: 10.0 };
+    }
+    r.harness.run_steps(3);
+    let line = crate::camera_ui::default_line(pose);
+    assert_eq!(line, "Default: 18.5° pan, -6.0° tilt, zoom 50%");
+    r.harness.get_by_label(&line);
+
+    let _ = r.cmds.try_iter().count();
+    r.press("Store default");
+    let again: Vec<Cmd> = r.cmds.try_iter().collect();
+    let sent = again.iter().find_map(|c| if let Cmd::StoreDefault(req) = c { Some(req) } else { None }).expect("store over");
+    assert_eq!(sent.camera.as_deref(), Some("cam2"));
+    assert_eq!(sent.pose, Some(Pose { pan: -2.0, tilt: 1.0, zoom: 0.1, focus: 0.8, elevation: 10.0 }));
+}
+
+#[test]
 fn each_camera_has_its_own_lane_and_a_move_dragged_to_another_lane_changes_camera() {
     let (project, presets) = three_cameras();
     let mut r = rig_with(project, presets, Song::new("s", "Test Song", "01:00:00:00", 1500));
@@ -2119,6 +2161,27 @@ fn a_newer_version_is_offered_in_the_view_menu_and_waits_for_the_show_to_stop() 
     r.harness.run_steps(3);
     assert!(r.harness.query_by_label("Install and reopen").is_none(), "Later closes it");
     assert!(matches!(r.harness.state().updater.step(), Step::Available(_)), "and the version is still on offer");
+}
+
+#[test]
+fn the_live_edit_page_asks_before_it_edits_the_song_that_is_live() {
+    use egui_kittest::kittest::Queryable as _;
+    let mut r = rig(Song::new("s", "Test Song", "01:00:00:00", 1500));
+    r.harness.get_by_label("LIVE EDIT");
+    r.harness.state_mut().show_tab(Tab::LiveEdit);
+    r.harness.run_steps(3);
+    r.harness.get_by_label("The show is not live.");
+    assert!(r.harness.query_by_label("Edit the live song").is_none(), "rehearse already edits on the timeline");
+    assert!(!r.cmds.try_iter().any(|c| matches!(c, Cmd::ConfirmLiveEdit(_))));
+
+    r.harness.state_mut().session.status.transport.output = Output::Armed;
+    r.harness.run_steps(3);
+    r.harness.get_by_label("You are about to edit the song that is live.");
+    assert!(!r.cmds.try_iter().any(|c| matches!(c, Cmd::ConfirmLiveEdit(_))), "opening the page does not confirm");
+    r.press("Edit the live song");
+    let confirmed: Vec<String> =
+        r.cmds.try_iter().filter_map(|c| if let Cmd::ConfirmLiveEdit(id) = c { Some(id) } else { None }).collect();
+    assert_eq!(confirmed, vec!["s".to_string()]);
 }
 
 mod picture;

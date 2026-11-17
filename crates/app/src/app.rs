@@ -24,6 +24,7 @@ pub enum Tab {
     Inspector,
     Rig,
     Timeline,
+    LiveEdit,
     Graph,
     Log,
     Stage,
@@ -32,7 +33,7 @@ pub enum Tab {
 }
 
 impl Tab {
-    pub const ALL: [Tab; 12] = [
+    pub const ALL: [Tab; 13] = [
         Tab::Presets,
         Tab::SetList,
         Tab::Media,
@@ -43,6 +44,7 @@ impl Tab {
         Tab::Inspector,
         Tab::Rig,
         Tab::Timeline,
+        Tab::LiveEdit,
         Tab::Graph,
         Tab::Log,
     ];
@@ -56,6 +58,7 @@ impl Tab {
             Tab::Inspector => "Inspector",
             Tab::Rig => "Rig controller",
             Tab::Timeline => "Timeline",
+            Tab::LiveEdit => "Live edit",
             Tab::Graph => "Graph editor",
             Tab::Log => "Log",
             Tab::Stage => "Stage",
@@ -66,7 +69,7 @@ impl Tab {
 }
 
 /// The panels under the transport strip: the timeline and what shares its place.
-pub const LOWER: [Tab; 3] = [Tab::Timeline, Tab::Graph, Tab::Log];
+pub const LOWER: [Tab; 4] = [Tab::Timeline, Tab::LiveEdit, Tab::Graph, Tab::Log];
 
 /// The panels over the transport strip: the browsers at the left, the stage viewer and the program
 /// monitor side by side in the middle, the inspector at the right.
@@ -400,7 +403,7 @@ pub struct Shell {
     pub session: Session,
     /// The panels over the transport strip.
     pub dock: DockState<Tab>,
-    /// The panels under it: the timeline, the graph editor and the log.
+    /// The panels under it: the timeline, live edit, the graph editor and the log.
     pub lower: DockState<Tab>,
     pub(crate) dialog: Dialog,
     pub layout_changed: bool,
@@ -450,6 +453,7 @@ impl egui_dock::TabViewer for Viewer<'_> {
             Tab::Inspector => panels::inspector(ui, s),
             Tab::Rig => crate::rig_ui::show(ui, s),
             Tab::Timeline => timeline_ui::show(ui, s),
+            Tab::LiveEdit => crate::live_edit::show(ui, s),
             Tab::Graph => crate::graph::show(ui, s),
             Tab::Log => panels::log(ui, s),
             Tab::Stage => crate::stage_ui::show(ui, s),
@@ -463,7 +467,7 @@ impl egui_dock::TabViewer for Viewer<'_> {
     }
 
     fn scroll_bars(&self, tab: &Tab) -> [bool; 2] {
-        [false, matches!(tab, Tab::Timeline)]
+        [false, matches!(tab, Tab::Timeline | Tab::LiveEdit)]
     }
 
     fn allowed_in_windows(&self, _tab: &mut Tab) -> bool {
@@ -686,6 +690,7 @@ impl Shell {
     }
 
     pub fn ui(&mut self, ui: &mut Ui) {
+        self.session.live_surface = false;
         self.session.poll();
         self.session.stage_view.placement_preview = None;
         if let Some(version) = self.updater.offered().filter(|v| self.update_told.as_ref() != Some(v)) {
@@ -1237,6 +1242,7 @@ impl Shell {
 
     fn shortcuts(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
+        let live_keys = self.front().contains(&Tab::LiveEdit) && self.session.status.live_edit;
         let s = &mut self.session;
         // A dialog has the keyboard to itself: nothing pressed while one is open reaches the show
         // behind it. (There is no key for E-Stop; its button is above every dialog.)
@@ -1279,6 +1285,7 @@ impl Shell {
             }
             return;
         }
+        s.live_surface = live_keys;
         if let Some(m) = chord(Key::Z).filter(|m| m.command) {
             if m.shift {
                 s.redo();
@@ -1333,6 +1340,7 @@ impl Shell {
         if alone(Key::K) {
             crate::graph::add_key_at_playhead(s);
         }
+        s.live_surface = false;
     }
 
     fn dropped_files(&mut self, ui: &mut Ui) {
@@ -1742,6 +1750,22 @@ fn without_lower(mut state: DockState<Tab>) -> DockState<Tab> {
     state
 }
 
+/// A saved strip from before Live edit existed keeps the tabs the operator arranged and gains the new one behind them.
+fn with_lower_tabs(mut state: DockState<Tab>) -> DockState<Tab> {
+    for tab in LOWER {
+        if state.find_tab(&tab).is_some() {
+            continue;
+        }
+        let beside = state.find_tab(&Tab::Timeline).or_else(|| state.iter_all_tabs().next().map(|(path, _)| path));
+        let Some(path) = beside else { return lower_layout() };
+        let Some(leaf) = state[path.surface][path.node].get_leaf_mut() else { return lower_layout() };
+        let active = leaf.active;
+        leaf.append_tab(tab);
+        leaf.active = active;
+    }
+    state
+}
+
 fn with_every_tab(mut state: DockState<Tab>) -> DockState<Tab> {
     for tab in Tab::ALL.into_iter().filter(|t| !LOWER.contains(t)) {
         if state.find_tab(&tab).is_some() {
@@ -2027,10 +2051,8 @@ impl eframe::App for PtzApp {
                             }
                         }
                         let mut shell = Shell::new(session, self.settings.layout.take());
-                        if let Some(lower) =
-                            self.settings.lower_layout.take().filter(|l| LOWER.iter().all(|t| l.find_tab(t).is_some()))
-                        {
-                            shell.lower = lower;
+                        if let Some(lower) = self.settings.lower_layout.take() {
+                            shell.lower = with_lower_tabs(lower);
                         }
                         shell.updater = self.updater.clone();
                         self.start_server = false;

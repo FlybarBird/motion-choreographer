@@ -105,6 +105,9 @@ pub struct Session {
     last_edit: Option<(String, Instant)>,
     /// The server refused the last edit: its copy replaces the local one without an undo step.
     drop_local: bool,
+    /// Set while the Live edit page is handling the timeline, and while its keys run.
+    /// Other pages keep refusing a song that is live.
+    pub live_surface: bool,
 }
 
 #[cfg(test)]
@@ -128,6 +131,7 @@ fn idle_status() -> Status {
         telemetry: Default::default(),
         panel: None,
         panel_host: None,
+        live_edit: false,
     }
 }
 
@@ -182,6 +186,7 @@ impl Session {
             probe_media: Vec::new(),
             last_edit: None,
             drop_local: false,
+            live_surface: false,
         };
         if let Some(w) = hello.working {
             s.open(w);
@@ -494,7 +499,7 @@ impl Session {
                 Some(l) => format!("{} holds the edit lease. Take it over to edit", l.holder),
                 None => "Take the edit lease to edit".into(),
             })
-        } else if self.status.transport.output != Output::Rehearse {
+        } else if self.status.transport.output != Output::Rehearse && !(self.live_surface && self.status.live_edit) {
             Err("Disarm to edit the song".into())
         } else {
             Ok(())

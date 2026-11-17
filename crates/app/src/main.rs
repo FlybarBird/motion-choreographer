@@ -8,6 +8,7 @@ mod frames;
 mod gpu_tests;
 mod graph;
 mod link;
+mod live_edit;
 mod lock_ui;
 mod media_ui;
 mod monitor;

@@ -191,6 +191,18 @@ async fn commit_song(State(app): State<App>, Client(c): Client, Path(id): Path<S
     Ok(Json(lock(&app.show).commit_song(&c, &id)?))
 }
 
+async fn confirm_live_edit(State(app): State<App>, Client(c): Client, Path(id): Path<String>) -> Reply<Status> {
+    let mut s = lock(&app.show);
+    s.confirm_live_edit(&c, &id)?;
+    Ok(Json(s.status(&c)))
+}
+
+async fn cancel_live_edit(State(app): State<App>, Client(c): Client, Path(id): Path<String>) -> Reply<Status> {
+    let mut s = lock(&app.show);
+    s.cancel_live_edit(&c, &id)?;
+    Ok(Json(s.status(&c)))
+}
+
 async fn get_revisions(State(app): State<App>, Path(id): Path<String>) -> Reply<Vec<RevisionInfo>> {
     Ok(Json(lock(&app.show).revisions(&id)?))
 }
@@ -311,6 +323,10 @@ async fn get_inputs() -> Json<InputChoices> {
 
 async fn get_presets(State(app): State<App>) -> Json<Vec<Preset>> {
     Json(lock(&app.show).presets.clone())
+}
+
+async fn post_default(State(app): State<App>, Client(c): Client, Json(req): Json<StoreDefault>) -> Reply<Project> {
+    Ok(Json(lock(&app.show).store_default(&c, &req)?))
 }
 
 async fn post_preset(State(app): State<App>, Client(c): Client, Json(req): Json<StorePreset>) -> Reply<Preset> {
@@ -598,11 +614,13 @@ pub fn router(app: App) -> Router {
         .route("/songs/{id}/revert", post(revert_song))
         .route("/songs/{id}/copy", post(copy_song))
         .route("/songs/{id}/commit", post(commit_song))
+        .route("/songs/{id}/live_edit", post(confirm_live_edit).delete(cancel_live_edit))
         .route("/songs/{id}/revisions", get(get_revisions))
         .route("/transport/{action}", post(transport))
         .route("/estop", post(estop))
         .route("/estop/reset", post(estop_reset))
         .route("/project", get(get_project).put(put_project))
+        .route("/cameras/default", post(post_default))
         .route("/inputs", get(get_inputs))
         .route("/presets", get(get_presets).post(post_preset))
         .route("/presets/sync", post(sync_presets))

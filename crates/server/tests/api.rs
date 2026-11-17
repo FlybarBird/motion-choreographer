@@ -381,3 +381,108 @@ fn updating_a_preset_updates_every_timeline_move_made_from_it() {
         other => panic!("{other:?}"),
     }
 }
+
+#[test]
+fn live_edit_lets_a_preset_onto_the_armed_song_until_it_is_cancelled() {
+    let t = TestServer::start("live-edit");
+    let api = t.client("a");
+    api.take_lease("Booth", false).unwrap();
+    let project = api.project().unwrap();
+    let presets = api.presets().unwrap();
+    let rev_path = t.dir.join("songs/walk-in/rev/0001.json");
+    let revision = std::fs::read(&rev_path).unwrap();
+    // Opening Number ships saved, so it can be committed and loaded while a show is armed.
+    api.commit("opening-number").unwrap();
+
+    assert_eq!(refused(api.confirm_live_edit("walk-in")), "The show is not live");
+    assert!(!api.status().unwrap().live_edit);
+
+    let arm = || {
+        do_act(&api, Action::Arm);
+        wait_for(&api, |s| s.transport.output == Output::Armed);
+    };
+    arm();
+
+    let walk = api.working("walk-in").unwrap();
+    let frame = walk.song.motion.iter().map(|c| c.end_frame()).max().unwrap_or(0) + 10;
+    let (with_move, clip) = edit::insert_preset_move(&walk.song, &project, &presets[0], frame).unwrap();
+    let put = |song: Song, counter: u64| api.put_working(&PutWorking { expected_counter: counter, song });
+    assert_eq!(refused(put(with_move.clone(), walk.edit_counter)), "Disarm to edit the song");
+
+    let st = api.confirm_live_edit("walk-in").unwrap();
+    assert!(st.live_edit);
+    assert_eq!(st.transport.output, Output::Armed);
+
+    // Another station does not inherit the confirmation, and still needs the lease.
+    let other = t.client("b");
+    assert!(!other.status().unwrap().live_edit);
+    assert_eq!(refused(other.confirm_live_edit("walk-in")), "Take the edit lease to control the show");
+    assert_eq!(refused(put(with_move.clone(), walk.edit_counter)), "Disarm to edit the song");
+    // The holder can edit. A watcher cannot, confirmation or not.
+    let watcher_put = other.put_working(&PutWorking { expected_counter: walk.edit_counter, song: with_move.clone() });
+    assert_eq!(refused(watcher_put), "Take the edit lease to control the show");
+
+    // Taking the lease does not bring the confirmation with it.
+    other.take_lease("Front of house", true).unwrap();
+    assert!(!other.status().unwrap().live_edit);
+    assert_eq!(
+        refused(other.put_working(&PutWorking { expected_counter: walk.edit_counter, song: with_move.clone() })),
+        "Disarm to edit the song"
+    );
+    api.take_lease("Booth", true).unwrap();
+
+    // Disarm, E-Stop and loading another song each end it. Arming again still refuses.
+    api.confirm_live_edit("walk-in").unwrap();
+    do_act(&api, Action::Disarm);
+    assert!(!api.status().unwrap().live_edit);
+    arm();
+    assert_eq!(refused(put(with_move.clone(), walk.edit_counter)), "Disarm to edit the song");
+
+    api.confirm_live_edit("walk-in").unwrap();
+    do_act(&api, Action::Estop);
+    assert!(!api.status().unwrap().live_edit);
+    do_act(&api, Action::ResetEstop);
+    arm();
+    assert_eq!(refused(put(with_move.clone(), walk.edit_counter)), "Disarm to edit the song");
+
+    api.confirm_live_edit("walk-in").unwrap();
+    api.load_song("opening-number").unwrap();
+    let st = api.status().unwrap();
+    assert!(!st.live_edit);
+    assert_ne!(st.transport.output, Output::Rehearse);
+    let opening = api.working("opening-number").unwrap();
+    let renamed = edit::set_song_name(&opening.song, &project, "Opening Live").unwrap();
+    assert_eq!(refused(put(renamed, opening.edit_counter)), "Disarm to edit the song");
+
+    api.load_song("walk-in").unwrap();
+    wait_for(&api, |s| s.transport.output == Output::Armed && s.song.as_ref().is_some_and(|song| song.id == "walk-in"));
+    let walk = api.working("walk-in").unwrap();
+    let frame = walk.song.motion.iter().map(|c| c.end_frame()).max().unwrap_or(0) + 10;
+    let (with_move, clip) = edit::insert_preset_move(&walk.song, &project, &presets[0], frame).unwrap();
+    assert_eq!(refused(put(with_move.clone(), walk.edit_counter)), "Disarm to edit the song");
+
+    let st = api.confirm_live_edit("walk-in").unwrap();
+    assert!(st.live_edit && st.transport.output == Output::Armed);
+    let saved = put(with_move, walk.edit_counter).unwrap();
+    match &saved.song.motion_clip(&clip).unwrap().body {
+        ClipBody::PresetMove { to, .. } => assert_eq!(to.name, presets[0].name),
+        other => panic!("expected a preset move, got {other:?}"),
+    }
+    let st = api.status().unwrap();
+    assert_eq!(st.transport.output, Output::Armed, "the show stays armed");
+    assert!(st.live_edit);
+    let song = st.song.unwrap();
+    assert!(song.dirty && !song.committed_clean, "the working song is dirty and the committed revision is not rewritten");
+    assert_eq!(std::fs::read(&rev_path).unwrap(), revision);
+    let on_disk: Song = read_json(&t.dir.join("songs/walk-in/working.json"));
+    assert!(on_disk.motion_clip(&clip).is_some(), "playback compiles the working song");
+
+    let later = saved.song.motion.iter().map(|c| c.end_frame()).max().unwrap_or(0) + 10;
+    let (again, _) = edit::insert_preset_move(&saved.song, &project, &presets[1], later).unwrap();
+    let st = api.cancel_live_edit("walk-in").unwrap();
+    assert!(!st.live_edit);
+    assert_eq!(st.transport.output, Output::Armed);
+    assert_eq!(refused(put(again, saved.edit_counter)), "Disarm to edit the song");
+    assert!(api.working("walk-in").unwrap().song.motion_clip(&clip).is_some());
+    assert_eq!(std::fs::read(&rev_path).unwrap(), revision);
+}
