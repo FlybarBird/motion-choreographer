@@ -133,6 +133,7 @@ fn idle_status() -> Status {
         telemetry: Default::default(),
         panel: None,
         panel_host: None,
+        osc: None,
         live_edit: false,
     }
 }

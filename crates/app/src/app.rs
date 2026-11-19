@@ -1904,7 +1904,7 @@ impl PtzApp {
             start_local = true;
         }
         if start_local {
-            match link::start_local_server() {
+            match link::start_local_server(&self.settings.access_key) {
                 Ok(url) => {
                     self.settings.server = url;
                     // Give the server a moment to bind before the first request.
@@ -1999,7 +1999,7 @@ pub(crate) fn connect_form(
                         egui::TextEdit::singleline(&mut settings.access_key)
                             .password(true)
                             .desired_width(290.0)
-                            .hint_text("only for a remote server"),
+                            .hint_text("required for network control"),
                     );
                     ui.end_row();
                 });

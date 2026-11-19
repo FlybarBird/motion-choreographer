@@ -1,7 +1,9 @@
 //! Opt-in OSC commands for changing one camera's automation state.
 
 use crate::{engine::Shared, http::lock};
+use ptz_core::api::{OscConfig, OscStatus};
 use std::net::{SocketAddr, UdpSocket};
+use std::path::Path;
 use std::sync::Arc;
 
 pub(crate) fn bind(address: &str, access_key: Option<&str>) -> Result<UdpSocket, String> {
@@ -12,6 +14,78 @@ pub(crate) fn bind(address: &str, access_key: Option<&str>) -> Result<UdpSocket,
     let socket = UdpSocket::bind(addr).map_err(|e| format!("Could not listen for OSC on {addr}: {e}"))?;
     socket.set_nonblocking(true).map_err(|e| e.to_string())?;
     Ok(socket)
+}
+
+pub(crate) fn initial_status(data: &Path, cli: Option<SocketAddr>, has_access_key: bool) -> OscStatus {
+    let mut status = OscStatus { has_access_key, ..Default::default() };
+    if let Some(addr) = cli {
+        status.config = OscConfig { enabled: true, bind: addr };
+        status.from_command_line = true;
+        return status;
+    }
+    let path = data.join("osc.json");
+    let saved = std::fs::read(&path).and_then(|b| serde_json::from_slice(&b).map_err(std::io::Error::other));
+    match saved {
+        Ok(config) => status.config = config,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => status.problem = Some(format!("Could not read {}: {e}", path.display())),
+    }
+    status
+}
+
+/// Own one socket at a time. A settings change cancels receive and drops the old socket.
+/// A port in use or a network interface still coming up is retried without restarting the show.
+pub(crate) async fn follow(
+    mut changes: tokio::sync::watch::Receiver<OscConfig>,
+    mut initial: Option<UdpSocket>,
+    show: Shared,
+    access_key: Option<Arc<String>>,
+) {
+    let key = access_key.as_deref().map(String::as_str);
+    loop {
+        let config = *changes.borrow_and_update();
+        if config.enabled {
+            let socket = config
+                .validate(key.is_some())
+                .and_then(|()| initial.take().map_or_else(|| bind(&config.bind.to_string(), key), Ok))
+                .and_then(|socket| tokio::net::UdpSocket::from_std(socket).map_err(|e| e.to_string()));
+            let problem = match socket {
+                Ok(socket) => {
+                    {
+                        let mut show = lock(&show);
+                        if show.osc.config != config {
+                            continue;
+                        }
+                        let state = OscStatus { listening: Some(config.bind), problem: None, ..show.osc.clone() };
+                        show.set_osc_status(state);
+                    }
+                    tokio::select! {
+                        biased;
+                        result = changes.changed() => {
+                            if result.is_err() { return; }
+                            continue;
+                        }
+                        error = receive(socket, &show, key, config.bind) => error,
+                    }
+                }
+                Err(error) => error,
+            };
+            {
+                let mut show = lock(&show);
+                if show.osc.config != config {
+                    continue;
+                }
+                let state = OscStatus { listening: None, problem: Some(problem), ..show.osc.clone() };
+                show.set_osc_status(state);
+            }
+            tokio::select! {
+                result = changes.changed() => if result.is_err() { return; },
+                _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {}
+            }
+        } else if changes.changed().await.is_err() {
+            return;
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,36 +165,37 @@ fn report_packet(camera: &str, nonce: u64, (revision, armed, mode): (u64, bool, 
     packet
 }
 
-pub(crate) async fn receive(socket: UdpSocket, show: Shared, access_key: Option<Arc<String>>) {
-    let socket = match tokio::net::UdpSocket::from_std(socket) {
-        Ok(socket) => socket,
-        Err(e) => {
-            eprintln!("ptz-server: could not start the OSC listener: {e}");
-            return;
-        }
-    };
-    let key = access_key.as_deref().map(String::as_str);
+async fn receive(socket: tokio::net::UdpSocket, show: &Shared, key: Option<&str>, address: SocketAddr) -> String {
     // Receive the whole datagram. Some platforms report truncation as a socket error.
     let mut buffer = vec![0; 65_535];
     loop {
         let (size, peer) = match socket.recv_from(&mut buffer).await {
             Ok(received) => received,
-            Err(e) => {
-                eprintln!("ptz-server: OSC listener stopped: {e}");
-                return;
-            }
+            Err(e) => return format!("OSC receive on {address} failed: {e}"),
         };
         let Some(command) = decode(&buffer[..size]).filter(|command| command.key == key) else { continue };
-        if command.operation == Operation::Report {
-            let report = lock(&show).camera_osc_report(command.camera);
-            if let Ok(report) = report {
-                let packet = report_packet(command.camera, command.sequence, report);
-                if let Err(e) = socket.send_to(&packet, peer).await {
-                    eprintln!("ptz-server: OSC report for {} to {peer} failed: {e}", command.camera);
+        let report = {
+            let mut show = lock(show);
+            // A settings write takes this same lock and invalidates listening before it returns.
+            if show.osc.listening != Some(address) {
+                continue;
+            }
+            show.heard_osc(peer);
+            match command.operation {
+                Operation::Report => show.camera_osc_report(command.camera).ok(),
+                op => {
+                    if let Err(e) = show.camera_osc_control(command.camera, op, command.sequence) {
+                        eprintln!("ptz-server: OSC command for {} refused ({peer}): {}", command.camera, e.msg);
+                    }
+                    None
                 }
             }
-        } else if let Err(e) = lock(&show).camera_osc_control(command.camera, command.operation, command.sequence) {
-            eprintln!("ptz-server: OSC command for {} refused ({peer}): {}", command.camera, e.msg);
+        };
+        if let Some(report) = report {
+            let packet = report_packet(command.camera, command.sequence, report);
+            if let Err(e) = socket.send_to(&packet, peer).await {
+                eprintln!("ptz-server: OSC report for {} to {peer} failed: {e}", command.camera);
+            }
         }
     }
 }
@@ -183,6 +258,94 @@ mod tests {
         let mut bad_padding = good;
         bad_padding[23] = 1;
         assert!(decode(&bad_padding).is_none());
+    }
+
+    #[test]
+    fn settings_restore_the_listener_and_retry_a_busy_port_without_stopping_the_show() {
+        let dir = std::env::temp_dir().join(format!("ptz-osc-settings-{}", std::process::id()));
+        let mut cfg = Config::new(&dir);
+        cfg.audio = AudioChoice::Off;
+        let start = || crate::http::start(&cfg, "127.0.0.1:0", Some("test".into())).unwrap();
+        let server = start();
+        let api = Api::new(&server.url(), "operator", Some("test"));
+        let occupied = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let config = OscConfig { enabled: true, bind: occupied.local_addr().unwrap() };
+        assert!(api.put::<_, OscStatus>("/osc", &config).is_err());
+        api.take_lease("operator", false).unwrap();
+        let wait = |api: &Api, ready: fn(&OscStatus) -> bool| {
+            let until = Instant::now() + Duration::from_secs(6);
+            loop {
+                let s = api.status().unwrap().osc.unwrap();
+                if ready(&s) {
+                    return s;
+                }
+                assert!(Instant::now() < until, "OSC status: {s:?}");
+                std::thread::sleep(Duration::from_millis(15));
+            }
+        };
+        let report = || {
+            let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+            socket.set_read_timeout(Some(Duration::from_millis(350))).unwrap();
+            socket.send_to(&packet("/ptz/camera/cam1/report", 71, Some("test")), config.bind).unwrap();
+            let mut bytes = [0; 256];
+            socket.recv(&mut bytes).ok().is_some_and(|n| bytes[..n].starts_with(b"/ptz/camera/cam1/state\0"))
+        };
+        api.put::<_, OscStatus>("/osc", &config).unwrap();
+        assert!(wait(&api, |s| s.problem.is_some()).listening.is_none());
+        drop(occupied);
+        assert_eq!(wait(&api, |s| s.listening.is_some()).listening, Some(config.bind));
+        assert!(report());
+        let last = api.status().unwrap().osc.unwrap().last_packet.unwrap();
+        assert!(last.sender.ip().is_loopback() && last.seconds_ago < 2);
+        drop(server);
+
+        let server = start();
+        let api = Api::new(&server.url(), "operator", Some("test"));
+        assert_eq!(wait(&api, |s| s.listening.is_some()).config, config);
+        assert!(report());
+        api.take_lease("operator", false).unwrap();
+        let off = OscConfig { enabled: false, ..config };
+        api.put::<_, OscStatus>("/osc", &off).unwrap();
+        assert!(!report());
+        drop(server);
+        let server = start();
+        let state = Api::new(&server.url(), "operator", Some("test")).status().unwrap().osc.unwrap();
+        assert_eq!(state.config, off);
+        assert!(state.listening.is_none());
+        assert!(!report());
+        drop(server);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn command_line_override_and_missing_key_keep_the_saved_lan_listener_closed() {
+        let dir = std::env::temp_dir().join(format!("ptz-osc-override-{}", std::process::id()));
+        let mut cfg = Config::new(&dir);
+        cfg.audio = AudioChoice::Off;
+        let saved = OscConfig { enabled: true, bind: "0.0.0.0:9000".parse().unwrap() };
+        crate::storage::write_json(&dir.join("osc.json"), &saved).unwrap();
+        let server = crate::http::start_with_osc(&cfg, "127.0.0.1:0", None, Some("127.0.0.1:0")).unwrap();
+        let api = Api::new(&server.url(), "test", None);
+        api.take_lease("test", false).unwrap();
+        assert!(api.status().unwrap().osc.unwrap().from_command_line);
+        assert!(api.put::<_, OscStatus>("/osc", &OscConfig::default()).is_err());
+        drop(server);
+        let server = crate::http::start(&cfg, "127.0.0.1:0", None).unwrap();
+        let api = Api::new(&server.url(), "test", None);
+        let until = Instant::now() + Duration::from_secs(3);
+        loop {
+            let state = api.status().unwrap().osc.unwrap();
+            assert_eq!(state.config, saved);
+            assert!(state.listening.is_none());
+            if let Some(why) = state.problem {
+                assert!(why.contains("access key"));
+                break;
+            }
+            assert!(Instant::now() < until);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        drop(server);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

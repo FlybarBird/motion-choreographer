@@ -12,8 +12,8 @@ Usage: ptz-server [options]
   --access-key <key>    Require this key on every request. Needed for any
                         address other than loopback.
   --osc-bind <addr:port>
-                        Listen for camera Arm/Disarm commands over OSC/UDP.
-                        Disabled unless set (e.g. 127.0.0.1:9000).
+                        Override the OSC/UDP listener in Control panel settings
+                        (e.g. 127.0.0.1:9000).
   --no-seed             Do not create the example songs in an empty folder
   --audio-device <name> Play through the output whose name contains this text
                         (default: the system output)

@@ -233,6 +233,8 @@ pub struct Show {
     panel: Option<(PanelState, String, Instant)>,
     /// The panel this server runs for itself, when it was asked to run one.
     panel_host: Option<PanelHost>,
+    pub(crate) osc: OscStatus,
+    osc_last_packet: Option<(std::net::SocketAddr, Instant)>,
     started: Instant,
     last_tick: Instant,
     log: RunLog,
@@ -501,6 +503,8 @@ impl Show {
             lock_problem: None,
             panel: None,
             panel_host: None,
+            osc: OscStatus::default(),
+            osc_last_packet: None,
             started: now,
             last_tick: now,
             log,
@@ -743,6 +747,25 @@ impl Show {
             self.panel_host = host;
             self.poke();
         }
+    }
+
+    pub(crate) fn set_osc_status(&mut self, status: OscStatus) {
+        if self.osc != status {
+            self.log("osc_listener", json!(&status));
+            self.osc = status;
+            self.osc_last_packet = None;
+            self.poke();
+        }
+    }
+
+    pub(crate) fn heard_osc(&mut self, sender: std::net::SocketAddr) {
+        self.osc_last_packet = Some((sender, Instant::now()));
+    }
+
+    fn osc_status(&self) -> OscStatus {
+        let last_packet =
+            self.osc_last_packet.map(|(sender, at)| OscPacketStatus { sender, seconds_ago: at.elapsed().as_secs() });
+        OscStatus { last_packet, ..self.osc.clone() }
     }
 
     /// The server stopped the controller it was running: its last report is not kept until it times out.
@@ -3437,6 +3460,7 @@ impl Show {
             telemetry,
             panel: self.panel.as_ref().map(|(p, _, _)| p.clone()),
             panel_host: self.panel_host.clone(),
+            osc: Some(self.osc_status()),
         }
     }
 }

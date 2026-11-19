@@ -291,6 +291,23 @@ fn the_control_panel_page_says_what_the_server_says_about_the_panel() {
 }
 
 #[test]
+fn control_panel_applies_osc_to_the_server_and_displays_the_confirmed_socket() {
+    use ptz_core::api::{OscConfig, OscStatus};
+    let mut r = rig(song());
+    r.harness.state_mut().session.status.osc = Some(OscStatus::default());
+    r.settings(Page::Panel);
+    r.harness.get_by_label("OSC listener is off.");
+    r.press("Enable OSC control and feedback");
+    assert!(!r.cmds.try_iter().any(|c| matches!(c, Cmd::SetOsc(_))));
+    r.press("Apply OSC settings");
+    let sent = r.cmds.try_iter().find_map(|c| if let Cmd::SetOsc(cfg) = c { Some(cfg) } else { None }).unwrap();
+    assert_eq!(sent, OscConfig { enabled: true, ..Default::default() });
+    r.harness.state_mut().session.status.osc = Some(OscStatus { config: sent, listening: Some(sent.bind), ..Default::default() });
+    r.harness.run_steps(3);
+    r.harness.get_by_label("Listening on UDP 127.0.0.1:9000");
+}
+
+#[test]
 fn the_programming_page_sets_how_near_a_pose_must_be_to_a_preset_to_use_it_again() {
     let mut r = rig(song());
     r.settings(Page::Programming);

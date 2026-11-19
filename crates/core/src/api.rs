@@ -213,6 +213,53 @@ pub struct Status {
     /// The panel the server itself runs or is trying to run, when it was asked to run one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub panel_host: Option<PanelHost>,
+    /// Absent on servers predating configurable OSC.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub osc: Option<OscStatus>,
+}
+
+/// OSC settings belong to the server's data folder and survive project edits and restarts.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct OscConfig {
+    pub enabled: bool,
+    pub bind: std::net::SocketAddr,
+}
+
+impl Default for OscConfig {
+    fn default() -> Self {
+        Self { enabled: false, bind: ([127, 0, 0, 1], 9000).into() }
+    }
+}
+
+impl OscConfig {
+    pub fn validate(self, has_key: bool) -> Result<(), String> {
+        if self.bind.port() == 0 {
+            return Err("Choose a UDP port from 1 to 65535".into());
+        }
+        if self.enabled && !self.bind.ip().is_loopback() && !has_key {
+            return Err(
+                "LAN OSC needs a server access key. Set the key when starting the local server or use --access-key.".into()
+            );
+        }
+        Ok(())
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub struct OscStatus {
+    pub config: OscConfig,
+    pub listening: Option<std::net::SocketAddr>,
+    pub problem: Option<String>,
+    pub from_command_line: bool,
+    pub has_access_key: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_packet: Option<OscPacketStatus>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct OscPacketStatus {
+    pub sender: std::net::SocketAddr,
+    pub seconds_ago: u64,
 }
 
 /// The panel the server runs for itself: where it is, who asked for it, and what is in the way.

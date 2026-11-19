@@ -668,7 +668,19 @@ pose alongside its last measured rig pose.
 
 ### Camera automation and feedback over OSC
 
-To accept OSC on the show server, start it with an explicit UDP listener.
+In **Show settings → Control panel → OSC over UDP**, enable OSC, enter the show
+server's local IP address and UDP port, then choose **Apply OSC settings**.
+Point the panel at that same IP and port. The page shows the bound socket or
+the reason it could not open, plus the sender and age of the last valid OSC
+packet. The server retries a busy port or an unavailable
+interface and remembers the settings in `osc.json` in its data folder.
+
+For LAN use, set the **Access key** on the desktop connection screen before
+using **Start a server on this computer**, or supply the key when starting a
+standalone server. Use the same key on the panel. With a loopback listener
+only clients on the server machine can send OSC.
+
+To override the saved listener for one server run, pass an explicit address.
 
 ```sh
 ptz-server --osc-bind 127.0.0.1:9000

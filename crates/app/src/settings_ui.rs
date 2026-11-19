@@ -816,6 +816,79 @@ fn control_panel(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::Pro
         .color(MUTED)
         .small(),
     );
+    hairline(ui);
+    osc_settings(ui, s);
+}
+
+fn osc_settings(ui: &mut Ui, s: &Session) {
+    use ptz_core::api::OscConfig;
+    ui.label(RichText::new("OSC over UDP").font(semibold(BODY)));
+    let Some(state) = &s.status.osc else {
+        ui.label("Update the show server to configure OSC here.");
+        return;
+    };
+    let status = if let Some(problem) = &state.problem {
+        RichText::new(problem).color(AMBER)
+    } else if let Some(address) = state.listening {
+        RichText::new(format!("Listening on UDP {address}"))
+    } else if state.config.enabled {
+        RichText::new("Starting OSC listener…")
+    } else {
+        RichText::new("OSC listener is off.")
+    };
+    ui.label(status);
+    if state.listening.is_some() {
+        let heard = state.last_packet.as_ref().map_or_else(
+            || "Waiting for the first valid OSC packet.".into(),
+            |p| format!("Last valid OSC packet from {} · {} s ago", p.sender, p.seconds_ago),
+        );
+        ui.label(RichText::new(heard).small());
+    }
+    if state.from_command_line {
+        ui.label("The server's --osc-bind option controls this listener.");
+        return;
+    }
+    let id = ui.make_persistent_id(("osc_form", &s.link.base));
+    let (mut enabled, mut address) = ui
+        .data_mut(|d| d.get_temp::<(OscConfig, bool, String)>(id))
+        .filter(|(base, _, _)| *base == state.config)
+        .map(|(_, enabled, address)| (enabled, address))
+        .unwrap_or_else(|| (state.config.enabled, state.config.bind.to_string()));
+    ui.add_enabled_ui(s.lost.is_none() && s.status.you_hold_lease, |ui| {
+        ui.checkbox(&mut enabled, "Enable OSC control and feedback");
+        ui.horizontal_wrapped(|ui| {
+            let label = ui.label("Listen IP and UDP port");
+            ui.add(egui::TextEdit::singleline(&mut address).desired_width(190.0)).labelled_by(label.id);
+        });
+        let config = address
+            .trim()
+            .parse()
+            .map_err(|_| "Enter the show server's IP and port, such as 192.168.1.10:9000".to_string())
+            .and_then(|bind| {
+                let config = OscConfig { enabled, bind };
+                config.validate(state.has_access_key)?;
+                Ok(config)
+            });
+        let changed = config.as_ref().is_ok_and(|c| *c != state.config || state.problem.is_some());
+        if ui.add_enabled(changed, egui::Button::new("Apply OSC settings")).clicked() {
+            if let Ok(config) = &config {
+                s.link.send(Cmd::SetOsc(*config));
+            }
+        }
+        if let Err(why) = &config {
+            ui.colored_label(AMBER, why);
+        }
+    });
+    ui.data_mut(|d| d.insert_temp(id, (state.config, enabled, address)));
+    ui.label(
+        RichText::new(if state.has_access_key {
+            "Send OSC to this server using its access key. Feedback returns to the sender's UDP port."
+        } else {
+            "Loopback OSC is available. For a network panel, start the server with an access key."
+        })
+        .color(MUTED)
+        .small(),
+    );
 }
 
 /// Where Lock listens for timecode.

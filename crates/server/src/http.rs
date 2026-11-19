@@ -25,6 +25,7 @@ use tokio::sync::broadcast::error::RecvError;
 pub struct App {
     pub show: Shared,
     pub access_key: Option<Arc<String>>,
+    osc_changes: tokio::sync::watch::Sender<OscConfig>,
 }
 
 pub fn lock(show: &Shared) -> MutexGuard<'_, Show> {
@@ -248,6 +249,23 @@ async fn get_project(State(app): State<App>) -> Json<Project> {
 
 async fn put_project(State(app): State<App>, Client(c): Client, Json(project): Json<Project>) -> Reply<Project> {
     Ok(Json(lock(&app.show).put_project(&c, project)?))
+}
+
+async fn put_osc(State(app): State<App>, Client(c): Client, Json(config): Json<OscConfig>) -> Reply<OscStatus> {
+    let mut show = lock(&app.show);
+    show.require_lease(&c)?;
+    let current = &show.osc;
+    if current.from_command_line {
+        return Err(Fail::refused("OSC is set by --osc-bind on this server"));
+    }
+    config.validate(current.has_access_key).map_err(Fail::invalid)?;
+    if current.config != config || current.problem.is_some() {
+        crate::storage::write_json(&show.storage.root().join("osc.json"), &config).map_err(Fail::io)?;
+        let next = OscStatus { config, listening: None, problem: None, ..current.clone() };
+        show.set_osc_status(next);
+        app.osc_changes.send_replace(config);
+    }
+    Ok(Json(show.osc.clone()))
 }
 
 #[derive(Deserialize)]
@@ -616,6 +634,7 @@ pub fn router(app: App) -> Router {
         .route("/ws", get(ws))
         .route("/lease", post(post_lease).delete(delete_lease))
         .route("/panel", put(put_panel))
+        .route("/osc", put(put_osc))
         .route("/songs", get(list_songs).post(create_song))
         .route("/songs/{id}", delete(delete_song))
         .route("/songs/{id}/load", post(load_song))
@@ -740,10 +759,14 @@ pub fn start_with_osc(cfg: &Config, bind: &str, access_key: Option<String>, osc_
     let addr = listener.local_addr().map_err(|e| e.to_string())?;
     let osc_socket = osc_bind.map(|bind| crate::osc::bind(bind, access_key.as_deref())).transpose()?;
     let osc_addr = osc_socket.as_ref().map(std::net::UdpSocket::local_addr).transpose().map_err(|e| e.to_string())?;
-    let (show, _rx) = Show::open(cfg).map_err(|e| format!("Could not open {}: {e}", cfg.data.display()))?;
+    let (mut show, _rx) = Show::open(cfg).map_err(|e| format!("Could not open {}: {e}", cfg.data.display()))?;
+    let access_key = access_key.filter(|k| !k.is_empty()).map(Arc::new);
+    let state = crate::osc::initial_status(&cfg.data, osc_addr, access_key.is_some());
+    let (osc_changes, changes) = tokio::sync::watch::channel(state.config);
+    show.set_osc_status(state);
     let show: Shared = Arc::new(Mutex::new(show));
     spawn_tick(&show);
-    let app = App { show: show.clone(), access_key: access_key.filter(|k| !k.is_empty()).map(Arc::new) };
+    let app = App { show: show.clone(), access_key, osc_changes };
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
     let halting = show.clone();
     let thread = std::thread::Builder::new()
@@ -752,14 +775,11 @@ pub fn start_with_osc(cfg: &Config, bind: &str, access_key: Option<String>, osc_
             let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().expect("runtime");
             rt.block_on(async move {
                 let listener = tokio::net::TcpListener::from_std(listener).expect("listener");
-                let osc =
-                    osc_socket.map(|socket| tokio::spawn(crate::osc::receive(socket, app.show.clone(), app.access_key.clone())));
+                let osc = tokio::spawn(crate::osc::follow(changes, osc_socket, app.show.clone(), app.access_key.clone()));
                 let shutdown = async move {
                     asked_to_stop(stop_rx).await;
-                    if let Some(osc) = osc {
-                        osc.abort();
-                        let _ = osc.await;
-                    }
+                    osc.abort();
+                    let _ = osc.await;
                     // Stop the rigs before winding down HTTP.
                     let stopped = tokio::task::spawn_blocking(move || halt_for_exit(&halting, HALT_ON_EXIT)).await;
                     if !matches!(stopped, Ok(true)) {

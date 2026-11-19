@@ -47,6 +47,7 @@ pub enum Cmd {
     },
     DeleteSong(String),
     PutProject(Box<Project>),
+    SetOsc(OscConfig),
     StorePreset(StorePreset),
     /// Store this camera's position and zoom as the pose a new song starts from.
     StoreDefault(StoreDefault),
@@ -542,6 +543,11 @@ impl Worker {
                 Ok(songs) => self.emit(Event::Songs(songs)),
                 Err(e) => self.refused("Delete song", e),
             },
+            Cmd::SetOsc(config) => {
+                if let Err(e) = self.api.put::<_, OscStatus>("/osc", &config) {
+                    self.refused("OSC settings", e);
+                }
+            }
             Cmd::PutProject(project) => match self.api.put_project(&project) {
                 Ok(p) => self.emit(Event::Project(Box::new(p))),
                 Err(e) => {
@@ -883,9 +889,17 @@ pub const NO_LOCAL_SERVER: &str =
     "The show server is not installed on this computer. Install it, or enter the address of a server on another machine";
 
 /// Launch `ptz-server` detached.
-pub fn start_local_server() -> Result<String, String> {
+pub fn start_local_server(access_key: &str) -> Result<String, String> {
     let program = local_server().ok_or_else(|| NO_LOCAL_SERVER.to_string())?;
-    let mut cmd = std::process::Command::new(&program);
+    local_server_command(&program, access_key).spawn().map_err(|e| format!("Could not start {}: {e}", program.display()))?;
+    Ok(format!("http://127.0.0.1:{DEFAULT_PORT}"))
+}
+
+fn local_server_command(program: &std::path::Path, access_key: &str) -> std::process::Command {
+    let mut cmd = std::process::Command::new(program);
+    if !access_key.trim().is_empty() {
+        cmd.env("PTZ_ACCESS_KEY", access_key.trim());
+    }
     cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
     #[cfg(unix)]
     {
@@ -893,13 +907,21 @@ pub fn start_local_server() -> Result<String, String> {
         // Its own process group, so it keeps running when the app quits.
         cmd.process_group(0);
     }
-    cmd.spawn().map_err(|e| format!("Could not start {}: {e}", program.display()))?;
-    Ok(format!("http://127.0.0.1:{DEFAULT_PORT}"))
+    cmd
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_desktop_started_server_receives_the_saved_access_key_in_its_environment() {
+        let program = std::path::Path::new("ptz-server");
+        let cmd = local_server_command(program, "  test-key  ");
+        assert!(cmd.get_envs().any(|(name, value)| name == "PTZ_ACCESS_KEY" && value == Some("test-key".as_ref())));
+        assert_eq!(cmd.get_args().count(), 0);
+        assert!(!local_server_command(program, "").get_envs().any(|(name, _)| name == "PTZ_ACCESS_KEY"));
+    }
 
     #[test]
     fn the_server_is_found_beside_the_app_first_then_where_the_installers_put_it() {
