@@ -290,6 +290,10 @@ impl Unit {
         self.live.clear();
     }
 
+    fn waiting_for_device(&self) -> bool {
+        matches!(self.camera_failure, Some(CameraFailure::Device | CameraFailure::MissingFeedback(..)))
+    }
+
     fn finish_jog(&mut self, live: bool, stop_now: bool) {
         if self.jog_deadline.take().is_none() {
             return;
@@ -307,9 +311,10 @@ impl Unit {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CameraFailure {
     Device,
+    MissingFeedback(Axis, Instant),
     InvalidTarget,
     CatchUp,
     Manual,
@@ -380,7 +385,7 @@ struct Live {
     positioning: Option<(Pose, Instant)>,
     stop_wait_since: Option<Instant>,
     /// Last useful feedback on each axis during a local rejoin.
-    rejoin_feedback: Option<(Pose, [Instant; 5])>,
+    rejoin_feedback: Option<RejoinFeedback>,
     /// The rig ran out of time on the way to that pose and was let through.
     late: bool,
     /// Rig position minus commanded position.
@@ -388,6 +393,91 @@ struct Live {
     /// Why output was last cut, until the operator arms or plays again.
     fault: Option<String>,
     pose_logged: Option<Instant>,
+}
+
+struct RejoinFeedback {
+    started: Instant,
+    axes: [AxisProgress; 5],
+}
+
+#[derive(Clone, Copy)]
+struct AxisProgress {
+    read_at: Option<Instant>,
+    advanced_at: Instant,
+    checkpoint: f64,
+    direction: i8,
+}
+
+impl RejoinFeedback {
+    fn new(now: Instant) -> Self {
+        let axis = AxisProgress { read_at: None, advanced_at: now, checkpoint: 0.0, direction: 0 };
+        Self { started: now, axes: [axis; 5] }
+    }
+
+    fn observe(
+        &mut self,
+        reading: &crate::rig::PoseReading,
+        error: Pose,
+        tolerance: Pose,
+        now: Instant,
+        window: Duration,
+        column: bool,
+    ) -> Result<bool, (CameraFailure, String)> {
+        let mut confirmed = true;
+        for axis in Axis::ALL.into_iter().filter(|axis| *axis != Axis::Elevation || column) {
+            let progress = &mut self.axes[axis.index()];
+            let read_at = reading.at[axis.index()];
+            let fresh = read_at >= self.started && progress.read_at.is_none_or(|last| read_at > last);
+            if fresh {
+                progress.read_at = Some(read_at);
+                let at = reading.pose.get(axis);
+                let lag = error.get(axis);
+                let tol = tolerance.get(axis).max(1e-9);
+                let direction = if lag.abs() <= tol {
+                    0
+                } else if lag < 0.0 {
+                    1
+                } else {
+                    -1
+                };
+                // Accumulate small forward steps from the last credited position. Returning
+                // to it after a jitter sample earns no time. A reversed target gets a
+                // new checkpoint at the current measured position.
+                let increment: f64 = match axis {
+                    Axis::Pan | Axis::Tilt => 0.02,     // degrees
+                    Axis::Elevation => 0.25,            // mm
+                    Axis::Zoom | Axis::Focus => 0.0005, // normalized lens travel
+                };
+                if direction == 0
+                    || direction != progress.direction
+                    || (at - progress.checkpoint) * f64::from(direction) >= increment.min(tol * 0.25)
+                {
+                    progress.direction = direction;
+                    progress.checkpoint = at;
+                    progress.advanced_at = read_at;
+                }
+            }
+            let age = now.saturating_duration_since(progress.read_at.unwrap_or(self.started));
+            // During travel, loss of feedback must stop the drive within the stall window.
+            // At rest, let the adapter distinguish a disconnect from a busy position sensor.
+            let waiting_for_travel = error.get(axis).abs() > tolerance.get(axis);
+            let deadline = if waiting_for_travel { window } else { window.max(FEEDBACK_GRACE) };
+            if age > deadline {
+                return Err((
+                    CameraFailure::MissingFeedback(axis, read_at),
+                    format!("Catch-up timed out: no fresh {} feedback", axis.label().to_lowercase()),
+                ));
+            }
+            if fresh && now.saturating_duration_since(progress.advanced_at) > window {
+                return Err((
+                    CameraFailure::CatchUp,
+                    format!("Catch-up timed out: {} stopped making progress", axis.label().to_lowercase()),
+                ));
+            }
+            confirmed &= progress.read_at.is_some() && age <= window;
+        }
+        Ok(confirmed)
+    }
 }
 
 impl Live {
@@ -413,6 +503,7 @@ impl Live {
 
 /// How long positioning may take beyond the time the travel needs.
 const POSITIONING_GRACE: Duration = Duration::from_secs(3);
+const FEEDBACK_GRACE: Duration = Duration::from_secs(3);
 /// E-Stop's stop is sent again if the rig still reads as moving after this long.
 const HALT_AGAIN: Duration = Duration::from_secs(2);
 
@@ -641,8 +732,8 @@ impl Show {
             }
             unit.manual = false;
         }
-        if armed {
-            // Device and invalid-cue faults will be evaluated again before sending motion.
+        if armed && !unit.waiting_for_device() {
+            // A device hold is released by fresh health feedback in tick_cameras.
             unit.held = false;
             unit.camera_failure = None;
             unit.live.fault = None;
@@ -652,7 +743,7 @@ impl Show {
             unit.held = false;
             unit.camera_failure = None;
         }
-        unit.catching_up = live && armed && unit.jog_deadline.is_none();
+        unit.catching_up = live && armed && !unit.held && unit.jog_deadline.is_none();
         let camera = unit.id.clone();
         self.log("camera_arm", json!({ "camera": camera, "armed": armed, "by": by, "frame": self.frame_f.floor() as i64 }));
         self.poke();
@@ -2158,12 +2249,18 @@ impl Show {
 
     /// A device, cue, or recovery failure holds only this camera.
     fn camera_fault(&mut self, i: usize, kind: CameraFailure, reason: String) {
-        let unit = &mut self.units[i];
+        let unit = &self.units[i];
         if unit.camera_failure == Some(kind)
             && (kind == CameraFailure::InvalidTarget || unit.live.fault.as_ref() == Some(&reason))
         {
             return;
         }
+        let intended = self.playhead_target(i);
+        let unit = &mut self.units[i];
+        let commanded = unit.live.commanded;
+        let reading = unit.rig.reading();
+        let measured_against =
+            commanded.map(|last| Pose::from_fn(|a| unit.live.commanded_at(reading.at[a.index()]).unwrap_or(last).get(a)));
         unit.jog_deadline = None;
         unit.manual = false;
         unit.catching_up = false;
@@ -2171,8 +2268,14 @@ impl Show {
         unit.held = true;
         unit.interrupt_automation();
         unit.live.fault = Some(reason.clone());
-        let (camera, pose) = (unit.id.clone(), unit.rig.pose());
-        self.log("fault", json!({ "camera": camera, "reason": reason, "frame": self.frame_f.floor() as i64, "pose": pose }));
+        let camera = unit.id.clone();
+        self.log(
+            "fault",
+            json!({
+                "camera": camera, "reason": reason, "frame": self.frame_f.floor() as i64, "pose": reading.pose,
+                "intended_pose": intended, "commanded_pose": commanded, "commanded_at_read": measured_against,
+            }),
+        );
         self.poke();
     }
 
@@ -2268,18 +2371,25 @@ impl Show {
                 continue;
             }
             if let Some(problem) = self.rig_problem(i) {
-                if !self.units[i].held || self.units[i].camera_failure == Some(CameraFailure::Device) {
+                if !self.units[i].held || self.units[i].waiting_for_device() {
                     self.camera_fault(i, CameraFailure::Device, problem);
                 }
                 continue;
             }
             match self.units[i].camera_failure {
+                Some(CameraFailure::MissingFeedback(axis, last_read)) => {
+                    if self.units[i].rig.reading().at[axis.index()] <= last_read
+                        && !(axis == Axis::Elevation && self.column_stays(i))
+                    {
+                        continue;
+                    }
+                }
                 Some(CameraFailure::Device | CameraFailure::InvalidTarget) => {}
                 _ if self.units[i].held => continue,
                 _ => {}
             }
             if !self.units[i].armed {
-                if self.units[i].camera_failure == Some(CameraFailure::Device) {
+                if self.units[i].waiting_for_device() {
                     self.recover_camera(i);
                 }
                 continue;
@@ -2475,34 +2585,18 @@ impl Show {
             let there = Axis::ALL.into_iter().all(|a| {
                 (reading.pose.get(a) - target.get(a)).abs() <= tol.get(a) && (next.get(a) - target.get(a)).abs() <= tol.get(a)
             });
-            if there {
-                unit.catching_up = false;
-                unit.live.rejoin_feedback = None;
-                self.poke();
-            } else {
-                // An intentional rejoin can lag further than normal tracking allows. Monitor
-                // actual progress toward the latest command independently on each axis.
-                let (last, times) = unit.live.rejoin_feedback.get_or_insert((reading.pose, [now; 5]));
-                let stalled = Axis::ALL.into_iter().find(|&a| {
-                    let tolerance = tol.get(a).max(1e-9);
-                    let at = reading.pose.get(a);
-                    let commanded = at - error.get(a);
-                    let progress = (at - last.get(a)) * (commanded - last.get(a)).signum();
-                    let time = &mut times[a.index()];
-                    if error.get(a).abs() <= tolerance || progress >= tolerance * 0.25 {
-                        last.set(a, at);
-                        *time = now;
-                    }
-                    now.duration_since(*time) > window.max(Duration::from_secs(1))
-                });
-                if let Some(axis) = stalled {
-                    self.camera_fault(
-                        i,
-                        CameraFailure::CatchUp,
-                        format!("Catch-up timed out: {} stopped making progress", axis.label().to_lowercase()),
-                    );
+            let feedback = unit.live.rejoin_feedback.get_or_insert_with(|| RejoinFeedback::new(now));
+            match feedback.observe(&reading, error, tol, now, window.max(Duration::from_secs(1)), column) {
+                Ok(true) if there => {
+                    unit.catching_up = false;
+                    unit.live.rejoin_feedback = None;
+                    self.poke();
+                }
+                Err((kind, why)) => {
+                    self.camera_fault(i, kind, why);
                     return Step::Faulted;
                 }
+                _ => {}
             }
             return Step::Tracking;
         }
@@ -3580,6 +3674,53 @@ pub fn spawn_tick(show: &Shared) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejoin_credits_slow_pan_and_restarts_the_window_when_the_target_reverses() {
+        let start = Instant::now();
+        let mut feedback = RejoinFeedback::new(start);
+        let mut sample = |ms, pan, target: f64| {
+            let now = start + Duration::from_millis(ms);
+            let reading = crate::rig::PoseReading::all_at(Pose { pan, ..Pose::home() }, now);
+            let lag = Pose { pan: pan - target, ..Pose::default() };
+            feedback.observe(&reading, lag, Pose::from_fn(|_| 2.0), now, Duration::from_secs(1), true)
+        };
+        // 0.05 degrees/s, well below a quarter of the two-degree tracking tolerance per second.
+        for n in 0..=8 {
+            assert_eq!(sample(n * 250, n as f64 * 0.0125, 10.0), Ok(true));
+        }
+        assert_eq!(sample(2900, 0.1, -10.0), Ok(true));
+        assert_eq!(sample(3300, 0.1, -10.0), Ok(true));
+        assert_eq!(sample(3600, 0.07, -10.0), Ok(true));
+        // Oscillation around the last checkpoint is not continuing progress.
+        assert_eq!(sample(3900, 0.08, -10.0), Ok(true));
+        assert_eq!(sample(4300, 0.07, -10.0), Ok(true));
+        assert_eq!(sample(4700, 0.08, -10.0).unwrap_err().0, CameraFailure::CatchUp);
+    }
+
+    #[test]
+    fn cached_readings_cannot_confirm_or_keep_a_rejoin_alive() {
+        let start = Instant::now();
+        let mut feedback = RejoinFeedback::new(start);
+        let mut reading = crate::rig::PoseReading::all_at(Pose::home(), start - Duration::from_millis(50));
+        let mut check = |reading: &crate::rig::PoseReading, now, column| {
+            feedback.observe(reading, Pose::default(), Pose::from_fn(|_| 2.0), now, Duration::from_secs(1), column)
+        };
+        assert_eq!(check(&reading, start, true), Ok(false));
+        reading.at = [start; 5];
+        assert_eq!(check(&reading, start, true), Ok(true));
+        let later = start + Duration::from_millis(1050);
+        reading.at = [later; 5];
+        reading.at[Axis::Elevation.index()] = start;
+        assert_eq!(check(&reading, later, false), Ok(true), "an unused column can be offline");
+        reading.at[Axis::Pan.index()] = start;
+        // Replaying cached samples cannot keep a monitored axis healthy.
+        assert_eq!(check(&reading, later + Duration::from_secs(2), false), Ok(false));
+        assert_eq!(
+            check(&reading, later + Duration::from_secs(4), false).unwrap_err().0,
+            CameraFailure::MissingFeedback(Axis::Pan, start)
+        );
+    }
 
     #[test]
     fn the_project_names_the_output_unless_the_server_was_started_silent() {

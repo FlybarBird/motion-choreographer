@@ -324,8 +324,8 @@ struct State {
     mode: Mode,
     told_at: Instant,
     starved: bool,
-    /// The column ran away from the height it was sent to. It is not driven again.
-    wrong_way: bool,
+    /// A motion safety stop stays latched until the rig is set up again.
+    travel_fault: Option<&'static str>,
     limits: AxisLimits,
     quit: bool,
 }
@@ -341,9 +341,76 @@ const GAIN: f64 = 4.0;
 /// The leg box now and then misses a request on a healthy network. It is only called gone
 /// once it has answered nothing for this long: three requests that ran out of time in a row.
 const GONE_AFTER: Duration = Duration::from_millis(1100);
-/// A column that has gone this far the opposite way to the speed it is being given, and is
-/// still going, answers its speed byte the other way round. Nothing it could coast is this far.
+/// Maximum measured travel against an acknowledged nonzero speed, before the column is held.
 const WRONG_WAY_MM: f64 = 15.0;
+
+const WRONG_WAY: &str = "The AutoPod+ column moved away from the height it was sent to and was stopped. Check the column direction and height map before setting up the rig again";
+const BRAKE_TIMEOUT: &str =
+    "The AutoPod+ column did not come to rest after a stop command. Check the column before setting up the rig again";
+
+/// Height samples describe the interval after the last accepted speed command.
+#[derive(Default)]
+enum ColumnTravel {
+    #[default]
+    Rest,
+    Driving {
+        direction: i16,
+        furthest: f64,
+        previous: f64,
+        against: u32,
+    },
+    Braking {
+        since: Instant,
+        still: u8,
+    },
+}
+
+impl ColumnTravel {
+    fn observe(&mut self, at: f64, moved: bool, now: Instant) -> Result<(), &'static str> {
+        match self {
+            Self::Driving { direction, furthest, previous, against } => {
+                let way = f64::from(*direction);
+                *against = if (at - *previous) * way < 0.0 { *against + 1 } else { 0 };
+                *previous = at;
+                if (at - *furthest) * way > 0.0 {
+                    *furthest = at;
+                }
+                if (at - *furthest) * way < -WRONG_WAY_MM && *against >= 2 {
+                    return Err(WRONG_WAY);
+                }
+            }
+            Self::Braking { since, still } => {
+                *still = if moved { 0 } else { *still + 1 };
+                if *still >= 2 {
+                    *self = Self::Rest;
+                } else if now.duration_since(*since) > Duration::from_secs(3) {
+                    return Err(BRAKE_TIMEOUT);
+                }
+            }
+            Self::Rest => {}
+        }
+        Ok(())
+    }
+
+    fn permitted_byte(&self, requested: u8) -> u8 {
+        let way = (i16::from(requested) - 50).signum();
+        match self {
+            Self::Driving { direction, .. } if way != *direction => 50,
+            Self::Braking { .. } => 50,
+            _ => requested,
+        }
+    }
+
+    fn accepted(&mut self, byte: u8, at: f64, now: Instant) {
+        match (&*self, byte) {
+            (Self::Driving { .. }, 50) => *self = Self::Braking { since: now, still: 0 },
+            (Self::Rest, byte) if byte != 50 => {
+                *self = Self::Driving { direction: (i16::from(byte) - 50).signum(), furthest: at, previous: at, against: 0 };
+            }
+            _ => {}
+        }
+    }
+}
 
 impl AutoPod {
     pub fn start(cfg: PodConfig, limits: AxisLimits) -> AutoPod {
@@ -364,7 +431,7 @@ impl AutoPod {
             mode: Mode::Idle,
             told_at: now,
             starved: false,
-            wrong_way: false,
+            travel_fault: None,
             limits,
             quit: false,
         }));
@@ -403,11 +470,8 @@ impl AutoPod {
         if let Some(why) = s.calibration.problem() {
             return Some(why.to_string());
         }
-        if s.wrong_way {
-            return Some(
-                "The AutoPod+ column moved away from the height it was sent to and was stopped. It answers its speed commands the other way round, so it is not driven again until the rig is set up again"
-                    .into(),
-            );
+        if let Some(why) = s.travel_fault {
+            return Some(why.into());
         }
         if self.cfg.map.len() < CAL_POINTS_NEEDED {
             return Some(format!(
@@ -463,7 +527,7 @@ impl AutoPod {
 
     pub fn drive(&self, cmd: &Drive) {
         let mut s = self.lock();
-        if s.wrong_way || !s.connected || s.mode == Mode::Stop {
+        if s.travel_fault.is_some() || !s.connected || s.mode == Mode::Stop {
             return;
         }
         s.mode = Mode::Drive(*cmd);
@@ -494,10 +558,7 @@ fn run(cfg: PodConfig, state: Arc<Mutex<State>>) {
     let (mut stops_sent, mut still) = (0u32, 0u32);
     let mut was = Mode::Idle;
     let mut heard_at = Instant::now();
-    // The way the column is being sent and the height it had when that began; the height one
-    // reading ago; and how many readings in a row it has gone the other way.
-    let mut sent: Option<(f64, f64)> = None;
-    let (mut last_mm, mut against) = (None::<f64>, 0u32);
+    let mut travel = ColumnTravel::Rest;
     loop {
         if lock().quit {
             let _ = link.stop();
@@ -557,9 +618,8 @@ fn run(cfg: PodConfig, state: Arc<Mutex<State>>) {
                 was = mode;
             }
             if !matches!(mode, Mode::Drive(_)) {
-                sent = None;
+                travel = ColumnTravel::Rest;
             }
-            let before = std::mem::replace(&mut last_mm, mm);
             match mode {
                 Mode::Idle => {}
                 Mode::Drive(cmd) => {
@@ -569,28 +629,24 @@ fn run(cfg: PodConfig, state: Arc<Mutex<State>>) {
                     let top = limits.max_speed.max(1e-6);
                     let scale = cmd.scale.clamp(0.0, 1.0);
                     let speed = (cmd.velocity.elevation + GAIN * (cmd.target.elevation - at)).clamp(-top * scale, top * scale);
-                    let byte = speed_byte(speed / top);
-                    // A column that answers the speed byte the other way round runs from its
-                    // target, faster the further it gets. It is stopped a short way out.
-                    let way = (f64::from(byte) - 50.0).signum();
-                    if way == 0.0 {
-                        sent = None;
-                    } else if sent.is_none_or(|(was, _)| was != way) {
-                        sent = Some((way, at));
-                        against = 0;
+                    if let Err(why) = travel.observe(at, moved, read_at) {
+                        let mut s = lock();
+                        s.travel_fault = Some(why);
+                        s.mode = Mode::Stop;
+                        drop(s);
+                        return link.stop();
                     }
-                    if let Some((way, from)) = sent {
-                        against = if before.is_some_and(|b| (at - b) * way < 0.0) { against + 1 } else { 0 };
-                        if (at - from) * way < -WRONG_WAY_MM && against >= 2 {
-                            let mut s = lock();
-                            s.wrong_way = true;
-                            s.mode = Mode::Stop;
-                            drop(s);
-                            return link.stop();
-                        }
-                    }
+                    let byte = travel.permitted_byte(speed_byte(speed / top));
                     if last_byte != Some(byte) || cycle - sent_at_cycle >= 10 {
-                        link.send_with_owner(&velocity_command(byte), Some(&state))?;
+                        if let Err(why) = link.send_with_owner(&velocity_command(byte), Some(&state)) {
+                            // A lost reply leaves the applied speed unknown. Confirm a stop
+                            // before allowing another drive under a new direction.
+                            if why != DRIVE_SUPERSEDED && !link.last_refused {
+                                lock().mode = Mode::Stop;
+                            }
+                            return Err(why);
+                        }
+                        travel.accepted(byte, at, Instant::now());
                         last_byte = Some(byte);
                         sent_at_cycle = cycle;
                         lock().refused = None;
@@ -638,6 +694,43 @@ fn run(cfg: PodConfig, state: Arc<Mutex<State>>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_reversing_column_coasts_through_neutral_then_follows_only_the_latest_speed() {
+        for (first, opposite) in [(80, 20), (20, 80)] {
+            let start = Instant::now();
+            let way = f64::from((i16::from(first) - 50).signum());
+            let mut travel = ColumnTravel::Rest;
+            travel.accepted(first, 1500.0, start);
+            let before_stop = 1500.0 + way * 7.0;
+            travel.observe(before_stop, true, start).unwrap();
+            assert_eq!(travel.permitted_byte(opposite), 50);
+            travel.accepted(50, before_stop, start);
+            // The column keeps going more than the wrong-way threshold while braking.
+            // Rapidly replacing the target cannot bypass the stop confirmation.
+            for (n, (distance, moved)) in
+                [(9.0, true), (19.0, true), (19.0, false), (22.0, true), (22.0, false)].into_iter().enumerate()
+            {
+                let now = start + Duration::from_millis(50 * (n as u64 + 1));
+                travel.observe(before_stop + way * distance, moved, now).unwrap();
+                assert_eq!(travel.permitted_byte(if n % 2 == 0 { first } else { opposite }), 50);
+                travel.accepted(50, before_stop + way * distance, now);
+            }
+            travel.observe(before_stop + way * 22.0, false, start + Duration::from_millis(300)).unwrap();
+            assert_eq!(travel.permitted_byte(opposite), opposite);
+        }
+    }
+
+    #[test]
+    fn neutral_is_directionless_and_a_column_that_keeps_moving_under_braking_is_held() {
+        let start = Instant::now();
+        let mut travel = ColumnTravel::Rest;
+        travel.accepted(50, 800.0, start);
+        assert!(matches!(travel, ColumnTravel::Rest));
+        travel.accepted(70, 800.0, start);
+        travel.accepted(50, 805.0, start);
+        assert_eq!(travel.observe(830.0, true, start + Duration::from_secs(4)), Err(BRAKE_TIMEOUT));
+    }
 
     #[test]
     fn commands_match_what_the_real_units_exchange() {

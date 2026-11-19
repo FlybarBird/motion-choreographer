@@ -278,6 +278,16 @@ fn a_disconnected_camera_keeps_its_intended_pose_and_reconnects_without_stopping
     assert_playing(&lost);
     assert!(lost.first().armed, "the operator's arm intent survived the disconnect");
     assert!(lost.first().fault.as_deref().unwrap().contains("FR7"));
+    for _ in 0..3 {
+        for armed in [false, true] {
+            let status = api.set_camera_armed("cam1", armed).unwrap();
+            assert_playing(&status);
+            let camera = status.first();
+            assert_eq!(camera.armed, armed);
+            assert!(camera.held && !camera.catching_up);
+            assert_eq!(camera.fault, lost.first().fault);
+        }
+    }
     let state = wait_for(&api, |s| s.frame > end + 5);
     assert_playing(&state);
     assert_ne!(state.timecode, lost.timecode);
@@ -285,7 +295,7 @@ fn a_disconnected_camera_keeps_its_intended_pose_and_reconnects_without_stopping
     assert!((state.first().rig_pose.pan - initial.pose.pan).abs() < 1.0, "an unsent command changed the reported actual pose");
     assert!(state.camera("cam2").unwrap().fault.is_none());
     assert!(close(&rigs[1].pose(), &other.pose, &tolerance, 0.5), "the other rig missed its cue");
-    assert!(log(&api).iter().any(|r| r.kind == "fault" && r.data["camera"] == "cam1"));
+    assert_eq!(log(&api).iter().filter(|r| r.kind == "fault" && r.data["camera"] == "cam1").count(), 1);
 
     rigs[0].fr7.set_silent(false);
     let recovered = wait_for(&api, |s| {
@@ -317,10 +327,31 @@ fn a_disconnected_camera_keeps_its_intended_pose_and_reconnects_without_stopping
     assert_eq!(stuck.first().intended_pose.pan, newest.pose.pan);
     assert!((stuck.first().rig_pose.pan - 25.0).abs() < 0.2, "the failed catch-up was reported as a move");
     assert!(stuck.camera("cam2").unwrap().fault.is_none());
+    let faults = log(&api);
+    let fault = faults.iter().rev().find(|r| r.kind == "fault" && r.data["camera"] == "cam1").unwrap();
+    assert!((fault.data["pose"]["pan"].as_f64().unwrap() - 25.0).abs() < 0.2);
+    assert_eq!(fault.data["intended_pose"]["pan"], newest.pose.pan);
+    assert!(fault.data["commanded_at_read"]["pan"].as_f64().unwrap() > 27.0);
 
     api.set_camera_armed("cam1", false).unwrap();
+    // A slow head still reporting forward travel must outlive the stall timeout.
+    rigs[0].fr7.set_speed_factor(0.003);
+    let rearmed = api.set_camera_armed("cam1", true).unwrap();
+    let slow = wait_for(&api, |s| s.frame >= rearmed.frame + 60);
+    assert_playing(&slow);
+    assert!(slow.first().catching_up && slow.first().fault.is_none(), "{:?}", slow.first());
+    assert!(slow.first().rig_pose.pan > 25.05 && slow.first().rig_pose.pan < 26.0);
+    // A connected head can decline position inquiries while continuing to answer commands.
+    rigs[0].fr7.refuse_position(true);
+    let blind =
+        wait_for(&api, |s| s.first().fault.as_deref().is_some_and(|why| why.contains("no fresh") && why.ends_with("feedback")));
+    assert_playing(&blind);
+    assert!(blind.first().held && blind.first().adapters[0].connected);
+    assert!(blind.camera("cam2").unwrap().fault.is_none());
+    api.set_camera_armed("cam1", false).unwrap();
+    assert_eq!(api.set_camera_armed("cam1", true).unwrap().first().fault, blind.first().fault);
+    rigs[0].fr7.refuse_position(false);
     rigs[0].fr7.set_speed_factor(1.0);
-    api.set_camera_armed("cam1", true).unwrap();
     let state = wait_for(&api, |s| !s.first().catching_up && close(&rigs[0].pose(), &newest.pose, &tolerance, 0.5));
     assert_playing(&state);
     assert!(state.first().fault.is_none());

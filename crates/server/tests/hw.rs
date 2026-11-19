@@ -517,6 +517,42 @@ fn standby_and_a_refused_speed_command_are_problems_that_keep_the_connection() {
 }
 
 #[test]
+fn a_live_column_reversal_confirms_neutral_and_uses_the_latest_target() {
+    let pod = FakeAutoPod::start();
+    pod.place(300.0);
+    let mut rig = HardwareRig::start(&rig_config(None, Some(&pod)), &AxisTable::default());
+    wait_until("the leg box answers", || rig.problem().is_none());
+    pod.settle_after_connect();
+    let up = Drive::to(Pose { elevation: 360.0, ..Pose::home() }, 1.0);
+    let down = Drive::to(Pose { elevation: 270.0, ..Pose::home() }, 1.0);
+    wait_until("rising past 310 mm", || {
+        rig.drive(&up);
+        pod.height_mm() > 310.0
+    });
+    pod.clear_seen();
+    wait_until("neutral before reversing", || {
+        rig.drive(&down);
+        pod.orders().iter().any(|c| c == autopod::STOP)
+    });
+    wait_until("the new upward target takes effect", || {
+        rig.drive(&up);
+        pod.height_mm() > 320.0
+    });
+    assert!(pod.orders().iter().all(|c| c.as_str() >= autopod::STOP), "an obsolete downward drive was sent");
+    pod.clear_seen();
+    wait_until("descending past 310 mm", || {
+        rig.drive(&down);
+        pod.height_mm() < 310.0
+    });
+    let orders = pod.orders();
+    let stop = orders.iter().position(|c| c == autopod::STOP).unwrap();
+    let descending = orders.iter().position(|c| c.as_str() < autopod::STOP).unwrap();
+    assert!(stop < descending, "{orders:?}");
+    assert_eq!(rig.problem(), None);
+    rig.stop();
+}
+
+#[test]
 fn a_column_that_runs_the_other_way_to_its_speed_commands_is_stopped_a_short_way_out() {
     let pod = FakeAutoPod::start();
     pod.place(300.0);
