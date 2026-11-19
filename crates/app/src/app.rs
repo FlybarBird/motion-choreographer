@@ -98,6 +98,8 @@ pub struct Settings {
     pub layout: Option<DockState<Tab>>,
     /// The panels under the transport strip.
     pub lower_layout: Option<DockState<Tab>>,
+    /// This station's default time for newly dropped presets.
+    pub preset_duration: crate::timeline::PresetDropDuration,
 }
 
 const RECENT_SERVERS: usize = 5;
@@ -132,6 +134,7 @@ impl Settings {
         if s.station.trim().is_empty() {
             s.station = std::env::var("USER").ok().filter(|u| !u.is_empty()).unwrap_or_else(|| "Operator".into());
         }
+        s.preset_duration.sanitize();
         s
     }
 
@@ -695,6 +698,9 @@ impl Shell {
     pub fn ui(&mut self, ui: &mut Ui) {
         self.session.live_surface = false;
         self.session.poll();
+        // TextEdit can handle Paste and then surrender focus on Enter in the
+        // same frame. That event still belongs to the field (or closing dialog).
+        let clipboard_was_owned = modal_open(ui.ctx()) || ui.ctx().text_edit_focused();
         self.session.stage_view.placement_preview = None;
         if let Some(version) = self.updater.offered().filter(|v| self.update_told.as_ref() != Some(v)) {
             self.session.toast(format!("Version {version} is available: View, then Update"), false);
@@ -804,7 +810,28 @@ impl Shell {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(60));
         }
         self.dialogs(ui.ctx());
+        if !clipboard_was_owned {
+            self.clipboard_shortcuts(ui.ctx());
+        }
         self.toasts(ui.ctx());
+    }
+
+    /// Run after widgets have handled text input and established this frame's focus.
+    fn clipboard_shortcuts(&mut self, ctx: &egui::Context) {
+        if modal_open(ctx) || ctx.text_edit_focused() || self.session.settings.is_some() {
+            return;
+        }
+        let front = self.front();
+        if self.session.stage_view.placement && front.contains(&Tab::Stage) {
+            return;
+        }
+        let live = front.contains(&Tab::LiveEdit) && self.session.status.live_edit;
+        if !live && !front.iter().any(|tab| matches!(tab, Tab::Timeline | Tab::Graph)) {
+            return;
+        }
+        self.session.live_surface = live;
+        crate::timeline_clipboard::shortcuts(ctx, &mut self.session);
+        self.session.live_surface = false;
     }
 
     /// The tab in front of each group, over and under the strip, which the tab strips mark.
@@ -2042,6 +2069,7 @@ impl eframe::App for PtzApp {
                         remember_server(&mut self.settings.recent, &server);
                         self.settings.save();
                         let mut session = Session::new(link, &self.settings.station, *hello);
+                        session.timeline.preset_duration = self.settings.preset_duration;
                         if std::env::var("PTZ_RENDERER").as_deref() != Ok("cpu") {
                             if let Some(gl) = &self.gl {
                                 if let Err(why) = session.world.enable_gpu(gl.clone()) {
@@ -2070,11 +2098,13 @@ impl eframe::App for PtzApp {
             }
             Screen::Main(shell) => {
                 shell.ui(ui);
-                if shell.layout_changed && self.last_layout_save.elapsed().as_secs_f32() > 1.0 {
+                let duration_changed = self.settings.preset_duration != shell.session.timeline.preset_duration;
+                if duration_changed || (shell.layout_changed && self.last_layout_save.elapsed().as_secs_f32() > 1.0) {
                     shell.layout_changed = false;
                     self.last_layout_save = std::time::Instant::now();
                     self.settings.layout = Some(shell.dock.clone());
                     self.settings.lower_layout = Some(shell.lower.clone());
+                    self.settings.preset_duration = shell.session.timeline.preset_duration;
                     self.settings.save();
                     self.settings.layout = None;
                     self.settings.lower_layout = None;
@@ -2092,6 +2122,7 @@ impl eframe::App for PtzApp {
             shell.session.world.disable_gpu();
             self.settings.layout = Some(shell.dock.clone());
             self.settings.lower_layout = Some(shell.lower.clone());
+            self.settings.preset_duration = shell.session.timeline.preset_duration;
             self.settings.save();
         }
     }

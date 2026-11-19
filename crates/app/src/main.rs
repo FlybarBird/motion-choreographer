@@ -24,6 +24,7 @@ mod stage_gpu;
 mod stage_ui;
 mod theme;
 mod timeline;
+mod timeline_clipboard;
 mod timeline_ui;
 #[cfg(test)]
 mod ui_tests;

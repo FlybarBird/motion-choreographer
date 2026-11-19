@@ -5,6 +5,7 @@ use egui::{pos2, Pos2, Rect};
 use ptz_core::edit::{self, Refusal};
 use ptz_core::pose::{Axis, Preset, Project};
 use ptz_core::song::{ClipBody, MotionClip, Song, Track};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
 pub const HEADER_W: f32 = 132.0;
@@ -458,7 +459,7 @@ pub enum Outcome {
     Seek(i64),
     /// A finished gesture: the new song, and what to select afterwards.
     Edit {
-        song: Song,
+        song: Box<Song>,
         select: Option<Vec<String>>,
     },
     Refused(String),
@@ -511,9 +512,41 @@ pub struct Ghost {
     pub refusal: Option<String>,
 }
 
+/// This station's default for new preset drops. Auto keeps the last typed seconds
+/// ready to edit again, without changing the timing of any move already in a song.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PresetDropDuration {
+    pub automatic: bool,
+    pub seconds: f64,
+}
+
+impl Default for PresetDropDuration {
+    fn default() -> Self {
+        Self { automatic: true, seconds: 5.0 }
+    }
+}
+
+impl PresetDropDuration {
+    pub fn sanitize(&mut self) {
+        if !self.seconds.is_finite() || !(0.01..=3600.0).contains(&self.seconds) {
+            *self = Self::default();
+        }
+    }
+
+    fn timing(self) -> edit::PresetTiming {
+        if self.automatic {
+            edit::PresetTiming::Auto
+        } else {
+            edit::PresetTiming::Seconds(self.seconds)
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct Timeline {
     pub view: View,
+    pub preset_duration: PresetDropDuration,
     pub selection: BTreeSet<String>,
     pub key_selection: BTreeSet<KeyRef>,
     drag: Option<Drag>,
@@ -853,7 +886,7 @@ impl Timeline {
                     if let Some(ids) = &preview_ids {
                         self.selection = ids.iter().cloned().collect();
                     }
-                    return Outcome::Edit { song, select: preview_ids };
+                    return Outcome::Edit { song: Box::new(song), select: preview_ids };
                 }
                 if let Some(a) = attempt {
                     return Outcome::Refused(a.reason);
@@ -865,7 +898,7 @@ impl Timeline {
                 Outcome::None
             }
             Some(Drag::TrimEnd { .. }) | Some(Drag::TrimStart { .. }) | Some(Drag::Keys { .. }) => match (preview, attempt) {
-                (Some(song), _) => Outcome::Edit { song, select: None },
+                (Some(song), _) => Outcome::Edit { song: Box::new(song), select: None },
                 (None, Some(a)) => Outcome::Refused(a.reason),
                 _ => Outcome::None,
             },
@@ -934,7 +967,7 @@ impl Timeline {
             self.snap_frame = None;
             return Some(Self::replace_ghost(preset, clip, lane));
         }
-        Some(match edit::drop_preview(doc.song, doc.project, preset, frame) {
+        Some(match edit::drop_preview_timed(doc.song, doc.project, preset, frame, self.preset_duration.timing()) {
             Ok(p) => {
                 let from = p.from_name.clone().map(|f| format!("{f} to ")).unwrap_or_else(|| "To ".into());
                 let mut label = format!("{from}{}, {}", preset.name, secs_text(p.duration_frames, doc.project));
@@ -946,7 +979,13 @@ impl Timeline {
             Err(r) => Ghost {
                 lane,
                 start: frame,
-                duration: doc.project.rate.seconds_to_frames(2.0).round() as i64,
+                duration: self
+                    .preset_duration
+                    .timing()
+                    .frames(doc.project.rate)
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| doc.project.rate.seconds_to_frames(2.0).round() as i64),
                 label: preset.name.clone(),
                 refusal: Some(r.to_string()),
             },
@@ -966,16 +1005,16 @@ impl Timeline {
                 Ok(song) => {
                     self.select_only(&id);
                     self.key_selection.clear();
-                    Outcome::Edit { song, select: Some(vec![id]) }
+                    Outcome::Edit { song: Box::new(song), select: Some(vec![id]) }
                 }
                 Err(r) => Outcome::Refused(r.to_string()),
             };
         }
-        match edit::insert_preset_move(doc.song, doc.project, preset, frame) {
+        match edit::insert_preset_move_timed(doc.song, doc.project, preset, frame, self.preset_duration.timing()) {
             Ok((song, id)) => {
                 self.select_only(&id);
                 self.key_selection.clear();
-                Outcome::Edit { song, select: Some(vec![id]) }
+                Outcome::Edit { song: Box::new(song), select: Some(vec![id]) }
             }
             Err(r) => Outcome::Refused(r.to_string()),
         }
@@ -1041,7 +1080,7 @@ impl Timeline {
         match edit::add_media_clip(doc.song, doc.project, media_id, name, track, media_frames, ghost.start) {
             Ok((song, id)) => {
                 self.select_only(&id);
-                Outcome::Edit { song, select: Some(vec![id]) }
+                Outcome::Edit { song: Box::new(song), select: Some(vec![id]) }
             }
             Err(r) => Outcome::Refused(r.to_string()),
         }
@@ -1198,7 +1237,7 @@ mod tests {
         fn take(&mut self, o: Outcome) {
             match o {
                 Outcome::Edit { song, .. } => {
-                    self.undo.push(std::mem::replace(&mut self.song, song));
+                    self.undo.push(std::mem::replace(&mut self.song, *song));
                 }
                 Outcome::Seek(f) => self.playhead = f as f64,
                 Outcome::Refused(r) => self.refusals.push(r),
@@ -1237,6 +1276,48 @@ mod tests {
             let o = self.t.drop_preset(&l, &doc, preset, at, Mods::default());
             self.take(o);
         }
+    }
+
+    #[test]
+    fn fixed_preset_ghost_and_drop_keep_the_selected_time_and_refuse_an_overlap() {
+        let project = Project { rate: ptz_core::FrameRate::F2997, ..Project::default() };
+        let empty = Song::new("fixed", "Fixed drops", "01:00:00:00", 1500);
+        let p = presets();
+        let (song, existing) =
+            edit::insert_preset_move_timed(&empty, &project, &p[0], 300, edit::PresetTiming::Seconds(5.0)).unwrap();
+        let mut d = Driver::new(song, project);
+        d.t.preset_duration = PresetDropDuration { automatic: false, seconds: 5.0 };
+        let l = d.layout();
+        let y = motion_y(&l);
+        let doc = Doc { song: &d.song, project: &d.project, playhead: 0.0 };
+        let at = pos2(l.x_of(250.0), y);
+        let ghost = d.t.preset_ghost(&l, &doc, &p[1], at, Mods::default()).unwrap();
+        assert_eq!(ghost.duration, 150, "a refused ghost still shows the full requested duration");
+        assert!(ghost.refusal.is_some());
+        d.drop_preset(&p[1], at);
+        assert_eq!(d.song.motion.len(), 1);
+        assert_eq!(d.refusals.len(), 1);
+
+        d.t.preset_duration.seconds = 2.5;
+        let l = d.layout();
+        let doc = Doc { song: &d.song, project: &d.project, playhead: 0.0 };
+        let at = pos2(l.x_of(100.0), y);
+        let ghost = d.t.preset_ghost(&l, &doc, &p[1], at, Mods::default()).unwrap();
+        assert!(ghost.refusal.is_none());
+        assert_eq!(ghost.duration, 75);
+        d.drop_preset(&p[1], at);
+        let dropped = d.song.motion.iter().find(|clip| clip.id != existing).unwrap();
+        assert_eq!((dropped.start_frame, dropped.duration_frames), (ghost.start, ghost.duration));
+        assert_eq!(d.song.motion_clip(&existing).unwrap().duration_frames, 150);
+
+        // Replacing a target inside an existing move preserves that move's duration.
+        let l = d.layout();
+        let doc = Doc { song: &d.song, project: &d.project, playhead: 0.0 };
+        let at = pos2(l.x_of(325.0), y);
+        let ghost = d.t.preset_ghost(&l, &doc, &p[2], at, Mods::default()).unwrap();
+        assert_eq!(ghost.duration, 150);
+        d.drop_preset(&p[2], at);
+        assert_eq!(d.song.motion_clip(&existing).unwrap().duration_frames, 150);
     }
 
     #[test]

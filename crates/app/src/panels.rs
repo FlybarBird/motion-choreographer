@@ -196,6 +196,30 @@ pub fn presets(ui: &mut Ui, s: &mut Session) {
             let camera = Some(s.cam_id().to_string());
             s.link.send(Cmd::StorePreset(ptz_core::api::StorePreset { name, pose: Some(pose), camera }));
         }
+        // Reserve the whole group so the toolbar wraps it before laying out its
+        // children; a nested horizontal otherwise spills into the next dock tab.
+        ui.allocate_ui_with_layout(vec2(190.0, CONTROL_SMALL), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            let label = ui.label("Drop time");
+            let duration = &mut s.timeline.preset_duration;
+            let seconds = ui
+                .add(egui::DragValue::new(&mut duration.seconds).range(0.01..=3600.0).speed(0.1).suffix(" s"))
+                .labelled_by(label.id)
+                .on_hover_text("Seconds for new preset moves. Editing this value turns off Auto; existing moves keep their time");
+            let typed = seconds.has_focus()
+                && ui.input(|input| {
+                    input.events.iter().any(|event| matches!(event, egui::Event::Text(_) | egui::Event::Paste(_)))
+                });
+            if seconds.changed() || seconds.dragged() || typed {
+                duration.automatic = false;
+            }
+            if ui
+                .selectable_label(duration.automatic, "Auto")
+                .on_hover_text("Time new preset moves from the rig limits")
+                .clicked()
+            {
+                duration.automatic = true;
+            }
+        });
     });
     if let Some(progress) = s.cam_status().preset_sync.clone() {
         ui.horizontal(|ui| {

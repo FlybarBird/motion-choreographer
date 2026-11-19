@@ -211,6 +211,11 @@ server address and the key on the app's connect screen.
    Wide to Lectern MCU, 7.9 s`. A move starts from wherever the camera already is.
    Drag a preset onto a move that is already there to change where that move
    goes, without moving it in time.
+   To give new drops a fixed length, enter seconds in **Drop time** beside the
+   presets. **Auto** restores timing from the rig limits. This choice is saved
+   for this station; existing moves keep their time. A fixed move that does
+   not fit is refused, and one faster than the rig can perform still shows
+   the usual warnings.
 3. Drag a move to slide it. Drag its right edge to make it longer; it switches
    from auto time to custom time. Squeeze it too short and it turns amber with
    the reason; **Use auto time** in the Inspector clears it.
@@ -222,6 +227,16 @@ Edges snap to the playhead, markers and other clips; hold Shift to turn snapping
 off. Cmd-Z and Shift-Cmd-Z undo and redo. Cmd-S or Ctrl-S saves. `M` adds a
 marker, `\` fits the song to the window, Home cues to the start, the arrow keys
 step one frame.
+
+Select clips, markers or keys and use **Copy** / **Paste** in the timeline
+toolbar or right-click menu, or Ctrl-C / Ctrl-V (Cmd-C / Cmd-V on Mac).
+Paste starts at the playhead and keeps relative spacing, camera lanes, media
+trims and copied durations. It is one undo step. Preset copies keep their time
+as Custom; their linked start still follows the destination timeline. Clips
+can be copied between songs on the same server. After reconnecting or refreshing
+the media library, copy media clips again before pasting. Overlaps, unavailable cameras
+or media, and a different frame rate are refused without changing the song.
+Text fields keep their normal clipboard shortcuts.
 
 ## Cameras
 

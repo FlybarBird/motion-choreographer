@@ -8,7 +8,7 @@ use crate::pose::{Axis, Preset, Project};
 use crate::song::{
     Accepted, ClipBody, Ease, FromPose, Interp, Invalid, Key, Marker, MediaClip, MotionClip, PresetRef, Song, Track,
 };
-use crate::time::Timecode;
+use crate::time::{FrameRate, Timecode};
 use std::collections::BTreeMap;
 use std::fmt;
 
@@ -26,6 +26,7 @@ pub enum Refusal {
     /// A preset holds one camera's pose; it cannot be the target of another camera's move.
     OtherCamera,
     NoSuchCamera,
+    InvalidDuration,
 }
 
 impl fmt::Display for Refusal {
@@ -43,11 +44,36 @@ impl fmt::Display for Refusal {
             Refusal::Empty => write!(f, "Nothing is selected"),
             Refusal::OtherCamera => write!(f, "That preset belongs to another camera"),
             Refusal::NoSuchCamera => write!(f, "That camera is not in the project"),
+            Refusal::InvalidDuration => write!(f, "The preset duration must be a finite number of seconds greater than zero"),
         }
     }
 }
 
 pub type Edit = Result<Song, Refusal>;
+
+/// How newly dropped presets are timed. Existing moves retain their own timing.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum PresetTiming {
+    #[default]
+    Auto,
+    Seconds(f64),
+}
+
+impl PresetTiming {
+    /// Fixed time rounded to the nearest actual-rate frame, with a one-frame minimum.
+    pub fn frames(self, rate: FrameRate) -> Result<Option<i64>, Refusal> {
+        match self {
+            Self::Auto => Ok(None),
+            Self::Seconds(seconds) => {
+                let frames = rate.seconds_to_frames(seconds).round();
+                if !seconds.is_finite() || seconds <= 0.0 || frames >= i64::MAX as f64 {
+                    return Err(Refusal::InvalidDuration);
+                }
+                Ok(Some((frames as i64).max(1)))
+            }
+        }
+    }
+}
 
 fn finish(mut song: Song, project: &Project) -> Edit {
     // Checked before auto-timed moves are refreshed, so an edit that lands on
@@ -74,17 +100,32 @@ fn grow(song: &mut Song, end: i64) {
 /// preset and starts from the pose already programmed for that camera there.
 /// Returns the new clip's id.
 pub fn insert_preset_move(song: &Song, project: &Project, preset: &Preset, frame: i64) -> Result<(Song, String), Refusal> {
+    insert_preset_move_timed(song, project, preset, frame, PresetTiming::Auto)
+}
+
+/// Drop a preset with a chosen duration. Fixed moves are refused when they overlap;
+/// they are never shortened to fit, and the compiler still reports unsafe motion.
+pub fn insert_preset_move_timed(
+    song: &Song,
+    project: &Project,
+    preset: &Preset,
+    frame: i64,
+    timing: PresetTiming,
+) -> Result<(Song, String), Refusal> {
     let mut next = song.clone();
     let frame = frame.max(0);
+    let fixed = timing.frames(project.rate)?;
+    let duration_frames = fixed.unwrap_or(1);
+    let end = frame.checked_add(duration_frames).ok_or(Refusal::InvalidDuration)?;
     let id = next.next_id("c");
     let clip = MotionClip {
         id: id.clone(),
         camera: preset.camera.clone(),
         start_frame: frame,
-        duration_frames: 1,
+        duration_frames,
         axes: Axis::ALL.to_vec(),
         body: ClipBody::PresetMove {
-            auto_duration: true,
+            auto_duration: fixed.is_none(),
             from: FromPose::linked(),
             to: PresetRef::of(preset),
             ease: Ease::EaseInOut,
@@ -93,7 +134,7 @@ pub fn insert_preset_move(song: &Song, project: &Project, preset: &Preset, frame
         recorded_pass: None,
     };
     next.motion.push(clip);
-    grow(&mut next, frame + 1);
+    grow(&mut next, end);
     Ok((finish(next, project)?, id))
 }
 
@@ -135,7 +176,17 @@ pub fn insert_marked_move(
 /// Room a new auto-timed move would get at `frame` and the time it wants.
 /// `None` for room means nothing follows it.
 pub fn drop_preview(song: &Song, project: &Project, preset: &Preset, frame: i64) -> Result<DropPreview, Refusal> {
-    let (next, id) = insert_preset_move(song, project, preset, frame)?;
+    drop_preview_timed(song, project, preset, frame, PresetTiming::Auto)
+}
+
+pub fn drop_preview_timed(
+    song: &Song,
+    project: &Project,
+    preset: &Preset,
+    frame: i64,
+    timing: PresetTiming,
+) -> Result<DropPreview, Refusal> {
+    let (next, id) = insert_preset_move_timed(song, project, preset, frame, timing)?;
     let clip = next.motion_clip(&id).ok_or(Refusal::NotFound)?;
     let wanted = suggested_duration(&next, clip, project).unwrap_or(clip.duration_frames);
     let from_name = song
@@ -1012,6 +1063,53 @@ mod tests {
 
     fn base() -> (Song, Project) {
         (Song::new("s", "S", "01:00:00:00", 1500), Project::default())
+    }
+
+    #[test]
+    fn fixed_preset_drop_time_uses_actual_fps_and_matches_its_preview() {
+        let (song, mut p) = base();
+        let target = preset("Close", 60.0, 400.0);
+        for (rate, seconds, frames) in [
+            (FrameRate::F25, 5.0, 125),
+            (FrameRate::F2997, 17.0, 509),
+            (FrameRate::F2997Df, 17.0, 509),
+            (FrameRate::F23976, 30.0, 719),
+            (FrameRate::F24, 0.001, 1),
+        ] {
+            p.rate = rate;
+            let timing = PresetTiming::Seconds(seconds);
+            let preview = drop_preview_timed(&song, &p, &target, 100, timing).unwrap();
+            let (dropped, id) = insert_preset_move_timed(&song, &p, &target, 100, timing).unwrap();
+            let clip = dropped.motion_clip(&id).unwrap();
+            assert_eq!((clip.start_frame, clip.duration_frames), (100, frames));
+            assert_eq!((preview.start_frame, preview.duration_frames), (clip.start_frame, clip.duration_frames));
+            assert!(matches!(clip.body, ClipBody::PresetMove { auto_duration: false, .. }));
+            assert_eq!(pose_at(&dropped, CAM, clip.end_frame()), target.pose);
+        }
+        assert_eq!(
+            insert_preset_move_timed(&song, &p, &target, 100, PresetTiming::Auto).unwrap(),
+            insert_preset_move(&song, &p, &target, 100).unwrap()
+        );
+    }
+
+    #[test]
+    fn fixed_preset_time_refuses_overlap_without_shortening_and_still_reports_fast_motion() {
+        let (song, p) = base();
+        let target = preset("Close", 120.0, 500.0);
+        let (occupied, old_id) = insert_marked_move(&song, &p, &target, 300, 425).unwrap();
+        let timing = PresetTiming::Seconds(5.0);
+        let refusal = insert_preset_move_timed(&occupied, &p, &target, 250, timing).unwrap_err();
+        assert!(matches!(refusal, Refusal::Invalid(Invalid::Overlap { .. })));
+        assert_eq!(drop_preview_timed(&occupied, &p, &target, 250, timing).unwrap_err(), refusal);
+        let (placed, _) = insert_preset_move_timed(&occupied, &p, &target, 100, timing).unwrap();
+        assert_eq!(placed.motion_clip(&old_id), occupied.motion_clip(&old_id), "the old fixed move keeps its time");
+        let (fast, id) = insert_preset_move_timed(&song, &p, &target, 100, PresetTiming::Seconds(0.01)).unwrap();
+        assert_eq!(fast.motion_clip(&id).unwrap().duration_frames, 1);
+        assert!(compile(&fast, &p).issues.iter().any(|issue| issue.clip_id() == Some(id.as_str()) && issue.acceptable()));
+        assert!(compile(&fast, &p).blocking_count(&fast) > 0);
+        for seconds in [0.0, -1.0, f64::NAN, f64::INFINITY, f64::MAX] {
+            assert_eq!(PresetTiming::Seconds(seconds).frames(p.rate), Err(Refusal::InvalidDuration));
+        }
     }
 
     #[test]

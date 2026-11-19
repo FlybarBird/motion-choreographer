@@ -219,6 +219,7 @@ const CAMERA_GLASS: [u8; 3] = [32, 71, 96];
 
 /// A rounded PTZ head with a lens barrel, tilt yoke and pedestal or ceiling suspension.
 /// Only the head tilts; the yoke pans and the support stays fixed at the attachment.
+#[cfg(test)]
 pub fn marker(mount: &Mount, pose: &Pose, color: [u8; 3]) -> Mesh {
     marker_at(mount, pose, color, None)
 }
