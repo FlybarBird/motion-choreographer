@@ -819,7 +819,7 @@ impl Show {
         let Some(edit) = self.live_edit.clone() else { return };
         let why = if self.current.as_deref() != Some(edit.song.as_str()) {
             "another song was loaded"
-        } else if !self.lease.as_ref().is_some_and(|l| l.client == edit.client) {
+        } else if self.lease.as_ref().is_none_or(|l| l.client != edit.client) {
             "the edit lease moved"
         } else if self.transport.output == Output::Rehearse {
             "the show is not live"

@@ -1526,7 +1526,39 @@ fn the_multiview_has_a_tile_for_each_of_twelve_cameras_and_a_click_selects() {
     project.validate().unwrap();
     let mut r = rig_with(project, presets(), Song::new("s", "Test Song", "01:00:00:00", 1500));
     r.harness.state_mut().show_tab(Tab::Multiview);
-    r.harness.run_steps(6);
+    let pending = |r: &Rig| {
+        let s = &r.harness.state().session;
+        let poses = s.poses();
+        s.project
+            .cameras
+            .iter()
+            .enumerate()
+            .filter_map(|(i, camera)| {
+                let fresh = s.probe_tiles.get(i).is_some_and(|(_, rect)| {
+                    let view = crate::stage::show_view(&s.project, camera, &poses[i]);
+                    let key = crate::stage::camera_key(&s.project, &poses, i, &view);
+                    let size = crate::stage::pixel_size(*rect, r.harness.ctx.pixels_per_point(), 640.0);
+                    s.world.is_fresh(&format!("multi:{}", camera.id), size, key)
+                });
+                if fresh {
+                    None
+                } else {
+                    Some(camera.id.clone())
+                }
+            })
+            .collect::<Vec<_>>()
+    };
+    // The render budget guarantees a turn for one tile per frame, not all twelve
+    // within six frames. Wait for full-size current pictures, with room for layout
+    // changes and sharpening, while still failing if a tile never gets its turn.
+    for _ in 0..48 {
+        r.harness.run_steps(1);
+        if pending(&r).is_empty() {
+            break;
+        }
+    }
+    let pending = pending(&r);
+    assert!(pending.is_empty(), "multiview pictures did not settle: {pending:?}");
     let s = &r.harness.state().session;
     assert_eq!(s.probe_tiles.len(), 12);
     for (i, camera) in s.project.cameras.iter().enumerate() {
