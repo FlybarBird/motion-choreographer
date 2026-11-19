@@ -596,7 +596,7 @@ mod tests {
         .unwrap();
         assert!(legacy.camera_homes.is_empty());
         assert_eq!(legacy.rest_pose(CAM), Pose::home());
-        assert!(serde_json::to_value(&Song::new("s", "S", "01:00:00:00", 10)).unwrap().get("camera_homes").is_none());
+        assert!(serde_json::to_value(Song::new("s", "S", "01:00:00:00", 10)).unwrap().get("camera_homes").is_none());
         let written = serde_json::to_value(&idle).unwrap();
         let home = &written["camera_homes"]["cam1"];
         assert_eq!(home["pan"].as_f64(), Some(18.5));

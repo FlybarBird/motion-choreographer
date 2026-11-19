@@ -202,12 +202,14 @@ and Elevation.
 | To | Do this |
 | --- | --- |
 | Add a move | Drag a preset from the Presets tab. It lands on the Camera move lane at the pointer's time. |
+| Set the time for new preset drops | Enter seconds in **Drop time** beside the presets. **Auto** restores timing from the rig limits. The choice is remembered on this station; existing moves keep their time. |
 | Change where a move goes | Drag a preset onto that move. Its time stays; the destination changes. |
 | Slide a move | Drag it |
 | Make it longer or shorter | Drag its right edge. It switches from auto time to custom time. |
 | Change when it starts without moving its end | Drag its left edge |
 | Give it to another camera | Drag it onto that camera's lane, or change **Camera** in the Inspector |
-| Copy it | Alt-drag it, or select it and press **Cmd-D** (**Duplicate**), which copies it after the selection |
+| Copy and paste | Select clips, markers or keys, press **Cmd-C**, move the playhead, then **Cmd-V**. Use Ctrl on Windows/Linux, or **Copy** / **Paste** in the toolbar or right-click menu. |
+| Duplicate it immediately after itself | Alt-drag it, or select it and press **Cmd-D** (**Duplicate**) |
 | Delete it | Select it and press **Delete** |
 
 Edges snap to the playhead, to markers and to other clips. Hold **Shift** while
@@ -224,6 +226,14 @@ empty space to draw a box round several. With several selected: drag to move
 them together, **Delete** removes them, **Cmd-D** copies them after the
 selection. Click empty space to select nothing, which is also how you get the
 song's name, start and length in the Inspector.
+
+Paste keeps the selection's relative spacing, camera lanes, media trims and
+durations, and is one undo step. Copied preset moves use Custom time; linked
+starts still follow the destination timeline. You can paste into another song
+on the same server. After reconnecting or refreshing the media library, copy
+media clips again before pasting. Overlaps, missing cameras or media, and different frame
+rates are refused without a partial paste. Selected keys can be pasted into
+a selected keys clip at the playhead, or become a new clip outside it.
 
 ### The Inspector for a move
 
@@ -1054,6 +1064,7 @@ On a Mac, Cmd; elsewhere, Ctrl. Save is both **Cmd-S** and **Ctrl-S**, on every 
 | K | Add a key at the playhead on the selected lanes |
 | Delete, Backspace | Delete the selection |
 | Cmd-D | Duplicate the selection after itself |
+| Cmd-C, Cmd-V | Copy the timeline selection, paste it at the playhead |
 | Cmd-Z, Shift-Cmd-Z | Undo, redo |
 | Cmd-S, Ctrl-S | Save |
 | `\` | Fit the song to the window |

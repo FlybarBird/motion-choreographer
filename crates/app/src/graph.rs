@@ -917,9 +917,8 @@ fn paint(painter: &Painter, plot: &Plot, song: &Song, clip: Option<&MotionClip>,
         // Lines fall on round numbers of what is read. A column with a height map is read
         // from 0 at its lowest measured height to 100 at its highest.
         let units = s.project.units;
-        let span = (active == Axis::Elevation)
-            .then(|| s.project.camera(&s.cam_id().to_string()).and_then(|c| s.project.measured_span(c)))
-            .flatten();
+        let span =
+            (active == Axis::Elevation).then(|| s.project.camera(s.cam_id()).and_then(|c| s.project.measured_span(c))).flatten();
         let (per, to_mm, label): (f64, Box<dyn Fn(f64) -> f64>, Box<dyn Fn(f64) -> String>) = match span {
             Some((low, high)) => {
                 (1.0, Box::new(move |share| low + share / 100.0 * (high - low)), Box::new(|share| format!("{share:.0}")))

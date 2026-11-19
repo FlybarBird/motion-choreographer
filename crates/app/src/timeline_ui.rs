@@ -191,7 +191,7 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
         match o {
             Outcome::None => {}
             Outcome::Seek(frame) => s.seek(frame),
-            Outcome::Edit { song, .. } => s.commit_edit(song),
+            Outcome::Edit { song, .. } => s.commit_edit(*song),
             Outcome::Refused(why) => s.toast(why, true),
             Outcome::StampOutside { .. } => {}
         }
@@ -355,6 +355,21 @@ fn toolbar(ui: &mut Ui, s: &mut Session, song: &Song) {
             add_marker(s);
         }
         let n = s.timeline.selection.len();
+        if ui
+            .add_enabled(crate::timeline_clipboard::can_copy(s), egui::Button::new("Copy"))
+            .on_hover_text("Copy selected clips, markers or keys  ( Ctrl/Cmd-C )")
+            .clicked()
+        {
+            crate::timeline_clipboard::copy(ui.ctx(), s);
+        }
+        let why = crate::timeline_clipboard::paste_unavailable(s);
+        let paste = ui
+            .add_enabled(why.is_none(), egui::Button::new("Paste"))
+            .on_hover_text("Paste at the playhead, keeping the selection's spacing and lanes  ( Ctrl/Cmd-V )")
+            .on_disabled_hover_text(why.unwrap_or_default());
+        if paste.clicked() {
+            crate::timeline_clipboard::request_paste(ui.ctx(), s);
+        }
         if ui.add_enabled(n > 0, egui::Button::new("Delete")).on_hover_text("Delete the selection  ( Delete )").clicked() {
             delete_selection(s);
         }
@@ -432,17 +447,42 @@ pub fn duplicate_selection(s: &mut Session) {
 fn context_menu(resp: &egui::Response, s: &mut Session, song: &Song, layout: &Layout) {
     if resp.secondary_clicked() {
         if let Some(p) = resp.interact_pointer_pos() {
-            if let Hit::ClipBody { id } | Hit::ClipStart { id } | Hit::ClipEnd { id } | Hit::Marker { id } =
-                timeline::hit(layout, p)
-            {
-                if !s.timeline.selection.contains(&id) {
-                    s.timeline.selection.clear();
-                    s.timeline.selection.insert(id);
+            match timeline::hit(layout, p) {
+                Hit::ClipBody { id } | Hit::ClipStart { id } | Hit::ClipEnd { id } | Hit::Marker { id } => {
+                    s.timeline.key_selection.clear();
+                    if !s.timeline.selection.contains(&id) {
+                        s.timeline.selection.clear();
+                        s.timeline.selection.insert(id);
+                    }
                 }
+                Hit::Key { clip, axis, index } => {
+                    let key = (clip.clone(), axis, index);
+                    if !s.timeline.key_selection.contains(&key) {
+                        s.timeline.selection.clear();
+                        s.timeline.key_selection.clear();
+                        s.timeline.selection.insert(clip);
+                        s.timeline.key_selection.insert(key);
+                    }
+                }
+                _ => {}
             }
         }
     }
     resp.context_menu(|ui| {
+        if ui.add_enabled(crate::timeline_clipboard::can_copy(s), egui::Button::new("Copy")).clicked() {
+            crate::timeline_clipboard::copy(ui.ctx(), s);
+            ui.close();
+        }
+        let why = crate::timeline_clipboard::paste_unavailable(s);
+        if ui
+            .add_enabled(why.is_none(), egui::Button::new("Paste at playhead"))
+            .on_disabled_hover_text(why.unwrap_or_default())
+            .clicked()
+        {
+            crate::timeline_clipboard::request_paste(ui.ctx(), s);
+            ui.close();
+        }
+        ui.separator();
         let ids = s.selected_ids();
         let one_move = (ids.len() == 1).then(|| song.motion_clip(&ids[0])).flatten().cloned();
         if ids.is_empty() {

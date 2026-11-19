@@ -49,6 +49,8 @@ pub struct Session {
     pub presets: Vec<Preset>,
     pub songs: Vec<SongSummary>,
     pub media: Vec<MediaInfo>,
+    /// Media clipboard references belong to this connection and library snapshot.
+    pub clipboard_media_scope: String,
     pub song: Option<Song>,
     pub compiled: Compiled,
     counter: u64,
@@ -149,6 +151,7 @@ impl Session {
             presets: hello.presets,
             songs: hello.songs,
             media: hello.media,
+            clipboard_media_scope: crate::timeline_clipboard::media_scope(),
             song: None,
             compiled: Compiled::default(),
             counter: 0,
@@ -222,8 +225,10 @@ impl Session {
         self.redo.clear();
         self.smoothed = None;
         let view = self.timeline.view;
+        let preset_duration = self.timeline.preset_duration;
         self.timeline = Timeline::default();
         self.timeline.view = view;
+        self.timeline.preset_duration = preset_duration;
         self.fit_requested = true;
     }
 
@@ -414,6 +419,9 @@ impl Session {
                 self.prune_pictures();
             }
             Event::Media(media) => {
+                // Media IDs are filename slugs, so a removed and reimported file
+                // may reuse one. A clipboard reference must be copied again.
+                self.clipboard_media_scope = crate::timeline_clipboard::media_scope();
                 // A file that changed or went away loses its cached waveform.
                 let same = |id: &String| media.iter().find(|m| &m.id == id) == self.media.iter().find(|m| &m.id == id);
                 self.peaks.retain(|id, _| same(id));

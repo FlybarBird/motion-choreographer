@@ -2173,8 +2173,10 @@ fn the_live_edit_page_asks_before_it_edits_the_song_that_is_live() {
     assert_eq!(confirmed, vec!["s".to_string()]);
 }
 
+mod clipboard;
 mod picture;
 mod placement;
+mod preset_duration;
 mod safety;
 mod settings;
 mod shots;
