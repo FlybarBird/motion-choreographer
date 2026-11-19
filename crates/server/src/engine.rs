@@ -254,6 +254,7 @@ struct Unit {
     /// Which adapters answered when last looked at, to log each connect and disconnect.
     adapters_were: Vec<(String, bool)>,
     armed: bool,
+    arm_revision: u64,
     jog_deadline: Option<Instant>,
     jog: Jog,
     catching_up: bool,
@@ -272,6 +273,8 @@ impl Unit {
             halting: None,
             adapters_were: Vec::new(),
             armed: true,
+            // A recreated rig must reject toggles based on its predecessor's report.
+            arm_revision: std::hash::BuildHasher::hash_one(&std::collections::hash_map::RandomState::new(), &camera.id),
             jog_deadline: None,
             jog: Jog::default(),
             catching_up: false,
@@ -582,10 +585,37 @@ impl Show {
     }
 
     pub fn set_camera_armed_osc(&mut self, camera: &str, armed: bool, sequence: u64) -> Res<()> {
+        self.camera_osc_control(camera, crate::osc::Operation::Set(armed), sequence)
+    }
+
+    pub(crate) fn camera_osc_report(&self, camera: &str) -> Res<(u64, bool, &'static str)> {
+        let unit = &self.units[self.unit_index(Some(camera))?];
+        let mode = if unit.live.fault.is_some() || unit.held {
+            "ERROR"
+        } else if unit.rig.status().iter().any(|adapter| !adapter.connected) {
+            "OFFLINE"
+        } else if unit.jog_deadline.is_some() {
+            "MANUAL"
+        } else if unit.catching_up {
+            "CATCHUP"
+        } else if unit.halting.is_some() {
+            "STOPPING"
+        } else {
+            "OK"
+        };
+        Ok((unit.arm_revision, unit.armed, mode))
+    }
+
+    pub(crate) fn camera_osc_control(&mut self, camera: &str, operation: crate::osc::Operation, sequence: u64) -> Res<()> {
         let i = self.unit_index(Some(camera))?;
         let last = self.osc_sequences.entry(camera.to_string()).or_default();
         if sequence > *last {
             *last = sequence;
+            let armed = match operation {
+                crate::osc::Operation::Set(armed) => armed,
+                crate::osc::Operation::Toggle(revision) if revision == self.units[i].arm_revision => !self.units[i].armed,
+                _ => return Ok(()),
+            };
             self.apply_camera_arm(i, armed, "OSC");
         }
         Ok(())
@@ -598,6 +628,7 @@ impl Show {
             return;
         }
         unit.armed = armed;
+        unit.arm_revision = unit.arm_revision.wrapping_add(1);
         if unit.jog_deadline.is_none() {
             if !armed && (live || unit.rig.is_simulator() || unit.rig.preset_sync_progress().is_some()) {
                 unit.interrupt_automation();

@@ -666,7 +666,7 @@ earlier cues. The camera bar and Rig controller show the arm state, manual
 control, catch-up and faults. The status API reports each camera's intended
 pose alongside its last measured rig pose.
 
-### Camera Arm and Disarm over OSC
+### Camera automation and feedback over OSC
 
 To accept OSC on the show server, start it with an explicit UDP listener.
 
@@ -683,13 +683,27 @@ camera is `cam1`.
 | `/ptz/camera/cam1/disarm` | Hold this camera out of automation while the show continues. |
 | `/ptz/camera/cam1/arm` | Return this camera to automation at the current show position. |
 
-Send one OSC message per UDP datagram. Its first argument is a positive int32
+Send one OSC message per UDP datagram. For Arm and Disarm, the first argument is a positive int32
 (`i`) or int64 (`h`) sequence. If the server has an access key, append the
 same key as the second argument, an OSC string (`s`). An OSC listener on a LAN
 address requires an access key.
 [Open Sound Control message format](https://opensoundcontrol.stanford.edu/spec-1_0.html#osc-messages)
 
-Use one increasing sequence per camera across both actions. For example, send
+For feedback, send `/ptz/camera/<id>/report` with the same argument types.
+The server replies to the sender's UDP port at `/ptz/camera/<id>/state` with
+one OSC string containing `MC1:<id>:<request-sequence>:<revision>:<armed>:<mode>\n`.
+The revision is 16 hexadecimal characters. Armed is 1 or 0. Mode is OK,
+MANUAL, CATCHUP, STOPPING, OFFLINE or ERROR. Poll for updates, use the echoed
+request sequence to discard old reports, and display an unknown state when
+feedback expires. Reports do not change a camera or consume control sequences.
+
+For a toggle, send `/ptz/camera/<id>/toggle` with your next control sequence,
+the revision string from the displayed report, and the access key when enabled
+(`,hss` or `,iss` with a key). Motion applies the toggle only if that revision
+still matches. Read the next report to confirm the result. A duplicate press
+against the same revision cannot undo an intervening desktop or panel change.
+
+Use one increasing control sequence per camera across Arm, Disarm and Toggle. For example, send
 `disarm 1` and then `arm 2` for `cam1`. Retransmitting a command with its
 original sequence is safe. The server ignores duplicate and older sequences for
 that camera. Keep the sequence across controller reconnects for the duration

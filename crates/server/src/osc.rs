@@ -14,10 +14,17 @@ pub(crate) fn bind(address: &str, access_key: Option<&str>) -> Result<UdpSocket,
     Ok(socket)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Operation {
+    Set(bool),
+    Toggle(u64),
+    Report,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct Command<'a> {
     camera: &'a str,
-    armed: bool,
+    operation: Operation,
     sequence: u64,
     key: Option<&'a str>,
 }
@@ -38,28 +45,50 @@ fn decode(mut packet: &[u8]) -> Option<Command<'_>> {
     if camera.is_empty() || camera.len() > 32 || !camera.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
         return None;
     }
-    let armed = match action {
-        "arm" => true,
-        "disarm" => false,
+    let tags = osc_string(&mut packet)?.strip_prefix(',')?;
+    let (number, mut tags) = tags.split_at_checked(1)?;
+    let sequence = match number {
+        "i" => i64::from(i32::from_be_bytes(packet.split_off(..4)?.try_into().ok()?)),
+        "h" => i64::from_be_bytes(packet.split_off(..8)?.try_into().ok()?),
         _ => return None,
     };
-    let tags = osc_string(&mut packet)?;
-    let (sequence, mut packet) = match tags {
-        ",i" | ",is" => {
-            let (arg, rest) = packet.split_first_chunk()?;
-            (i64::from(i32::from_be_bytes(*arg)), rest)
-        }
-        ",h" | ",hs" => {
-            let (arg, rest) = packet.split_first_chunk()?;
-            (i64::from_be_bytes(*arg), rest)
+    let operation = match action {
+        "arm" => Operation::Set(true),
+        "disarm" => Operation::Set(false),
+        "report" => Operation::Report,
+        "toggle" => {
+            tags = tags.strip_prefix('s')?;
+            let revision = osc_string(&mut packet)?;
+            if revision.len() != 16 {
+                return None;
+            }
+            Operation::Toggle(u64::from_str_radix(revision, 16).ok()?)
         }
         _ => return None,
     };
     if sequence <= 0 {
         return None;
     }
-    let key = if tags.ends_with('s') { Some(osc_string(&mut packet)?) } else { None };
-    packet.is_empty().then_some(Command { camera, armed, sequence: sequence as u64, key })
+    let key = match tags {
+        "s" => Some(osc_string(&mut packet)?),
+        "" => None,
+        _ => return None,
+    };
+    packet.is_empty().then_some(Command { camera, operation, sequence: sequence as u64, key })
+}
+
+fn osc_field(packet: &mut Vec<u8>, value: &str) {
+    packet.extend_from_slice(value.as_bytes());
+    packet.resize((packet.len() + 1).next_multiple_of(4), 0);
+}
+
+fn report_packet(camera: &str, nonce: u64, (revision, armed, mode): (u64, bool, &str)) -> Vec<u8> {
+    let mut packet = Vec::new();
+    osc_field(&mut packet, &format!("/ptz/camera/{camera}/state"));
+    osc_field(&mut packet, ",s");
+    // A printable, line-terminated argument also works with Reactor's UDP Status matcher.
+    osc_field(&mut packet, &format!("MC1:{camera}:{nonce}:{revision:016x}:{}:{mode}\n", u8::from(armed)));
+    packet
 }
 
 pub(crate) async fn receive(socket: UdpSocket, show: Shared, access_key: Option<Arc<String>>) {
@@ -82,8 +111,15 @@ pub(crate) async fn receive(socket: UdpSocket, show: Shared, access_key: Option<
             }
         };
         let Some(command) = decode(&buffer[..size]).filter(|command| command.key == key) else { continue };
-        let result = lock(&show).set_camera_armed_osc(command.camera, command.armed, command.sequence);
-        if let Err(e) = result {
+        if command.operation == Operation::Report {
+            let report = lock(&show).camera_osc_report(command.camera);
+            if let Ok(report) = report {
+                let packet = report_packet(command.camera, command.sequence, report);
+                if let Err(e) = socket.send_to(&packet, peer).await {
+                    eprintln!("ptz-server: OSC report for {} to {peer} failed: {e}", command.camera);
+                }
+            }
+        } else if let Err(e) = lock(&show).camera_osc_control(command.camera, command.operation, command.sequence) {
             eprintln!("ptz-server: OSC command for {} refused ({peer}): {}", command.camera, e.msg);
         }
     }
@@ -98,11 +134,6 @@ mod tests {
     use ptz_core::client::Api;
     use ptz_core::transport::{Action, Output, Run};
     use std::time::{Duration, Instant};
-
-    fn osc_field(packet: &mut Vec<u8>, value: &str) {
-        packet.extend_from_slice(value.as_bytes());
-        packet.resize((packet.len() + 1).next_multiple_of(4), 0);
-    }
 
     fn packet(address: &str, sequence: i32, key: Option<&str>) -> Vec<u8> {
         let mut packet = Vec::new();
@@ -119,13 +150,16 @@ mod tests {
     fn reads_both_sequence_types_and_access_key() {
         assert_eq!(
             decode(&packet("/ptz/camera/cam1/disarm", 42, Some("show-key"))),
-            Some(Command { camera: "cam1", armed: false, sequence: 42, key: Some("show-key") })
+            Some(Command { camera: "cam1", operation: Operation::Set(false), sequence: 42, key: Some("show-key") })
         );
         let mut packet = Vec::new();
         osc_field(&mut packet, "/ptz/camera/cam-12/arm");
         osc_field(&mut packet, ",h");
         packet.extend_from_slice(&i64::MAX.to_be_bytes());
-        assert_eq!(decode(&packet), Some(Command { camera: "cam-12", armed: true, sequence: i64::MAX as u64, key: None }));
+        assert_eq!(
+            decode(&packet),
+            Some(Command { camera: "cam-12", operation: Operation::Set(true), sequence: i64::MAX as u64, key: None })
+        );
     }
 
     #[test]
@@ -149,6 +183,57 @@ mod tests {
         let mut bad_padding = good;
         bad_padding[23] = 1;
         assert!(decode(&bad_padding).is_none());
+    }
+
+    #[test]
+    fn reports_and_toggles_confirm_the_same_revision_once() {
+        let folder = std::env::temp_dir().join(format!("ptz-osc-report-{}", std::process::id()));
+        let mut cfg = Config::new(&folder);
+        cfg.audio = AudioChoice::Off;
+        let server = crate::http::start_with_osc(&cfg, "127.0.0.1:0", Some("test".into()), Some("127.0.0.1:0")).unwrap();
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        socket.connect(server.osc_addr.unwrap()).unwrap();
+        socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let report = |nonce| {
+            socket.send(&packet("/ptz/camera/cam1/report", nonce, Some("test"))).unwrap();
+            let mut buf = [0; 256];
+            let size = socket.recv(&mut buf).unwrap();
+            let mut fields = &buf[..size];
+            assert_eq!(osc_string(&mut fields), Some("/ptz/camera/cam1/state"));
+            assert_eq!(osc_string(&mut fields), Some(",s"));
+            let args: Vec<_> = osc_string(&mut fields).unwrap().trim_end().split(':').collect();
+            assert!(fields.is_empty());
+            assert_eq!(&args[..3], ["MC1", "cam1", &nonce.to_string()]);
+            assert_eq!(args[3].len(), 16);
+            (args[3].to_owned(), args[4] == "1")
+        };
+        let toggle = |sequence: i32, revision: &str| {
+            let mut msg = Vec::new();
+            osc_field(&mut msg, "/ptz/camera/cam1/toggle");
+            osc_field(&mut msg, ",iss");
+            msg.extend_from_slice(&sequence.to_be_bytes());
+            osc_field(&mut msg, revision);
+            osc_field(&mut msg, "test");
+            socket.send(&msg).unwrap();
+        };
+        let (first, armed) = report(1000);
+        assert!(armed);
+        toggle(10, &first);
+        toggle(10, &first);
+        let (second, armed) = report(1001);
+        assert!(!armed);
+        assert_ne!(first, second);
+        socket.send(&packet("/ptz/camera/cam1/arm", 11, Some("test"))).unwrap();
+        toggle(12, &first);
+        let (third, armed) = report(1002);
+        assert!(armed);
+        assert_ne!(first, third);
+        toggle(9, &third);
+        assert_eq!(report(1003), (third.clone(), true));
+        toggle(13, &third);
+        assert!(!report(1004).1);
+        drop(server);
+        std::fs::remove_dir_all(folder).unwrap();
     }
 
     #[test]
