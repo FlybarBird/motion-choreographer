@@ -2815,7 +2815,7 @@ checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
 name = "ptz-app"
-version = "0.2.17"
+version = "0.2.18"
 dependencies = [
  "dirs",
  "ed25519-dalek",
@@ -2838,7 +2838,7 @@ dependencies = [
 
 [[package]]
 name = "ptz-core"
-version = "0.2.17"
+version = "0.2.18"
 dependencies = [
  "serde",
  "serde_json",
@@ -2847,7 +2847,7 @@ dependencies = [
 
 [[package]]
 name = "ptz-panel"
-version = "0.2.17"
+version = "0.2.18"
 dependencies = [
  "ptz-core",
  "ptz-server",
@@ -2859,11 +2859,11 @@ dependencies = [
 
 [[package]]
 name = "ptz-scene"
-version = "0.2.17"
+version = "0.2.18"
 
 [[package]]
 name = "ptz-server"
-version = "0.2.17"
+version = "0.2.18"
 dependencies = [
  "audioadapter-buffers",
  "axum",
