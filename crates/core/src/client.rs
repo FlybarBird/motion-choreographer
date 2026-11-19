@@ -6,7 +6,11 @@ use crate::pose::{Preset, Project};
 use crate::transport::Action;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+
+// Shared by every connection in a station, including the panel's dedicated jog link.
+static CAMERA_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum ApiErr {
@@ -264,8 +268,22 @@ impl Api {
         self.post_empty(&format!("/presets/sync?camera={}", encode_query(camera)))
     }
 
+    pub fn set_camera_armed(&self, camera: &str, armed: bool) -> ApiResult<Status> {
+        self.put(
+            &format!("/cameras/{}/armed", encode_query(camera)),
+            &CameraArmRequest { armed, sequence: Some(CAMERA_SEQUENCE.fetch_add(1, Ordering::Relaxed)) },
+        )
+    }
+
     pub fn jog(&self, camera: &str, jog: &Jog) -> ApiResult<Status> {
-        self.post("/rig/jog", &JogRequest { camera: Some(camera.to_string()), jog: *jog })
+        self.post(
+            "/rig/jog",
+            &JogRequest {
+                camera: Some(camera.to_string()),
+                sequence: Some(CAMERA_SEQUENCE.fetch_add(1, Ordering::Relaxed)),
+                jog: *jog,
+            },
+        )
     }
 
     /// Report what a hardware panel controller is doing. Needs no lease.

@@ -11,6 +11,9 @@ Usage: ptz-server [options]
   --bind <addr:port>    Address to listen on (default 127.0.0.1:8787)
   --access-key <key>    Require this key on every request. Needed for any
                         address other than loopback.
+  --osc-bind <addr:port>
+                        Listen for camera Arm/Disarm commands over OSC/UDP.
+                        Disabled unless set (e.g. 127.0.0.1:9000).
   --no-seed             Do not create the example songs in an empty folder
   --audio-device <name> Play through the output whose name contains this text
                         (default: the system output)
@@ -40,6 +43,7 @@ fn main() {
     let mut data = default_data();
     let mut bind = format!("127.0.0.1:{}", ptz_core::api::DEFAULT_PORT);
     let mut access_key = std::env::var("PTZ_ACCESS_KEY").ok();
+    let mut osc_bind = None;
     let mut seed = true;
     let mut verify_log = false;
     let mut audio_choice = AudioChoice::Default;
@@ -53,6 +57,7 @@ fn main() {
             "--data" => data = PathBuf::from(value("--data")),
             "--bind" => bind = value("--bind"),
             "--access-key" => access_key = Some(value("--access-key")),
+            "--osc-bind" => osc_bind = Some(value("--osc-bind")),
             "--no-seed" => seed = false,
             "--verify-log" => verify_log = true,
             "--audio-device" => audio_choice = AudioChoice::Named(value("--audio-device")),
@@ -117,16 +122,19 @@ fn main() {
     let mut cfg = Config::new(&data);
     cfg.seed = seed;
     cfg.audio = audio_choice;
-    match http::start(&cfg, &bind, access_key.clone()) {
+    match http::start_with_osc(&cfg, &bind, access_key.clone(), osc_bind.as_deref()) {
         Ok(running) => {
             // One write, errors ignored: a launcher may read the first line and close the pipe.
             use std::io::Write;
-            let banner = format!(
+            let mut banner = format!(
                 "ptz-server {} listening on {}\ndata folder: {}\n",
                 env!("CARGO_PKG_VERSION"),
                 running.url(),
                 data.display()
             );
+            if let Some(addr) = running.osc_addr {
+                banner.push_str(&format!("OSC listening on {addr}\n"));
+            }
             let mut out = std::io::stdout();
             let _ = out.write_all(banner.as_bytes());
             let _ = out.flush();

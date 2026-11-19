@@ -126,8 +126,9 @@ impl Controller {
 /// controller was drawn or not: that is how a camera is stopped when the controller is no longer there.
 pub fn settle(ctx: &egui::Context, s: &mut Session) {
     let hands_on = ctx.input(|i| i.focused) && !crate::app::modal_open(ctx);
-    for (camera, jog) in s.rig.settle(hands_on, Instant::now()) {
-        s.link.send(Cmd::Jog(camera, jog));
+    let now = Instant::now();
+    for (camera, jog) in s.rig.settle(hands_on, now) {
+        s.link.send(Cmd::Jog(camera, jog, now));
     }
     if s.rig.moving.is_some() {
         ctx.request_repaint_after(SEND_EVERY);
@@ -229,12 +230,22 @@ pub fn blocked(s: &Session) -> Option<String> {
         Some("Take the edit lease to drive the rig".into())
     } else if t.estop {
         Some("Reset E-Stop to continue".into())
-    } else if t.output != Output::Rehearse {
-        Some("Disarm to drive the rig by hand".into())
-    } else if t.run != Run::Stopped && !t.record {
-        Some("Stop to position the rig by hand, or turn Record on to capture the move".into())
+    } else if let Some(c) = s.status.camera(s.cam_id()) {
+        if c.held {
+            Some(c.fault.clone().unwrap_or_else(|| "The camera is held".into()))
+        } else if c.preset_sync.is_some() {
+            Some("Wait for this camera's preset sync to finish".into())
+        } else if t.output == Output::Positioning && t.run == Run::Stopped && !c.manual {
+            Some("Wait for the show to finish arming".into())
+        } else if t.output == Output::Rehearse && c.hardware {
+            Some("Arm the show to drive this rig by hand".into())
+        } else if c.hardware && !c.adapters.iter().any(|a| a.connected) {
+            Some("Waiting for this camera's rig to answer".into())
+        } else {
+            None
+        }
     } else {
-        None
+        Some("Waiting for the server to report this camera".into())
     }
 }
 
@@ -372,25 +383,28 @@ fn controller(ui: &mut Ui, s: &mut Session) {
 
 /// What the live loop is doing: how far each axis is from the timeline, and why output was cut.
 fn live_state(ui: &mut Ui, s: &Session) {
-    let tel = &s.status.telemetry;
-    if let Some(fault) = &tel.fault {
+    let Some(camera) = s.status.camera(s.cam_id()) else { return };
+    if let Some(fault) = &camera.fault {
         ui.label(RichText::new(fault).color(RED).strong());
     }
-    if tel.halting {
+    if camera.halting {
         ui.label(RichText::new("Stopping: stop is being repeated until the rig stands still").color(RED));
     }
-    if let Some(progress) = &tel.preset_sync {
+    if let Some(progress) = &camera.preset_sync {
         ui.label(RichText::new(progress).color(AMBER));
     }
-    if !s.status.hardware_live {
+    if !s.status.hardware_live || !camera.armed || camera.manual || camera.held {
         return;
     }
     section(ui, "Tracking");
     let tol = s.cam().rig.tolerance;
-    let error = s.cam_status().error;
     egui::Grid::new("rig_tracking").num_columns(3).spacing([PAD, U]).show(ui, |ui| {
         for axis in Axis::ALL {
-            let error = error.get(axis);
+            let error = if camera.catching_up {
+                camera.rig_pose.get(axis) - camera.intended_pose.get(axis)
+            } else {
+                camera.error.get(axis)
+            };
             let share = (error.abs() / tol.get(axis).max(1e-9)) as f32;
             let ink = if share > 1.0 {
                 RED
@@ -400,10 +414,12 @@ fn live_state(ui: &mut Ui, s: &Session) {
                 GREEN
             };
             ui.label(RichText::new(axis.label()).color(axis_color(axis)));
-            ui.label(RichText::new(format!("{error:+.2}")).monospace().color(ink)).on_hover_text(format!(
-                "Rig minus timeline. A fault is raised beyond {}",
-                axis.format_in(tol.get(axis), s.project.units)
-            ));
+            let help = if camera.catching_up {
+                "Last rig reading minus the current show target".into()
+            } else {
+                format!("Rig reading minus its command. Tolerance: {}", axis.format_in(tol.get(axis), s.project.units))
+            };
+            ui.label(RichText::new(format!("{error:+.2}")).monospace().color(ink)).on_hover_text(help);
             let (bar, p) = level_bar(ui, 96.0);
             let fill = Rect::from_min_size(bar.min, vec2(bar.width() * share.min(1.0), bar.height()));
             p.rect_filled(fill, 0.0, ink);
@@ -440,6 +456,35 @@ fn stored_default(ui: &mut Ui, s: &mut Session) {
     if button.clicked() {
         s.link.send(Cmd::StoreDefault(StoreDefault { camera: Some(s.cam_id().to_string()), pose: None }));
     }
+}
+
+fn position(ui: &mut Ui, s: &Session) {
+    let camera = s.cam_status();
+    let show_target = !camera.armed || camera.manual || camera.catching_up || camera.fault.is_some();
+    egui::Grid::new("rig_pose").num_columns(3).spacing([PAD, U]).show(ui, |ui| {
+        if show_target {
+            ui.label("");
+            ui.label(RichText::new("Last reading").color(MUTED));
+            ui.label(RichText::new("Show target").color(MUTED));
+            ui.end_row();
+        }
+        for axis in Axis::ALL {
+            let lim = s.cam().axes.get(axis);
+            let value = camera.rig_pose.get(axis);
+            ui.label(RichText::new(axis.label()).color(axis_color(axis)));
+            ui.label(RichText::new(axis.format_in(value, s.project.units)).monospace());
+            if show_target {
+                ui.label(RichText::new(axis.format_in(camera.intended_pose.get(axis), s.project.units)).monospace());
+            } else {
+                let (bar, p) = level_bar(ui, 96.0);
+                let t = ((value - lim.min) / (lim.max - lim.min).max(1e-9)).clamp(0.0, 1.0) as f32;
+                // Where the axis stands in its range: a mark on the bar, in the axis's colour.
+                let at = bar.left() + 1.0 + t * (bar.width() - 2.0);
+                p.vline(at, bar.top() - 2.0..=bar.bottom() + 2.0, Stroke::new(3.0, axis_color(axis)));
+            }
+            ui.end_row();
+        }
+    });
 }
 
 pub fn show(ui: &mut Ui, s: &mut Session) {
@@ -486,10 +531,24 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
                     ui.label(RichText::new(&a.detail).color(AMBER).small());
                 }
             }
-            live_state(ui, s);
-
-            section(ui, "Move by hand");
+            section(ui, "Manual + Preset");
             controller(ui, s);
+            let camera = s.cam_status();
+            ui.horizontal_wrapped(|ui| {
+                let (label, ink) = if camera.armed { ("Automation armed", MUTED) } else { ("Automation disarmed", AMBER) };
+                ui.label(RichText::new(label).color(ink).small());
+                if camera.manual {
+                    ui.label(RichText::new("Hand control active").color(AMBER).small());
+                }
+                if camera.catching_up {
+                    ui.label(RichText::new("Catching up to the playhead").color(AMBER).small());
+                }
+            });
+            if !camera.armed {
+                note(ui, "This camera is disarmed. Let go to stop hand control.");
+            } else if s.status.hardware_live || s.status.transport.run != Run::Stopped {
+                note(ui, "Hold a control to take over this camera. Let go to resume from the current playhead.");
+            }
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Top speed").color(MUTED));
                 let mut percent = s.rig.speed * 100.0;
@@ -498,6 +557,10 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
                     s.rig.speed = percent / 100.0;
                 }
             });
+
+            // Tracking and faults can appear or disappear mid-jog. Put them below
+            // the controls so a status update cannot move the pad under the pointer.
+            live_state(ui, s);
 
             section(ui, "Record writes");
             let recording = s.status.transport.record;
@@ -525,20 +588,7 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
             }
 
             section(ui, "Position");
-            egui::Grid::new("rig_pose").num_columns(3).spacing([PAD, U]).show(ui, |ui| {
-                for axis in Axis::ALL {
-                    let lim = s.cam().axes.get(axis);
-                    let value = s.cam_status().rig_pose.get(axis);
-                    ui.label(RichText::new(axis.label()).color(axis_color(axis)));
-                    ui.label(RichText::new(axis.format_in(value, s.project.units)).monospace());
-                    let (bar, p) = level_bar(ui, 96.0);
-                    let t = ((value - lim.min) / (lim.max - lim.min).max(1e-9)).clamp(0.0, 1.0) as f32;
-                    // Where the axis stands in its range: a mark on the bar, in the axis's colour.
-                    let at = bar.left() + 1.0 + t * (bar.width() - 2.0);
-                    p.vline(at, bar.top() - 2.0..=bar.bottom() + 2.0, Stroke::new(3.0, axis_color(axis)));
-                    ui.end_row();
-                }
-            });
+            position(ui, s);
             stored_default(ui, s);
 
             section(ui, "Store preset");

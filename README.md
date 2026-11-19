@@ -452,13 +452,12 @@ the axis whose chip is outlined; click a curve to switch.
 | `F` or **Frame** | Fit the view to the selected keys, or the clip. |
 | **Speed** | Show how fast each axis moves. The amber line is the fastest the axis can go; anything above it is filled amber and named, and the clip turns amber on the timeline. |
 
-The **Rig controller** tab drives the simulator by hand: drag the pad for pan
-and tilt, the three sliders for zoom, focus and elevation. They spring back and
-the rig stops when you let go. Click the pad to use the keys: arrows for pan and
-tilt, `[` `]` zoom, `,` `.` elevation. **Top speed** scales all of it. **Store
-preset** saves where the rig is now. If the app stops sending (a dropped
-connection) the rig stops within a quarter of a second. Hand control is refused
-while the rig is armed.
+In Rehearse, the **Rig controller** tab drives the simulator by hand. Drag the
+pad for pan and tilt or the three sliders for zoom, focus and elevation. They
+spring back when you let go. Click the pad to use the arrow keys for pan and
+tilt, `[` `]` for zoom, or `,` `.` for elevation. **Top speed** scales all of
+it. **Store preset** saves where the rig is now. For hand control in an armed
+show, see [Manual + Preset](#manual--preset).
 
 To record a move by hand:
 
@@ -577,10 +576,10 @@ One station at a time holds the edit lease. Others watch, and can take over.
 Playing, scrubbing and cueing in Rehearse never send a motion command to the
 rig. (**Sync from rig** does move a real camera, and asks first.) To move it:
 
-1. **Arm (moves rig to playhead)**. Every camera's rig travels to its pose at
+1. **Arm (moves rig to playhead)**. Each armed camera's rig travels to its pose at
    the playhead at a fraction of its top speed (**Arm moves at** in the rig
    settings, half speed to start with). The bar reads ARMING, then ARMED when
-   every axis of every camera has arrived.
+   the cameras participating in positioning have arrived.
 2. **Play Live**, or **Play to code** when locked. Twenty times a second the
    server steers each axis toward the timeline and compares where the rig says
    it is with where the timeline was at the moment of that reading.
@@ -590,13 +589,13 @@ rig. (**Sync from rig** does move a real camera, and asks first.) To move it:
 Arm is refused, with the reason on the button, unless the transport is stopped,
 Record is off, the loaded song is a committed revision with no unsaved edits,
 every timeline issue is fixed (or, for speed and acceleration, accepted with
-**Accept as programmed**), and every camera's devices are answering with its
+**Accept as programmed**), and every armed camera's devices are answering with its
 AutoPod+ calibrated. While armed the song and the project settings cannot be
 changed. Presets can still be stored and deleted: a move keeps its own copy of
 the pose it was made from, so the armed song is not affected.
 
 While armed and stopped, **Cue**, Home, a click on the ruler, or a jump in the
-timecode the show is locked to sends every rig to the pose at the new
+timecode the show is locked to sends each armed rig to the pose at the new
 playhead, at the Arm speed; the bar reads ARMING until they are there.
 
 The **Set list** tab holds the show's songs in running order. While armed and
@@ -607,16 +606,22 @@ no open issues is loaded into an armed show. With **Follow timecode** ticked
 there, locked to an input with Play to code pressed, the server loads whichever
 song the incoming code is in and plays it.
 
-A camera's rig is held and its output is cut, with the reason in red on the bar and in the
-Rig controller tab, until the show is disarmed and armed again (Play does not
-bring a held camera back), when:
+A camera that disconnects or stops answering shows a fault in the camera bar
+and the Rig controller. The timeline and other cameras continue. An armed
+camera catches up to the current playhead when it reconnects. An invalid cue
+holds the affected camera until the intended pose is valid again.
+
+Tracking and hard safety faults continue to follow the project's **When a
+camera faults** setting.
 
 - an axis stays further from the timeline than its tolerance for longer than
   the tracking window (2 degrees of pan and tilt and half a second, unless the
   rig settings say otherwise);
 - the next step would take an axis past its limit or break a keep-out rule;
-- a device stops answering;
 - the rig does not reach the playhead pose while arming.
+
+After resolving the fault, disarm and rearm the affected camera to retry. If
+the fault stopped the whole show, use the transport's Arm and Play controls.
 
 **E-Stop** stops every camera and pedestal, repeats the stop until they report standing
 still, cuts output and latches until **Reset E-Stop**. It works from any
@@ -644,6 +649,52 @@ timeline says.
 
 While live the Rig controller tab shows how far each axis is from the timeline
 against its tolerance.
+
+### Manual + Preset
+
+With the show armed, select a camera and use the **Rig controller**. The first
+jog takes that camera out of automation. Let go of the pad, sliders or keys to
+release it. If the control connection drops, the server ends hand control after
+250 ms without a jog update. On release, an armed camera catches up to the
+pose at the current playhead and resumes following the timeline.
+
+Select a camera and use **Disarm camera** in the camera bar to hold that camera
+out of automation. Its manual controls stay available. Use **Arm camera** to
+return it to the show. During manual control, rearming takes effect on release.
+The catch-up follows the current show position as it advances, skipping
+earlier cues. The camera bar and Rig controller show the arm state, manual
+control, catch-up and faults. The status API reports each camera's intended
+pose alongside its last measured rig pose.
+
+### Camera Arm and Disarm over OSC
+
+To accept OSC on the show server, start it with an explicit UDP listener.
+
+```sh
+ptz-server --osc-bind 127.0.0.1:9000
+```
+
+OSC controls camera arming independently of the edit lease. Use the camera's
+stable ID from `cameras[].id` in `GET /api/v1/status`. The first default
+camera is `cam1`.
+
+| OSC address | Action |
+| --- | --- |
+| `/ptz/camera/cam1/disarm` | Hold this camera out of automation while the show continues. |
+| `/ptz/camera/cam1/arm` | Return this camera to automation at the current show position. |
+
+Send one OSC message per UDP datagram. Its first argument is a positive int32
+(`i`) or int64 (`h`) sequence. If the server has an access key, append the
+same key as the second argument, an OSC string (`s`). An OSC listener on a LAN
+address requires an access key.
+[Open Sound Control message format](https://opensoundcontrol.stanford.edu/spec-1_0.html#osc-messages)
+
+Use one increasing sequence per camera across both actions. For example, send
+`disarm 1` and then `arm 2` for `cam1`. Retransmitting a command with its
+original sequence is safe. The server ignores duplicate and older sequences for
+that camera. Keep the sequence across controller reconnects for the duration
+of the show-server session. Restarting the show server starts a new sequence
+space. Check the camera bar or the status API to confirm the current state.
 
 ## Limits and keep-out rules
 
@@ -834,9 +885,10 @@ What keeps it safe:
   and Play Live one second, Reset E-Stop a second and a half, taking over
   another station's lease one second. A tap does nothing and says so. A hold
   counts only if the panel is still answering when its time is up.
-- **The joystick stops the rig when it is let go, and when the panel is lost.**
-  The server stops a camera a quarter of a second after the last hand-control
-  message. A closed connection is noticed at once. A link that goes silent
+- **The joystick releases the camera when it is let go, and when the panel is lost.**
+  Letting go releases the camera. Without a release, the server ends hand
+  control a quarter of a second after the last jog message. A closed connection
+  is noticed at once. A link that goes silent
   without closing (a pulled cable) is noticed because the panel is asked for
   an answer every 100 ms while anything is deflected; after 350 ms without one
   the rig is let go of. Against the stand-in panel the camera stood still
@@ -846,9 +898,9 @@ What keeps it safe:
 - **A lost panel does not stop the show.** A song that is playing keeps
   playing. The panel keeps the lease for 30 seconds and then gives it back; it
   never takes it again by itself.
-- As in the app, hand control drives the simulator only. On a real FR7 the
-  server refuses it and the panel says why; position the camera with its own
-  controller and store the preset from the panel.
+- As in the app, the joystick drives hardware with the show armed. In
+  Rehearse it drives the simulator. When the joystick is released, a camera
+  armed for automation catches up to the show.
 
 Not on the panel: typing names (songs, presets and markers get numbered names;
 rename them in the app), editing keys in the graph, project and camera

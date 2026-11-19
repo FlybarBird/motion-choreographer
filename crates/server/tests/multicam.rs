@@ -14,6 +14,7 @@ use ptz_core::pose::{Axis, Pose, Preset, Project, RigKind};
 use ptz_core::song::Song;
 use ptz_core::transport::{Action, Output, Run};
 use ptz_server::hw::fake::{FakeAutoPod, FakeFr7};
+use ptz_server::hw::visca;
 use std::time::Duration;
 
 struct Rig {
@@ -81,12 +82,16 @@ fn store(api: &Api, camera: &str, name: &str, pose: Pose) -> Preset {
 
 /// A saved, committed song with one move per preset, each on its own camera, all starting on frame 25.
 fn song_with_moves(api: &Api, project: &Project, name: &str, presets: &[Preset]) -> Song {
+    song_at(api, project, name, presets.iter().map(|preset| (25, preset)))
+}
+
+fn song_at<'a>(api: &Api, project: &Project, name: &str, cues: impl IntoIterator<Item = (i64, &'a Preset)>) -> Song {
     let created = api.new_song(name, None).unwrap();
     let id = created.song.id.clone();
     api.load_song(&id).unwrap();
     let mut song = created.song;
-    for preset in presets {
-        song = edit::insert_preset_move(&song, project, preset, 25).unwrap().0;
+    for (frame, preset) in cues {
+        song = edit::insert_preset_move(&song, project, preset, frame).unwrap().0;
     }
     let working = api.put_working(&PutWorking { expected_counter: 0, song }).unwrap();
     api.save(&id).unwrap();
@@ -108,6 +113,245 @@ fn log(api: &Api) -> Vec<LogRecord> {
 
 fn seek(api: &Api, frame: i64) -> Status {
     api.act(Action::Seek, &TransportRequest { frame: Some(frame), ..Default::default() }).unwrap()
+}
+
+fn play_live(api: &Api) {
+    do_act(api, Action::Arm);
+    wait_for(api, |s| s.transport.output == Output::Armed);
+    assert_eq!(do_act(api, Action::Play).transport.run, Run::Playing);
+}
+
+fn assert_playing(status: &Status) {
+    assert_eq!((status.transport.output, status.transport.run), (Output::Armed, Run::Playing), "{:?}", status.telemetry);
+}
+
+#[test]
+fn hand_control_takes_one_camera_and_release_or_watchdog_gives_it_back_to_the_show() {
+    let t = TestServer::start("manual-preset-live");
+    let api = t.client("operator");
+    api.take_lease("Operator", false).unwrap();
+    let project = with_cameras(&api, 2);
+    let first = store(&api, "cam1", "First", Pose { pan: 38.0, ..Pose::home() });
+    let then = store(&api, "cam1", "Then", Pose { pan: 54.0, ..Pose::home() });
+    let other = store(&api, "cam2", "Other", Pose { pan: -28.0, ..Pose::home() });
+    let song = song_at(&api, &project, "Hands and cues", [(15, &first), (20, &other), (90, &then)]);
+    let end = song.motion.iter().map(|clip| clip.end_frame()).max().unwrap();
+    play_live(&api);
+
+    let state = wait_for(&api, |s| s.first().rig_pose.pan > 4.0);
+    let touched_at = state.frame;
+    let started_at = state.first().rig_pose.pan;
+    let jog = Jog { pan: -0.4, ..Jog::default() };
+    for _ in 0..12 {
+        let state = api.jog("cam1", &jog).unwrap();
+        assert_playing(&state);
+        assert!(state.first().armed && state.first().manual && !state.first().catching_up);
+        assert!(!state.camera("cam2").unwrap().manual);
+        std::thread::sleep(Duration::from_millis(35));
+    }
+    let state = api.status().unwrap();
+    assert!(state.frame > touched_at && state.first().rig_pose.pan < started_at - 1.0, "{state:?}");
+    assert!(state.first().intended_pose.pan > state.first().rig_pose.pan + 10.0, "{state:?}");
+    assert!(state.camera("cam2").unwrap().rig_pose.pan < -2.0, "the other camera made its cue: {state:?}");
+
+    let released = api.jog("cam1", &Jog::default()).unwrap();
+    assert!(!released.first().manual && released.first().catching_up, "{released:?}");
+    let state = wait_for(&api, |s| s.frame > end && !s.first().catching_up);
+    assert_playing(&state);
+    assert_ne!(state.timecode, released.timecode);
+    assert!((state.first().rig_pose.pan - then.pose.pan).abs() < 1.0, "{:?}", state.first());
+    assert!((state.camera("cam2").unwrap().rig_pose.pan - other.pose.pan).abs() < 1.0);
+
+    // A station that disappears can leave a nonzero jog in flight. The watchdog releases it too.
+    let manually = api.jog("cam1", &jog).unwrap();
+    assert!(manually.first().manual);
+    let state = wait_for(&api, |s| !s.first().manual && !s.first().catching_up && s.frame > manually.frame + 6);
+    assert_playing(&state);
+    assert!(state.cameras.iter().all(|c| c.fault.is_none()));
+    assert!((state.first().rig_pose.pan - then.pose.pan).abs() < 1.0);
+}
+
+#[test]
+fn disarming_interrupts_an_absolute_move_and_rapid_rearm_only_targets_the_latest_cue() {
+    let rigs = [Rig::start(), Rig::start()];
+    let t = TestServer::start("camera-now-cue");
+    let api = t.client("operator");
+    api.take_lease("Operator", false).unwrap();
+    let mut project = with_cameras(&api, rigs.len());
+    project.cameras[0].rig.fr7_absolute_moves = true;
+    api.put_project(&project).unwrap();
+    let project = connect(&api, &rigs);
+
+    let initial = store(&api, "cam1", "Opening", Pose { pan: 40.0, ..Pose::home() });
+    let missed = store(&api, "cam1", "Missed", Pose { pan: -40.0, ..Pose::home() });
+    let newest = store(&api, "cam1", "Current", Pose { pan: 57.0, ..Pose::home() });
+    let other = store(&api, "cam2", "Other", Pose { pan: -26.0, ..Pose::home() });
+    let song = song_at(&api, &project, "Interrupted ride", [(15, &initial), (70, &missed), (150, &newest), (90, &other)]);
+    let end = song.motion.iter().map(|clip| clip.end_frame()).max().unwrap();
+    let tolerance = project.first().rig.tolerance;
+    play_live(&api);
+    let mid = wait_for(&api, |s| s.first().rig_pose.pan > 6.0 && rigs[0].is_moving());
+    assert!(mid.first().rig_pose.pan < initial.pose.pan - 5.0, "not mid-move: {:?}", mid.first());
+    assert!(rigs[0].fr7.commands().iter().any(|c| matches!(visca::parse_command(c), Some(visca::Command::Absolute { .. }))));
+
+    let disarmed = api.set_camera_armed("cam1", false).unwrap();
+    assert!(!disarmed.first().armed && !disarmed.first().catching_up);
+    assert_playing(&disarmed);
+    for _ in 0..8 {
+        assert!(api.set_camera_armed("cam1", true).unwrap().first().armed);
+        assert!(!api.set_camera_armed("cam1", false).unwrap().first().armed);
+    }
+    assert!(!api.set_camera_armed("cam1", false).unwrap().first().armed);
+    wait_for(&api, |_| !rigs[0].is_moving());
+    let parked = rigs[0].pose();
+    assert!(parked.pan < initial.pose.pan - 5.0, "the pending absolute move finished anyway: {parked:?}");
+    rigs[0].fr7.clear_seen();
+
+    let state = wait_for(&api, |s| s.frame > end + 8);
+    assert_playing(&state);
+    assert!(state.frame > disarmed.frame && state.timecode != disarmed.timecode);
+    assert_eq!(state.first().intended_pose.pan, newest.pose.pan);
+    assert!(!state.first().armed && !state.first().manual && state.first().fault.is_none());
+    assert_eq!(rigs[0].pose(), parked, "a pending command moved the disarmed head");
+    assert!(close(&rigs[1].pose(), &other.pose, &tolerance, 0.5), "the other rig missed its cue");
+
+    let armed = api.set_camera_armed("cam1", true).unwrap();
+    assert!(armed.first().armed && armed.first().catching_up);
+    assert_playing(&armed);
+    let mut lowest = parked.pan;
+    let state = wait_for(&api, |s| {
+        lowest = lowest.min(rigs[0].pose().pan);
+        !s.first().catching_up && close(&rigs[0].pose(), &newest.pose, &tolerance, 0.5)
+    });
+    assert_playing(&state);
+    assert!(state.first().fault.is_none(), "{:?}", state.first());
+    assert!(lowest >= parked.pan - 0.5, "the old negative cue was replayed: {lowest}, parked at {}", parked.pan);
+    assert!(
+        rigs[0].fr7.commands().iter().all(|c| !matches!(visca::parse_command(c), Some(visca::Command::Absolute { .. }))),
+        "old preset moves returned instead of tracking the current pose"
+    );
+
+    // Disarming while the head is under hand control must leave the joystick in charge.
+    let jog = Jog { pan: -0.4, ..Jog::default() };
+    assert!(api.jog("cam1", &jog).unwrap().first().manual);
+    let status = api.set_camera_armed("cam1", false).unwrap();
+    assert!(status.first().manual && !status.first().armed);
+    for _ in 0..12 {
+        assert!(api.jog("cam1", &jog).unwrap().first().manual);
+        std::thread::sleep(Duration::from_millis(35));
+    }
+    let released = api.jog("cam1", &Jog::default()).unwrap();
+    assert!(!released.first().manual && !released.first().catching_up);
+    wait_for(&api, |_| !rigs[0].is_moving());
+    let manual_pose = rigs[0].pose();
+    assert!(manual_pose.pan < newest.pose.pan - 3.0, "the jog did not move the real-rig adapter: {manual_pose:?}");
+    let state = wait_for(&api, |s| s.frame > released.frame + 8);
+    assert_playing(&state);
+    assert_eq!(rigs[0].pose(), manual_pose, "releasing manual control rearmed a disarmed camera");
+    api.set_camera_armed("cam1", true).unwrap();
+    let state = wait_for(&api, |s| !s.first().catching_up && close(&rigs[0].pose(), &newest.pose, &tolerance, 0.5));
+    assert_playing(&state);
+}
+
+#[test]
+fn a_disconnected_camera_keeps_its_intended_pose_and_reconnects_without_stopping_the_show() {
+    let rigs = [Rig::start(), Rig::start()];
+    let t = TestServer::start("camera-now-reconnect");
+    let api = t.client("operator");
+    api.take_lease("Operator", false).unwrap();
+    let mut project = connect(&api, &rigs);
+    // A lost device is a per-camera failure even when the show holds all on an unsafe trajectory.
+    project.on_fault = OnFault::HoldAll;
+    let project = api.put_project(&project).unwrap();
+    let initial = store(&api, "cam1", "Before cable loss", Pose { pan: 12.0, ..Pose::home() });
+    let newest = store(&api, "cam1", "While offline", Pose { pan: 48.0, ..Pose::home() });
+    let other = store(&api, "cam2", "Other", Pose { pan: -30.0, ..Pose::home() });
+    let song = song_at(&api, &project, "Camera loss", [(10, &initial), (90, &newest), (75, &other)]);
+    let end = song.motion.iter().map(|clip| clip.end_frame()).max().unwrap();
+    let tolerance = project.first().rig.tolerance;
+    play_live(&api);
+    let state = wait_for(&api, |s| s.frame > 37 && close(&rigs[0].pose(), &initial.pose, &tolerance, 0.25));
+    assert_playing(&state);
+    rigs[0].fr7.set_silent(true);
+
+    let lost = wait_for(&api, |s| !s.first().adapters[0].connected && s.first().fault.is_some());
+    assert_playing(&lost);
+    assert!(lost.first().armed, "the operator's arm intent survived the disconnect");
+    assert!(lost.first().fault.as_deref().unwrap().contains("FR7"));
+    let state = wait_for(&api, |s| s.frame > end + 5);
+    assert_playing(&state);
+    assert_ne!(state.timecode, lost.timecode);
+    assert_eq!(state.first().intended_pose.pan, newest.pose.pan);
+    assert!((state.first().rig_pose.pan - initial.pose.pan).abs() < 1.0, "an unsent command changed the reported actual pose");
+    assert!(state.camera("cam2").unwrap().fault.is_none());
+    assert!(close(&rigs[1].pose(), &other.pose, &tolerance, 0.5), "the other rig missed its cue");
+    assert!(log(&api).iter().any(|r| r.kind == "fault" && r.data["camera"] == "cam1"));
+
+    rigs[0].fr7.set_silent(false);
+    let recovered = wait_for(&api, |s| {
+        s.first().adapters[0].connected
+            && !s.first().catching_up
+            && s.first().fault.is_none()
+            && close(&rigs[0].pose(), &newest.pose, &tolerance, 0.5)
+    });
+    assert_playing(&recovered);
+    assert!(recovered.first().armed && recovered.frame > state.frame);
+
+    // An explicit disarm while offline survives reconnection and still allows a later rearm.
+    rigs[0].fr7.set_silent(true);
+    wait_for(&api, |s| !s.first().adapters[0].connected);
+    api.set_camera_armed("cam1", false).unwrap();
+    rigs[0].fr7.place(25.0, 0.0, newest.pose.zoom, newest.pose.focus);
+    rigs[0].fr7.set_silent(false);
+    let connected = wait_for(&api, |s| s.first().adapters[0].connected);
+    let state = wait_for(&api, |s| s.frame > connected.frame + 10);
+    assert_playing(&state);
+    assert!(!state.first().armed && !state.first().catching_up);
+    assert!((rigs[0].pose().pan - 25.0).abs() < 0.2);
+
+    rigs[0].fr7.set_speed_factor(0.0);
+    api.set_camera_armed("cam1", true).unwrap();
+    let stuck = wait_for(&api, |s| s.first().fault.as_deref().is_some_and(|f| f.contains("timed out")));
+    assert_playing(&stuck);
+    assert!(!stuck.first().catching_up);
+    assert_eq!(stuck.first().intended_pose.pan, newest.pose.pan);
+    assert!((stuck.first().rig_pose.pan - 25.0).abs() < 0.2, "the failed catch-up was reported as a move");
+    assert!(stuck.camera("cam2").unwrap().fault.is_none());
+
+    api.set_camera_armed("cam1", false).unwrap();
+    rigs[0].fr7.set_speed_factor(1.0);
+    api.set_camera_armed("cam1", true).unwrap();
+    let state = wait_for(&api, |s| !s.first().catching_up && close(&rigs[0].pose(), &newest.pose, &tolerance, 0.5));
+    assert_playing(&state);
+    assert!(state.first().fault.is_none());
+}
+
+#[test]
+fn rearming_on_an_invalid_live_edited_preset_reports_the_fault_and_keeps_playing() {
+    let t = TestServer::start("camera-now-invalid");
+    let api = t.client("operator");
+    api.take_lease("Operator", false).unwrap();
+    let project = with_cameras(&api, 2);
+    let invalid = store(&api, "cam1", "Out of range", Pose { pan: 220.0, ..Pose::home() });
+    let other = store(&api, "cam2", "Other", Pose { pan: -25.0, ..Pose::home() });
+    let song = song_at(&api, &project, "Bad cue on one camera", [(30, &other)]);
+    let baseline = api.working(&song.id).unwrap();
+    play_live(&api);
+    let disarmed = api.set_camera_armed("cam1", false).unwrap();
+    api.confirm_live_edit(&song.id).unwrap();
+    let (edited, clip) = edit::insert_preset_move_timed(&song, &project, &invalid, 10, edit::PresetTiming::Seconds(0.8)).unwrap();
+    let end = edited.motion_clip(&clip).unwrap().end_frame();
+    api.put_working(&PutWorking { expected_counter: baseline.edit_counter, song: edited }).unwrap();
+    wait_for(&api, |s| s.frame > end);
+    api.set_camera_armed("cam1", true).unwrap();
+    let bad = wait_for(&api, |s| s.first().fault.is_some());
+    assert_playing(&bad);
+    assert_eq!(bad.first().intended_pose.pan, invalid.pose.pan);
+    assert_eq!(bad.first().rig_pose, disarmed.first().rig_pose, "an invalid target was sent to the rig");
+    let st = wait_for(&api, |s| (s.camera("cam2").unwrap().rig_pose.pan - other.pose.pan).abs() < 0.5);
+    assert_playing(&st);
+    assert!(st.frame > bad.frame && st.camera("cam2").unwrap().fault.is_none());
+    assert!(log(&api).iter().any(|r| r.kind == "fault" && r.data["camera"] == "cam1"));
 }
 
 #[test]
@@ -756,28 +1000,25 @@ fn a_camera_that_faults_is_held_while_the_others_carry_on_unless_the_project_say
     wait_for(&api, |s| s.transport.output == Output::Armed);
     assert!(close(&rigs[1].pose(), &Pose::home(), &tol, 0.3), "{:?}", rigs[1].pose());
 
-    // When the last camera standing faults there is no show left to run: output is cut.
+    // Losing every connection still leaves the show playing. Each camera reports its own failure.
+    do_act(&api, Action::Play);
     rigs[0].pod.set_silent(true);
     wait_for(&api, |s| s.camera("cam1").unwrap().held);
     rigs[1].fr7.set_silent(true);
     wait_for(&api, |s| s.camera("cam2").unwrap().held);
     assert_eq!(api.status().unwrap().transport.output, Output::Armed);
     rigs[2].fr7.set_silent(true);
-    let st = wait_for(&api, |s| s.transport.output == Output::Rehearse);
-    assert!(!st.hardware_live);
-    assert!(st.cameras.iter().all(|c| c.fault.is_some() && !c.held), "{:?}", st.cameras);
-    assert_eq!(
-        st.telemetry.fault,
-        Some(format!("The AutoPod+ is not answering at {}", rigs[0].pod.addr)).map(|w| format!("1 Camera 1: {w}"))
-    );
-    assert_eq!(
-        refused(api.act(Action::Arm, &TransportRequest::default()), 409),
-        format!("1 Camera 1: The AutoPod+ is not answering at {}", rigs[0].pod.addr)
-    );
+    let st = wait_for(&api, |s| s.cameras.iter().all(|c| c.fault.is_some() && c.held));
+    assert_playing(&st);
+    assert!(st.first().fault.as_deref().unwrap().contains("AutoPod+"));
+    assert_playing(&wait_for(&api, |s| s.frame > st.frame + 10));
     rigs[0].pod.set_silent(false);
     rigs[1].fr7.set_silent(false);
     rigs[2].fr7.set_silent(false);
-    wait_for(&api, |s| s.adapters().all(|a| a.connected));
+    wait_for(&api, |s| s.adapters().all(|a| a.connected) && s.cameras.iter().all(|c| !c.held));
+    do_act(&api, Action::Stop);
+    do_act(&api, Action::Disarm);
+    seek(&api, 0);
 
     // "Stop all cameras": one fault cuts output for every camera.
     let mut all = api.project().unwrap();

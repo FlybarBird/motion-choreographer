@@ -423,13 +423,14 @@ CAM 1 to CAM 6 are the cameras, six to a page. The joystick drives the
 selected one. Knob 1 is focus, knob 2 is elevation, knob 3 is top speed, from
 5% to 100% of each axis. CAM 7 **Store** saves where it is as *Preset N*.
 
-This drives the simulator. A real FR7 is refused, and the panel says why: put
-the camera there with its own controller, then press Store, or use Program,
-which reads the rig without driving it.
+In Rehearse, this drives the simulator. To frame a real FR7 in Rehearse, use
+its own controller and press Store, or use Program to read its pose.
 
-The rig stops when you let go of the joystick. If the stick is already over
-when you enter the mode or change camera, the display says *Let the joystick
-come to rest, then drive again*.
+While the show is live, the joystick takes manual control of the selected
+camera. Release it to return an armed camera to the current show position.
+The other cameras and show clock keep running. If the stick is already
+deflected when you enter the mode or change camera, the display says *Let the
+joystick come to rest, then drive again*.
 
 ### Presets (Image): place a move at the playhead
 

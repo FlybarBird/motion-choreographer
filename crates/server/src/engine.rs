@@ -214,6 +214,10 @@ pub struct Show {
     lease_ttl: Duration,
     /// One per camera of the project, in the project's order.
     units: Vec<Unit>,
+    /// Keep OSC ordering even if a camera is removed and its id is reused.
+    osc_sequences: HashMap<String, u64>,
+    arm_sequences: HashMap<(String, String), u64>,
+    jog_sequences: HashMap<(String, String), u64>,
     ticks: u64,
     /// The camera Record writes for.
     record_camera: String,
@@ -249,7 +253,11 @@ struct Unit {
     halting: Option<Instant>,
     /// Which adapters answered when last looked at, to log each connect and disconnect.
     adapters_were: Vec<(String, bool)>,
+    armed: bool,
     jog_deadline: Option<Instant>,
+    jog: Jog,
+    catching_up: bool,
+    camera_failure: Option<CameraFailure>,
     /// The simulator was positioned by hand; the monitor shows it until the playhead moves.
     manual: bool,
 }
@@ -263,10 +271,55 @@ impl Unit {
             held: false,
             halting: None,
             adapters_were: Vec::new(),
+            armed: true,
             jog_deadline: None,
+            jog: Jog::default(),
+            catching_up: false,
+            camera_failure: None,
             manual: false,
         }
     }
+
+    fn interrupt_automation(&mut self) {
+        self.rig.stop();
+        self.live.clear();
+    }
+
+    fn finish_jog(&mut self, live: bool, stop_now: bool) {
+        if self.jog_deadline.take().is_none() {
+            return;
+        }
+        if stop_now || live {
+            self.rig.stop();
+        } else {
+            // Rehearse recording keeps its existing ramp-down behavior.
+            let _ = self.rig.jog(Jog::default());
+        }
+        if live {
+            self.live.clear();
+            self.catching_up = self.armed && !self.held;
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CameraFailure {
+    Device,
+    InvalidTarget,
+    CatchUp,
+    Manual,
+}
+
+/// Ignore a duplicate or delayed command from the same station, including delayed jogs
+/// that arrive after the operator's release. Older clients are processed in arrival order.
+fn accept_sequence(sequences: &mut HashMap<(String, String), u64>, client: &str, camera: &str, sequence: Option<u64>) -> bool {
+    let Some(sequence) = sequence else { return true };
+    let last = sequences.entry((client.to_string(), camera.to_string())).or_default();
+    if sequence <= *last {
+        return false;
+    }
+    *last = sequence;
+    true
 }
 
 /// What one turn of the live loop found for one camera.
@@ -320,6 +373,9 @@ struct Live {
     over_since: Option<Instant>,
     /// The pose being positioned to, and when the rig should have reached it.
     positioning: Option<(Pose, Instant)>,
+    stop_wait_since: Option<Instant>,
+    /// Last useful feedback on each axis during a local rejoin.
+    rejoin_feedback: Option<(Pose, [Instant; 5])>,
     /// The rig ran out of time on the way to that pose and was let through.
     late: bool,
     /// Rig position minus commanded position.
@@ -430,6 +486,9 @@ impl Show {
             live_edit: None,
             lease_ttl: cfg.lease_ttl,
             units,
+            osc_sequences: HashMap::new(),
+            arm_sequences: HashMap::new(),
+            jog_sequences: HashMap::new(),
             ticks: 0,
             record_camera,
             record_axes: vec![Axis::Pan, Axis::Tilt, Axis::Zoom, Axis::Elevation],
@@ -505,9 +564,63 @@ impl Show {
     }
 
     fn clear_manual(&mut self) {
-        for u in &mut self.units {
-            u.manual = false;
+        if !self.transport.hardware_live() {
+            for u in &mut self.units {
+                u.finish_jog(false, true);
+                u.manual = false;
+            }
         }
+    }
+
+    pub fn set_camera_armed(&mut self, client: &str, camera: &str, request: CameraArmRequest) -> Res<()> {
+        self.require_lease(client)?;
+        let i = self.unit_index(Some(camera))?;
+        if accept_sequence(&mut self.arm_sequences, client, camera, request.sequence) {
+            self.apply_camera_arm(i, request.armed, &self.who(client));
+        }
+        Ok(())
+    }
+
+    pub fn set_camera_armed_osc(&mut self, camera: &str, armed: bool, sequence: u64) -> Res<()> {
+        let i = self.unit_index(Some(camera))?;
+        let last = self.osc_sequences.entry(camera.to_string()).or_default();
+        if sequence > *last {
+            *last = sequence;
+            self.apply_camera_arm(i, armed, "OSC");
+        }
+        Ok(())
+    }
+
+    fn apply_camera_arm(&mut self, i: usize, armed: bool, by: &str) {
+        let live = self.transport.hardware_live();
+        let unit = &mut self.units[i];
+        if unit.armed == armed {
+            return;
+        }
+        unit.armed = armed;
+        if unit.jog_deadline.is_none() {
+            if !armed && (live || unit.rig.is_simulator() || unit.rig.preset_sync_progress().is_some()) {
+                unit.interrupt_automation();
+            } else {
+                unit.live.clear();
+            }
+            unit.manual = false;
+        }
+        if armed {
+            // Device and invalid-cue faults will be evaluated again before sending motion.
+            unit.held = false;
+            unit.camera_failure = None;
+            unit.live.fault = None;
+        }
+        if !armed && matches!(unit.camera_failure, Some(CameraFailure::InvalidTarget | CameraFailure::CatchUp)) {
+            // A bad timeline target does not prevent healthy hardware moving under hand control.
+            unit.held = false;
+            unit.camera_failure = None;
+        }
+        unit.catching_up = live && armed && unit.jog_deadline.is_none();
+        let camera = unit.id.clone();
+        self.log("camera_arm", json!({ "camera": camera, "armed": armed, "by": by, "frame": self.frame_f.floor() as i64 }));
+        self.poke();
     }
 
     // ---- lease ----
@@ -547,6 +660,9 @@ impl Show {
             }
         }
         let previous = self.lease.as_ref().filter(|l| l.client != client).map(|l| l.name.clone());
+        if previous.is_some() {
+            self.release_all_jogs();
+        }
         self.lease = Some(Lease { client: client.to_string(), name: name.to_string(), last_seen: Instant::now() });
         self.log("lease", json!({ "holder": name, "took_from": previous }));
         self.settle_live_edit();
@@ -557,6 +673,7 @@ impl Show {
     pub fn release_lease(&mut self, client: &str) -> Res<()> {
         if self.holds_lease(client) {
             let name = self.lease.take().map(|l| l.name);
+            self.release_all_jogs();
             self.log("lease", json!({ "released_by": name }));
             self.settle_live_edit();
             self.poke();
@@ -690,13 +807,24 @@ impl Show {
         Ok(out)
     }
 
+    fn blocking_for_output(&self, entry: &Entry) -> usize {
+        entry
+            .compiled
+            .blocking(&entry.song)
+            .filter(|issue| {
+                let camera = issue.camera(&entry.song);
+                self.units.iter().find(|u| u.id == camera).is_none_or(|unit| unit.armed)
+            })
+            .count()
+    }
+
     /// Why a song cannot be loaded into a show that is armed. Arm asks the same of the song it arms.
     fn fit_to_go_live(&self, id: &str) -> Result<(), String> {
         let Some(e) = self.songs.get(id) else { return Err(format!("There is no song {id}")) };
         if !e.committed_clean() {
             return Err(format!("{} is not committed", e.song.name));
         }
-        match e.compiled.blocking_count(&e.song) {
+        match self.blocking_for_output(e) {
             0 => Ok(()),
             1 => Err(format!("{} has a timeline issue to fix or accept", e.song.name)),
             n => Err(format!("{} has {n} timeline issues to fix or accept", e.song.name)),
@@ -1063,9 +1191,13 @@ impl Show {
         if !same_cameras || !rebuilt.is_empty() {
             let mut old: Vec<Unit> = std::mem::take(&mut self.units);
             for cam in &project.cameras {
-                let kept = old.iter().position(|u| u.id == cam.id).filter(|_| !rebuilt.contains(&cam.id));
-                self.units.push(match kept {
-                    Some(at) => old.remove(at),
+                self.units.push(match old.iter().position(|u| u.id == cam.id) {
+                    Some(at) if !rebuilt.contains(&cam.id) => old.remove(at),
+                    Some(at) => {
+                        let mut unit = Unit::new(&project, cam);
+                        unit.armed = old[at].armed;
+                        unit
+                    }
                     None => Unit::new(&project, cam),
                 });
             }
@@ -1344,6 +1476,9 @@ impl Show {
             return Err(Fail::refused("Reset E-Stop to continue"));
         }
         self.require_parked("reading presets from the camera, which moves it")?;
+        if !self.units[i].armed {
+            return Err(Fail::refused("Arm this camera before recalling its presets for sync"));
+        }
         self.units[i].rig.begin_preset_sync().map_err(Fail::refused)?;
         self.log("presets_sync_started", json!({ "camera": id, "by": self.who(client) }));
         self.poke();
@@ -1669,8 +1804,9 @@ impl Show {
             has_lease: self.holds_lease(client),
             song_loaded: entry.is_some(),
             committed_clean: entry.is_some_and(|e| e.committed_clean()),
-            blocking_issues: entry.map(|e| e.compiled.blocking_count(&e.song)).unwrap_or(0),
+            blocking_issues: entry.map(|e| self.blocking_for_output(e)).unwrap_or(0),
             adapter_problem: (0..self.units.len())
+                .filter(|&i| self.units[i].armed)
                 .find_map(|i| self.rig_problem(i).map(|why| format!("{}{why}", self.prefix(i)))),
         }
     }
@@ -1793,17 +1929,23 @@ impl Show {
             }
             Action::Arm => {
                 for u in &mut self.units {
+                    u.finish_jog(false, true);
                     let pose = u.rig.pose();
                     u.live = Live { commanded: Some(pose), stand: Some(pose), ..Live::default() };
                     u.held = false;
+                    u.catching_up = false;
+                    u.camera_failure = None;
                 }
                 self.log_arm(client);
             }
             Action::Disarm => {
                 for u in &mut self.units {
-                    u.rig.stop();
-                    u.live.clear();
+                    u.interrupt_automation();
+                    u.jog_deadline = None;
+                    u.manual = false;
                     u.held = false;
+                    u.catching_up = false;
+                    u.camera_failure = None;
                 }
             }
             Action::RecordOn => {
@@ -1830,8 +1972,11 @@ impl Show {
                         let _ = u.rig.jog(Jog::default());
                     }
                     u.jog_deadline = None;
+                    u.manual = false;
                     u.live.clear();
                     u.held = false;
+                    u.catching_up = false;
+                    u.camera_failure = None;
                     u.halting = Some(now);
                 }
             }
@@ -1857,7 +2002,7 @@ impl Show {
         // A virtual rig follows a moved playhead at once, not a tick later.
         if self.transport.output == Output::Rehearse && self.captures.is_empty() {
             for i in 0..self.units.len() {
-                if self.units[i].rig.is_simulator() && !self.units[i].manual {
+                if self.units[i].rig.is_simulator() && self.units[i].armed && !self.units[i].manual {
                     let pose = self.timeline_pose(&self.units[i].id);
                     self.units[i].rig.sync_virtual(&pose, &Axis::ALL);
                 }
@@ -1878,9 +2023,12 @@ impl Show {
             Event::Fault => {
                 self.audio.stop();
                 for u in &mut self.units {
-                    u.rig.stop();
-                    u.live.clear();
+                    u.interrupt_automation();
+                    u.jog_deadline = None;
+                    u.manual = false;
                     u.held = false;
+                    u.catching_up = false;
+                    u.camera_failure = None;
                 }
             }
             _ => {}
@@ -1954,6 +2102,26 @@ impl Show {
         self.event(Event::Fault);
     }
 
+    /// A device, cue, or recovery failure holds only this camera.
+    fn camera_fault(&mut self, i: usize, kind: CameraFailure, reason: String) {
+        let unit = &mut self.units[i];
+        if unit.camera_failure == Some(kind)
+            && (kind == CameraFailure::InvalidTarget || unit.live.fault.as_ref() == Some(&reason))
+        {
+            return;
+        }
+        unit.jog_deadline = None;
+        unit.manual = false;
+        unit.catching_up = false;
+        unit.camera_failure = Some(kind);
+        unit.held = true;
+        unit.interrupt_automation();
+        unit.live.fault = Some(reason.clone());
+        let (camera, pose) = (unit.id.clone(), unit.rig.pose());
+        self.log("fault", json!({ "camera": camera, "reason": reason, "frame": self.frame_f.floor() as i64, "pose": pose }));
+        self.poke();
+    }
+
     /// The plain preset move of a camera under the playhead, when its rig is set to let the head run those itself.
     fn ride(&self, i: usize) -> Option<Ride> {
         let camera = &self.project.cameras[i];
@@ -1971,6 +2139,9 @@ impl Show {
         })?;
         let end = clip.start_frame + clip.duration_frames;
         let pose = e.compiled.poses(&camera.id).get(end.max(0) as usize)?;
+        if self.invalid_target(i, *pose).is_some() {
+            return None;
+        }
         Some(Ride { pan: pose.pan, tilt: pose.tilt, seconds: self.rate().frames_to_seconds(end as f64 - f) })
     }
 
@@ -2031,30 +2202,80 @@ impl Show {
         })
     }
 
-    /// One turn of the live loop for every camera that is not held.
+    /// Resolve against the current playhead on every tick. No camera has a cue queue.
     fn tick_cameras(&mut self, now: Instant, dt: f64) {
         let positioning = self.transport.output == Output::Positioning;
-        let mut waiting = 0;
-        let mut arrived = 0;
+        let mut waiting = false;
         for i in 0..self.units.len() {
-            // A fault that cut output ends the turn for the cameras after it too.
             if !self.transport.hardware_live() {
                 return;
             }
-            if self.units[i].held {
+            if self.units[i].jog_deadline.is_some() {
+                continue;
+            }
+            if let Some(problem) = self.rig_problem(i) {
+                if !self.units[i].held || self.units[i].camera_failure == Some(CameraFailure::Device) {
+                    self.camera_fault(i, CameraFailure::Device, problem);
+                }
+                continue;
+            }
+            match self.units[i].camera_failure {
+                Some(CameraFailure::Device | CameraFailure::InvalidTarget) => {}
+                _ if self.units[i].held => continue,
+                _ => {}
+            }
+            if !self.units[i].armed {
+                if self.units[i].camera_failure == Some(CameraFailure::Device) {
+                    self.recover_camera(i);
+                }
                 continue;
             }
             let target = self.playhead_target(i);
-            match self.tick_live(i, now, dt, target) {
-                Step::Arrived => arrived += 1,
-                Step::Travelling => waiting += 1,
-                Step::Tracking | Step::Faulted => {}
+            if let Some(problem) = self.invalid_target(i, target) {
+                self.camera_fault(i, CameraFailure::InvalidTarget, problem);
+                continue;
             }
+            if self.units[i].camera_failure.is_some() {
+                self.recover_camera(i);
+            }
+            let step = self.tick_live(i, now, dt, target);
+            // A local reconciliation stays independent of the show's global positioning.
+            waiting |= step == Step::Travelling && !self.units[i].catching_up;
         }
-        // Positioning ends when every camera that is still in the show stands on its pose.
-        if positioning && self.transport.output == Output::Positioning && waiting == 0 && arrived > 0 {
+        if positioning && self.transport.output == Output::Positioning && !waiting {
             self.event(Event::RigArrived);
         }
+    }
+
+    fn recover_camera(&mut self, i: usize) {
+        let unit = &mut self.units[i];
+        unit.held = false;
+        unit.camera_failure = None;
+        unit.live = Live::default();
+        unit.catching_up = unit.armed;
+        let camera = unit.id.clone();
+        self.log("camera_recovered", json!({ "camera": camera, "frame": self.frame_f.floor() as i64 }));
+        self.poke();
+    }
+
+    fn invalid_target(&self, i: usize, mut target: Pose) -> Option<String> {
+        let camera = &self.project.cameras[i];
+        let limits = self.project.limits_of(camera);
+        if self.column_stays(i) {
+            target.elevation = self.units[i].rig.pose().elevation;
+        }
+        if !target.is_finite() {
+            return Some("Invalid preset at the playhead: a position is not finite".into());
+        }
+        let limit_pose = if self.column_stays(i) {
+            Pose { elevation: target.elevation.clamp(limits.elevation.min, limits.elevation.max), ..target }
+        } else {
+            target
+        };
+        let problem = limits
+            .out_of_range(&limit_pose)
+            .or_else(|| camera.keep_out.iter().find(|r| r.violated(&target)).map(|rule| rule.describe_in(self.project.units)));
+        problem.map(|why| format!("Invalid preset at the playhead: {why}"))
     }
 
     /// Whether camera `i` stands on a column the song has no elevation for. Such a column is
@@ -2076,23 +2297,39 @@ impl Show {
         }
     }
 
+    /// A new owner of the rig waits for the adapter's stop, even after rapid toggles.
+    fn wait_for_stop(&mut self, i: usize, column: bool, now: Instant) -> bool {
+        let unit = &mut self.units[i];
+        if !unit.rig.stop_pending(column) {
+            if unit.live.stop_wait_since.take().is_some() {
+                unit.live.commanded = None;
+            }
+            return false;
+        }
+        let since = *unit.live.stop_wait_since.get_or_insert(now);
+        if now.duration_since(since) > POSITIONING_GRACE {
+            self.camera_fault(i, CameraFailure::CatchUp, "The camera did not confirm it had stopped".into());
+        }
+        true
+    }
+
     /// One turn of the live loop for one camera: check the target, send it, compare the rig with it.
     fn tick_live(&mut self, i: usize, now: Instant, dt: f64, target: Pose) -> Step {
-        if let Some(problem) = self.rig_problem(i) {
-            self.fault(i, problem);
-            return Step::Faulted;
-        }
         // A column the song has no elevation for is at its target wherever it stands.
         let column = !self.column_stays(i);
+        if self.wait_for_stop(i, column, now) {
+            return Step::Travelling;
+        }
         let target = if column { target } else { Pose { elevation: self.units[i].rig.pose().elevation, ..target } };
-        let positioning = self.transport.output == Output::Positioning;
+        let catching_up = self.units[i].catching_up;
+        let positioning = self.transport.output == Output::Positioning && !catching_up;
         let stopped = self.transport.run == Run::Stopped;
         // The project can say that a rig off the timeline is driven on instead of held.
         let carry_on = self.project.on_fault == OnFault::CarryOn;
         let camera = &self.project.cameras[i];
         // While stopped on the get-set fade the approach uses Arm positioning speed. While the
         // playhead is easing the target into rest, full speed tracks that eased target.
-        let scale = if positioning { camera.rig.positioning_speed.clamp(0.01, 1.0) } else { 1.0 };
+        let scale = if positioning || (catching_up && stopped) { camera.rig.positioning_speed.clamp(0.01, 1.0) } else { 1.0 };
         let (speeds, limits) = (camera.axes, self.project.limits_of(camera));
         let (tol, window) = (camera.rig.tolerance, Duration::from_millis(camera.rig.tracking_window_ms));
         let before = self.units[i].live.commanded.unwrap_or_else(|| self.units[i].rig.pose());
@@ -2113,16 +2350,25 @@ impl Show {
             Pose { elevation: next.elevation.clamp(limits.elevation.min, limits.elevation.max), ..next }
         };
         if let Some(why) = limits.out_of_range(&asked) {
-            self.fault(i, format!("Limit reached: {why}. The rig is held"));
+            let why = format!("Limit reached: {why}. The rig is held");
+            if catching_up {
+                self.camera_fault(i, CameraFailure::CatchUp, why);
+            } else {
+                self.fault(i, why);
+            }
             return Step::Faulted;
         }
         if let Some(rule) = camera.keep_out.iter().find(|r| r.violated(&next)) {
             let why = format!("Keep-out rule broken: {}. The rig is held", rule.describe_in(self.project.units));
-            self.fault(i, why);
+            if catching_up {
+                self.camera_fault(i, CameraFailure::CatchUp, why);
+            } else {
+                self.fault(i, why);
+            }
             return Step::Faulted;
         }
         let velocity = if dt > 1e-6 { Pose::from_fn(|a| (next.get(a) - before.get(a)) / dt) } else { Pose::default() };
-        let ride = self.ride(i);
+        let ride = if catching_up { None } else { self.ride(i) };
         let unit = &mut self.units[i];
         unit.rig.drive(&Drive { target: next, velocity, scale, ride, column });
         unit.live.commanded = Some(next);
@@ -2165,12 +2411,47 @@ impl Show {
                     }
                     return Step::Arrived;
                 }
-                self.fault(i, "The rig did not reach the pose at the playhead. Output is cut".into());
+                self.camera_fault(i, CameraFailure::CatchUp, "Timed out travelling to the pose at the playhead".into());
                 return Step::Faulted;
             }
             return Step::Travelling;
         }
         unit.live.positioning = None;
+        if catching_up {
+            let there = Axis::ALL.into_iter().all(|a| {
+                (reading.pose.get(a) - target.get(a)).abs() <= tol.get(a) && (next.get(a) - target.get(a)).abs() <= tol.get(a)
+            });
+            if there {
+                unit.catching_up = false;
+                unit.live.rejoin_feedback = None;
+                self.poke();
+            } else {
+                // An intentional rejoin can lag further than normal tracking allows. Monitor
+                // actual progress toward the latest command independently on each axis.
+                let (last, times) = unit.live.rejoin_feedback.get_or_insert((reading.pose, [now; 5]));
+                let stalled = Axis::ALL.into_iter().find(|&a| {
+                    let tolerance = tol.get(a).max(1e-9);
+                    let at = reading.pose.get(a);
+                    let commanded = at - error.get(a);
+                    let progress = (at - last.get(a)) * (commanded - last.get(a)).signum();
+                    let time = &mut times[a.index()];
+                    if error.get(a).abs() <= tolerance || progress >= tolerance * 0.25 {
+                        last.set(a, at);
+                        *time = now;
+                    }
+                    now.duration_since(*time) > window.max(Duration::from_secs(1))
+                });
+                if let Some(axis) = stalled {
+                    self.camera_fault(
+                        i,
+                        CameraFailure::CatchUp,
+                        format!("Catch-up timed out: {} stopped making progress", axis.label().to_lowercase()),
+                    );
+                    return Step::Faulted;
+                }
+            }
+            return Step::Tracking;
+        }
         // While the head runs a move by its own ramp, pan and tilt are not expected to match the curve.
         let checked = |a: &Axis| ride.is_none() || !matches!(a, Axis::Pan | Axis::Tilt);
         let worst = Axis::ALL
@@ -2183,14 +2464,9 @@ impl Show {
             Some((axis, _)) => {
                 let since = *unit.live.over_since.get_or_insert(now);
                 if now.duration_since(since) > window {
-                    self.fault(
-                        i,
-                        format!(
-                            "Tracking fault: {} is {} from the timeline. The rig is held",
-                            axis.label().to_lowercase(),
-                            axis.format_in(error.get(axis).abs(), self.project.units)
-                        ),
-                    );
+                    let distance = axis.format_in(error.get(axis).abs(), self.project.units);
+                    let axis = axis.label().to_lowercase();
+                    self.fault(i, format!("Tracking fault: {axis} is {distance} from the timeline. The rig is held"));
                     return Step::Faulted;
                 }
             }
@@ -2478,7 +2754,7 @@ impl Show {
                 // A virtual rig starts the pass where the timeline is, on the axes that are not in
                 // someone's hand, so a playhead that moved with Play is not in the first frame.
                 for i in 0..self.units.len() {
-                    if self.units[i].rig.is_simulator() {
+                    if self.units[i].rig.is_simulator() && self.units[i].armed {
                         let target = self.timeline_pose(&self.units[i].id);
                         let axes = self.playing_axes(i);
                         self.units[i].rig.sync_virtual(&target, &axes);
@@ -2768,21 +3044,42 @@ impl Show {
         Ok(Smoothed { working, report })
     }
 
-    /// Drive one camera's rig by hand.
-    pub fn jog(&mut self, client: &str, camera: Option<&str>, jog: Jog) -> Res<()> {
+    /// A nonzero jog takes ownership; zero or a missed heartbeat releases it.
+    pub fn jog(&mut self, client: &str, request: JogRequest) -> Res<()> {
         self.require_lease(client)?;
-        let i = self.unit_index(camera)?;
+        let i = self.unit_index(request.camera.as_deref())?;
+        if !accept_sequence(&mut self.jog_sequences, client, &self.units[i].id, request.sequence) {
+            return Ok(());
+        }
+        let jog = request.jog;
         if self.transport.estop {
             return Err(Fail::refused("Reset E-Stop to continue"));
         }
-        if self.transport.output != Output::Rehearse {
-            return Err(Fail::refused("Disarm to drive the rig by hand"));
+        if Axis::ALL.into_iter().any(|a| !jog.get(a).is_finite() || jog.get(a).abs() > 1.0) {
+            return Err(Fail::bad("Jog axes must be between -1 and 1"));
         }
-        if self.transport.run != Run::Stopped && !self.transport.record {
-            return Err(Fail::refused("Stop to position the rig by hand, or turn Record on to capture the move"));
+        let live = self.transport.hardware_live();
+        let unit = &self.units[i];
+        if jog.is_zero() {
+            self.release_jog(i, live, false);
+            return Ok(());
         }
-        // During a pass only the record-enabled axes are hand-driven; the rest play the timeline.
-        let jog = if self.transport.run != Run::Stopped {
+        if unit.held {
+            return Err(Fail::refused(unit.live.fault.as_deref().unwrap_or("The camera is held")));
+        }
+        if self.transport.output == Output::Positioning && self.transport.run == Run::Stopped && unit.jog_deadline.is_none() {
+            return Err(Fail::refused("Wait for Arm to finish, or Disarm before moving the rig"));
+        }
+        if !live && !unit.rig.is_simulator() {
+            return Err(Fail::refused(
+                "In Rehearse the rig controller drives the simulator only. Arm the show to drive hardware",
+            ));
+        }
+        if unit.rig.preset_sync_progress().is_some() {
+            return Err(Fail::refused("Wait for the camera's preset sync to finish"));
+        }
+        let jog = if self.recording() {
+            // During a pass only the record-enabled axes are hand-driven.
             let keep = |a: Axis| if self.record_axes.contains(&a) { jog.get(a) } else { 0.0 };
             Jog {
                 pan: keep(Axis::Pan),
@@ -2794,22 +3091,106 @@ impl Show {
         } else {
             jog
         };
-        let unit = &mut self.units[i];
-        unit.rig.jog(jog).map_err(Fail::refused)?;
-        if !jog.is_zero() {
-            // Moved during a pass: this camera's pass is one to keep.
-            if let Some(capture) = self.captures.iter_mut().find(|c| c.camera == unit.id) {
-                capture.mark_driven();
-            }
-        }
         if jog.is_zero() {
-            unit.jog_deadline = None;
-        } else {
-            unit.manual = true;
-            // The app repeats jog while a control is held; a dropped connection stops the rig.
-            unit.jog_deadline = Some(Instant::now() + Duration::from_millis(250));
+            self.release_jog(i, live, false);
+            return Ok(());
+        }
+        if jog.elevation != 0.0 && !self.units[i].rig.is_simulator() && !self.project.cameras[i].has_column() {
+            return Err(Fail::refused("This camera has no pedestal configured for manual elevation"));
+        }
+        if let Some(problem) = self.manual_device_problem(i, jog) {
+            self.camera_fault(i, CameraFailure::Device, problem.clone());
+            return Err(Fail::refused(problem));
+        }
+        let unit = &mut self.units[i];
+        let taking_over = unit.jog_deadline.is_none();
+        if taking_over && live {
+            unit.interrupt_automation();
+            unit.catching_up = false;
+        }
+        if unit.rig.is_simulator() {
+            unit.rig.jog(jog).map_err(Fail::refused)?;
+        }
+        unit.manual = true;
+        unit.jog = jog;
+        unit.jog_deadline = Some(Instant::now() + Duration::from_millis(250));
+        if let Some(capture) = self.captures.iter_mut().find(|c| c.camera == unit.id) {
+            capture.mark_driven();
+        }
+        if taking_over {
+            let camera = unit.id.clone();
+            self.log("camera_manual", json!({ "camera": camera, "active": true, "by": self.who(client) }));
+            self.poke();
         }
         Ok(())
+    }
+
+    fn release_jog(&mut self, i: usize, live: bool, expired: bool) {
+        let unit = &mut self.units[i];
+        if unit.jog_deadline.is_none() {
+            return;
+        }
+        unit.finish_jog(live, expired);
+        if live || (self.transport.run != Run::Stopped && !self.transport.record) {
+            unit.manual = false;
+        }
+        let camera = unit.id.clone();
+        self.log("camera_manual", json!({ "camera": camera, "active": false, "expired": expired }));
+        self.poke();
+    }
+
+    fn release_all_jogs(&mut self) {
+        let live = self.transport.hardware_live();
+        for i in 0..self.units.len() {
+            self.release_jog(i, live, true);
+        }
+    }
+
+    fn manual_device_problem(&self, i: usize, jog: Jog) -> Option<String> {
+        let unit = &self.units[i];
+        if jog.elevation != 0.0 && (unit.rig.is_simulator() || self.project.cameras[i].has_column()) {
+            unit.rig.problem()
+        } else {
+            unit.rig.head_problem()
+        }
+    }
+
+    /// Use the same bounded position feedback loop for hardware jog as for automation.
+    /// Only a short, freshly read segment is asked for. There is no native preset in hand control.
+    fn tick_manual(&mut self, i: usize, now: Instant) {
+        let unit = &self.units[i];
+        let jog = unit.jog;
+        if let Some(problem) = self.manual_device_problem(i, jog) {
+            self.camera_fault(i, CameraFailure::Device, problem);
+            return;
+        }
+        let column = jog.elevation != 0.0 && (unit.rig.is_simulator() || self.project.cameras[i].has_column());
+        if self.wait_for_stop(i, column, now) {
+            return;
+        }
+        let camera = &self.project.cameras[i];
+        let unit = &self.units[i];
+        let pose = unit.rig.pose();
+        let limits = self.project.limits_of(camera);
+        let target = Pose::from_fn(|a| {
+            if jog.get(a) == 0.0 {
+                return pose.get(a);
+            }
+            let limit = limits.get(a);
+            (pose.get(a) + jog.get(a) * limit.max_speed * 0.25).clamp(limit.min, limit.max)
+        });
+        // Check the segment as well as its end so two axes cannot cross a keep-out region
+        // between individually valid start and end poses.
+        if let Some(rule) =
+            camera.keep_out.iter().find(|r| (1..=8).any(|n| r.violated(&lerp_pose(&pose, &target, n as f64 / 8.0))))
+        {
+            let why = format!("Manual control stopped: {}", rule.describe_in(self.project.units));
+            self.camera_fault(i, CameraFailure::Manual, why);
+            return;
+        }
+        if !unit.rig.is_simulator() {
+            self.units[i].rig.drive(&Drive { column, ..Drive::to(target, 1.0) });
+        }
     }
 
     // ---- tick ----
@@ -2831,7 +3212,7 @@ impl Show {
     fn monitor_pose(&self, i: usize) -> (Pose, PoseSource) {
         let unit = &self.units[i];
         let passing = self.transport.record && self.transport.run != Run::Stopped;
-        if self.transport.hardware_live() {
+        if self.transport.hardware_live() || !unit.armed {
             (unit.rig.pose(), PoseSource::Rig)
         } else if passing {
             (unit.rig.pose(), PoseSource::Record)
@@ -2849,6 +3230,7 @@ impl Show {
 
         if self.lease.as_ref().is_some_and(|l| now.duration_since(l.last_seen) > self.lease_ttl) {
             let name = self.lease.take().map(|l| l.name);
+            self.release_all_jogs();
             self.log("lease", json!({ "expired": name }));
             self.settle_live_edit();
             self.poke();
@@ -2858,11 +3240,12 @@ impl Show {
             self.log("panel", json!({ "station": station, "gone": true }));
             self.poke();
         }
-        for u in &mut self.units {
-            if u.jog_deadline.is_some_and(|d| now > d) {
-                // A lost connection halts on the spot; letting go of a control ramps down instead.
-                u.rig.stop();
-                u.jog_deadline = None;
+        let live = self.transport.hardware_live();
+        for i in 0..self.units.len() {
+            if self.units[i].jog_deadline.is_some_and(|d| now > d) {
+                self.release_jog(i, live, true);
+            } else if live && self.units[i].jog_deadline.is_some() {
+                self.tick_manual(i, now);
             }
         }
         self.collect_loaded_audio();
@@ -2900,7 +3283,7 @@ impl Show {
                 // In Rehearse the virtual rigs show the timeline; hardware is sent nothing.
                 let recording = !self.captures.is_empty();
                 for i in 0..self.units.len() {
-                    if !self.units[i].rig.is_simulator() {
+                    if !self.units[i].rig.is_simulator() || !self.units[i].armed {
                         continue;
                     }
                     let target = self.timeline_pose(&self.units[i].id);
@@ -2942,6 +3325,14 @@ impl Show {
                     pose,
                     pose_source,
                     rig_pose: unit.rig.pose(),
+                    intended_pose: if self.transport.hardware_live() {
+                        self.playhead_target(i)
+                    } else {
+                        self.timeline_pose(&unit.id)
+                    },
+                    armed: unit.armed,
+                    manual: unit.jog_deadline.is_some(),
+                    catching_up: unit.catching_up,
                     error: unit.live.error,
                     fault: unit.live.fault.clone(),
                     held: unit.held,

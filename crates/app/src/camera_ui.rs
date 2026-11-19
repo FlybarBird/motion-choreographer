@@ -1,5 +1,6 @@
 //! The camera bar: every camera in the show, which one is selected, and how each is doing.
 
+use crate::link::Cmd;
 use crate::session::Session;
 use crate::theme::*;
 use egui::{vec2, Key, RichText, Stroke, Ui};
@@ -47,6 +48,9 @@ pub fn state(status: Option<&CameraStatus>, output: Output) -> (&'static str, eg
         Some(c) if c.halting => ("stopping", RED),
         Some(c) if c.preset_sync.is_some() => ("reading", AMBER),
         Some(c) if c.hardware && c.adapters.iter().any(|a| !a.connected) => ("no answer", AMBER),
+        Some(c) if c.manual => ("Manual", AMBER),
+        Some(c) if c.catching_up => ("Catching up", AMBER),
+        Some(c) if !c.armed => ("Disarmed", MUTED),
         // Amber while the rig travels to the playhead, green once it follows the timeline: as the transport's rule is.
         Some(c) if c.hardware && output == Output::Positioning => ("live", AMBER),
         Some(c) if c.hardware && output != Output::Rehearse => ("live", GREEN),
@@ -61,11 +65,17 @@ fn detail(s: &Session, index: usize) -> String {
     let mut lines = vec![format!("Camera {}: {}   ( {} )", index + 1, camera.name, key_name(index))];
     match status {
         Some(c) => {
+            lines.push(if c.armed { "Camera armed for automation".into() } else { "Camera automation disarmed".into() });
+            if c.manual {
+                lines.push("Manual control active. Release the Rig controller to hand this camera back.".into());
+            }
+            if c.catching_up {
+                lines.push("Catching up to the current playhead pose.".into());
+            }
             if let Some(fault) = &c.fault {
                 lines.push(fault.clone());
                 if c.held {
-                    lines
-                        .push("Held where it stopped. The other cameras carry on. Disarm and arm again to bring it back.".into());
+                    lines.push("Automation is held for this camera.".into());
                 }
             }
             if let Some(progress) = &c.preset_sync {
@@ -90,7 +100,7 @@ fn detail(s: &Session, index: usize) -> String {
 /// A camera on the bar: its number on its colour, its name, and a mark of its state. The one in hand
 /// has the accent rule under it, like the tab in front. The mark is a ring for the simulator and a
 /// dot for a rig, so that the two are not told apart by colour alone.
-fn camera_chip(ui: &mut Ui, index: usize, name: &str, on: bool, word: &str, ink: egui::Color32) -> egui::Response {
+fn camera_chip(ui: &mut Ui, index: usize, name: &str, on: bool, hardware: bool, ink: egui::Color32) -> egui::Response {
     let label = format!("{} {name}", index + 1);
     let font = if on { semibold(BODY) } else { body() };
     let galley = ui.painter().layout_no_wrap(name.to_string(), font, OFF_WHITE);
@@ -113,7 +123,7 @@ fn camera_chip(ui: &mut Ui, index: usize, name: &str, on: bool, word: &str, ink:
         let ink_name = if on { egui::Color32::WHITE } else { OFF_WHITE };
         p.galley(egui::pos2(tag.right() + GAP, rect.center().y - galley.size().y / 2.0), galley, ink_name);
         let at = egui::pos2(rect.right() - GAP - mark / 2.0, rect.center().y);
-        if word == "sim" {
+        if !hardware {
             p.circle_stroke(at, mark / 2.0 - 1.0, Stroke::new(RULE + 0.5, ink));
         } else {
             p.circle_filled(at, mark / 2.0, ink);
@@ -123,6 +133,24 @@ fn camera_chip(ui: &mut Ui, index: usize, name: &str, on: bool, word: &str, ink:
         }
     }
     response
+}
+
+/// The camera control addresses the selected camera even when the transport is running.
+fn arm_button(ui: &mut Ui, s: &Session, index: usize) {
+    let camera = &s.project.cameras[index];
+    let status = s.status.camera(&camera.id);
+    let arm = status.is_some_and(|c| !c.armed);
+    let wording = format!("{} camera {}", if arm { "Arm" } else { "Disarm" }, index + 1);
+    let can_change = s.lost.is_none() && s.status.you_hold_lease && status.is_some();
+    let help = if arm {
+        "Enable automation. During live output this camera catches up to the playhead after manual control is released."
+    } else {
+        "Stop automation on this camera. Hand control and the rest of the show stay available."
+    };
+    let r = ui.add_enabled(can_change, egui::Button::new(wording).min_size(vec2(0.0, CONTROL_H)));
+    if r.on_hover_text(help).on_disabled_hover_text("Connect and take the edit lease to change camera automation").clicked() {
+        s.link.send(Cmd::SetCameraArmed(camera.id.clone(), arm));
+    }
 }
 
 pub fn bar(ui: &mut Ui, s: &mut Session) {
@@ -150,18 +178,30 @@ pub fn bar(ui: &mut Ui, s: &mut Session) {
             if icon_button(ui, true, glyph, words, look, vec2(0.0, CONTROL_H)).on_hover_text(tip).clicked() {
                 s.settings = if open { None } else { Some(crate::settings_ui::Page::default()) };
             }
+            arm_button(ui, s, selected);
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 egui::ScrollArea::horizontal().auto_shrink([false, true]).show(ui, |ui| {
                     for (i, camera) in s.project.cameras.iter().enumerate() {
                         let on = i == selected;
-                        let (word, ink) = state(s.status.camera(&camera.id), output);
-                        let r = camera_chip(ui, i, &camera.name, on, word, ink).on_hover_text(detail(s, i));
+                        let status = s.status.camera(&camera.id);
+                        let (word, ink) = state(status, output);
+                        let hardware = status.is_some_and(|c| c.hardware);
+                        let r = camera_chip(ui, i, &camera.name, on, hardware, ink).on_hover_text(detail(s, i));
                         if r.clicked() {
                             choose = Some(camera.id.clone());
                         }
-                        // A state that needs the operator is said in a word beside the camera.
-                        if matches!(word, "held" | "fault" | "stopping" | "no answer" | "reading") {
-                            ui.label(RichText::new(word).color(ink).font(semibold(SMALL)));
+                        if let Some(c) = status {
+                            let (armed, color) = if c.armed { ("Armed", MUTED) } else { ("Disarmed", AMBER) };
+                            ui.label(RichText::new(armed).color(color).font(semibold(SMALL)));
+                            if c.manual {
+                                ui.label(RichText::new("Manual").color(AMBER).font(semibold(SMALL)));
+                            }
+                            if c.catching_up {
+                                ui.label(RichText::new("Catching up").color(AMBER).font(semibold(SMALL)));
+                            }
+                            if matches!(word, "held" | "fault" | "stopping" | "no answer" | "reading") {
+                                ui.label(RichText::new(word).color(ink).font(semibold(SMALL)));
+                            }
                             ui.add_space(U);
                         }
                     }

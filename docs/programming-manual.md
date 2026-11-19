@@ -372,8 +372,8 @@ The **Rig controller** tab drives the selected camera:
   for zoom, `,` `.` for elevation.
 - **Top speed** scales all of it. Turn it down for fine work.
 
-If the app stops sending (a dropped connection, a closed window) the rig stops
-within a quarter of a second. Hand control is refused while armed.
+If the app stops sending jog updates, the server releases the rig after a
+quarter of a second. For live hand control, see [Manual + Preset](#manual--preset).
 
 To set the opening position for future songs, select the camera, frame the shot
 with its hardware controller, and click **Store default** in **Rig controller**.
@@ -507,8 +507,9 @@ Ways to work that keep twelve lanes manageable:
   when.
 - **Keep lanes closed** except the one you are keying.
 
-The camera bar's dots show each camera's state: simulated, connected, live,
-not answering, held, or faulted. Hover a chip for the reason.
+The camera bar shows whether automation is armed for each camera, along with
+manual control, catch-up and faults. Hover a camera for its device status or
+fault reason.
 
 ---
 
@@ -672,21 +673,45 @@ tolerance.
 | (Locked to timecode) the incoming code jumps | Nothing | Travels to the pose at the new code, the same way |
 | Finish | **Disarm** | Returns to Rehearse. Nothing more is sent. |
 
+### Manual + Preset
+
+Select a camera and use the existing pad, axis controls or keyboard in
+**Rig controller**. Holding a control takes over that camera. The show clock,
+timecode chase and the other cameras keep running. Release the control to give
+the camera back to the timeline. The server also releases it after 250 ms
+without a jog update or when the edit lease changes hands.
+
+While the show is live, the camera stops the interrupted move and then catches
+up to the pose at the current playhead, within its configured motion limits.
+If the playhead is inside a move, it follows the current point on that move.
+If the move has finished, it goes to the settled pose. The target continues to
+update during catch-up. The Rig controller shows the show target alongside the
+device's last measured pose.
+
+Use **Disarm camera N** in the camera bar to suspend that camera's automation.
+The manual controls remain available during live output. **Arm camera N**
+reconciles to the current show position once any manual control is released.
+The camera's switch stays in effect across songs in the current server
+session. To enable OSC Arm and Disarm from an external controller, see
+[OSC camera control](../README.md#camera-arm-and-disarm-over-osc).
+
+The edit lease is required for desktop control. In Rehearse, the rig
+controller can drive a simulator. The show must be globally armed before the
+controller can move physical hardware.
+
 ### When a camera is held
 
-A camera's rig is held where it is and its output is cut, with the reason in
-red on the bar and in the Rig controller tab, when:
+A lost device connection, invalid cue target or catch-up timeout is reported
+on that camera and in the run log. The show and the other cameras continue.
+An armed camera that reconnects first confirms it has stopped, then catches up
+to the latest show position. A disarmed camera stays parked after reconnecting.
+An invalid target is skipped until the intended pose is valid again. After a
+catch-up timeout, resolve the fault and cycle that camera's Disarm and Arm.
 
-- an axis stays further from the timeline than its tolerance for longer than
-  the tracking window (2 degrees of pan and tilt for half a second, unless the
-  rig settings say otherwise);
-- the next step would take an axis past its limit or break a keep-out rule;
-- one of its devices stops answering;
-- it does not reach the playhead pose while arming.
-
-By default the other cameras carry on (**When a camera faults**, in the project
-settings, can hold them all instead). The held camera stays held until you
-**Disarm** and **Arm** again. Find out why first: the Log tab has the detail.
+Ordinary tracking errors outside the configured tolerance window and unsafe
+motion paths use the show's **When a camera faults** policy. The default holds
+the affected camera while the other cameras carry on. A held camera's reason
+appears on the bar and in Rig controller.
 
 ### E-Stop
 
@@ -866,10 +891,11 @@ After that, and whenever the joystick is already pushed over at the moment it
 is given the rig (entering the mode, changing camera), the display says *Let
 the joystick come to rest, then drive again*: let go, then push.
 
-As in the app, hand control is refused while armed, and while playing unless
-Record is on. It drives the simulator only. For a real FR7 the server refuses
-it and the panel shows why; put the camera where you want it with its own
-controller, then press **Store**.
+While the show is live, the panel joystick uses the same per-camera takeover
+as the desktop. Releasing it gives an individually armed camera back to the
+current show position. In Rehearse the panel drives the simulator. For a real
+FR7 in Rehearse, use the camera's own controller to frame and then press
+**Store**.
 
 In any mode that does not drive by hand, pushing the joystick does nothing
 and the display says *Press Camera to drive by hand*.
@@ -1122,7 +1148,7 @@ Hover any disabled button and it says why. The reasons you will meet most:
 | Stop before arming, Stop before locking | **Stop** |
 | Turn Record off before arming | **Record off** |
 | Disarm to record | Record works in Rehearse only |
-| Disarm to drive the rig by hand | Hand control is refused while armed |
+| Wait for Arm to finish, or Disarm before moving the rig | Wait for initial positioning to finish before using manual control |
 | The rig is still moving to the playhead. Wait, or Disarm | Wait for ARMED |
 | Reset E-Stop to continue | **Reset E-Stop**, when it is safe |
 

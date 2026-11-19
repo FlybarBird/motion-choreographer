@@ -446,7 +446,7 @@ fn a_keep_out_rule_blocks_arm_when_the_song_breaks_it_and_holds_the_rig_when_the
 }
 
 #[test]
-fn a_rig_that_lags_or_stops_answering_is_held_and_disarmed_inside_the_tracking_window() {
+fn a_rig_that_lags_is_disarmed_and_a_lost_adapter_is_held_until_it_reconnects() {
     let t = TestServer::start("live-tracking");
     let api = t.client("a");
     api.take_lease("Luke-MacBook", false).unwrap();
@@ -488,20 +488,19 @@ fn a_rig_that_lags_or_stops_answering_is_held_and_disarmed_inside_the_tracking_w
     let st = wait_for(&api, |s| s.telemetry.fault.is_some());
     assert!(began.elapsed() < Duration::from_millis(1500), "{:?}", began.elapsed());
     assert_eq!(st.telemetry.fault, Some(format!("The FR7 is not answering at {}", rig.fr7.visca)));
-    assert_eq!(st.transport.output, Output::Rehearse);
-    assert_eq!(
-        refused(api.act(Action::Arm, &TransportRequest::default()), 409),
-        format!("The FR7 is not answering at {}", rig.fr7.visca)
-    );
+    assert_eq!(st.transport.output, Output::Armed);
+    assert!(st.first().held && st.first().armed);
     rig.fr7.set_silent(false);
-    wait_for(&api, |s| s.first().adapters[0].connected);
-    do_act(&api, Action::Arm);
-    wait_for(&api, |s| s.transport.output == Output::Armed);
+    let recovered = wait_for(&api, |s| s.first().adapters[0].connected && s.first().fault.is_none());
+    assert_eq!(recovered.transport.output, Output::Armed);
+    assert!(!recovered.first().held);
 
     // The pedestal going away is the same.
     rig.pod.set_silent(true);
     let st = wait_for(&api, |s| s.telemetry.fault.is_some());
     assert_eq!(st.telemetry.fault, Some(format!("The AutoPod+ is not answering at {}", rig.pod.addr)));
+    assert_eq!(st.transport.output, Output::Armed);
+    assert!(st.first().held && st.first().armed);
     let log = log_kinds(&api);
     assert_eq!(log.iter().filter(|r| r.kind == "fault").count(), 3);
     assert!(log.iter().any(|r| r.kind == "adapter" && r.data["name"] == "FR7" && r.data["connected"] == false));

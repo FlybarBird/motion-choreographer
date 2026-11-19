@@ -84,7 +84,11 @@ pub struct Link {
     /// The first message after a reset carries sequence number zero, not one.
     /// Sony's list leaves this open; the link settles on whichever the camera takes.
     zero_first: bool,
+    /// While following a drive, check ownership before every send, including retries.
+    drive_owner: Option<Arc<Mutex<State>>>,
 }
+
+const DRIVE_SUPERSEDED: &str = "FR7 drive superseded by stop";
 
 /// An FR7 does not answer from port 52381, and it does not answer to the port a
 /// message came from. It sends every reply to UDP port 52381 on the controller,
@@ -120,6 +124,7 @@ impl Hub {
     fn open() -> Result<Hub, String> {
         let socket = UdpSocket::bind(("0.0.0.0", visca::PORT))
             .map_err(|e| format!("could not listen on UDP port {}: {e}. An FR7 sends its answers to that port", visca::PORT))?;
+        socket.set_write_timeout(Some(Duration::from_millis(5))).map_err(|e| format!("could not configure VISCA socket: {e}"))?;
         let waiters = Arc::new(Mutex::new(Vec::new()));
         let reader = socket.try_clone().map_err(|e| format!("could not listen on UDP port {}: {e}", visca::PORT))?;
         let shared = Arc::clone(&waiters);
@@ -181,6 +186,9 @@ impl Inbox {
     fn open(target: SocketAddr) -> Result<Inbox, String> {
         let Ok(hub) = hub() else {
             let socket = UdpSocket::bind(("0.0.0.0", 0)).map_err(|e| format!("could not open a UDP socket: {e}"))?;
+            socket
+                .set_write_timeout(Some(Duration::from_millis(5)))
+                .map_err(|e| format!("could not configure VISCA socket: {e}"))?;
             return Ok(Inbox::Private { socket, target });
         };
         // Two links to one camera share its sequence counter and hear each other's answers.
@@ -273,6 +281,7 @@ impl Link {
             last_round_trip: Duration::ZERO,
             table: visca::speed_table(),
             zero_first: false,
+            drive_owner: None,
         };
         link.set_speed_table(cfg.speed_steps.clone());
         link.reset()?;
@@ -290,6 +299,11 @@ impl Link {
     }
 
     fn send_packet(&self, packet: &[u8]) -> Result<(), String> {
+        // Hold the mode lock only over the UDP write, never while awaiting a reply.
+        let owner = self.drive_owner.as_ref().map(|state| state.lock().unwrap_or_else(|e| e.into_inner()));
+        if owner.as_ref().is_some_and(|s| !matches!(s.mode, Mode::Drive(_))) {
+            return Err(DRIVE_SUPERSEDED.into());
+        }
         self.inbox.send(packet, self.dest)
     }
 
@@ -931,6 +945,9 @@ struct ZoomWebState {
     stop_at: Option<Instant>,
     /// When the worker last said what it wants.
     heard_at: Instant,
+    /// A web zoom command is in flight, or a nonzero order has gone out.
+    active: bool,
+    stopping: bool,
     /// The lens was stopped because the worker went quiet.
     lapsed: bool,
     failed: bool,
@@ -938,9 +955,17 @@ struct ZoomWebState {
 }
 
 impl ZoomWeb {
-    fn start(cfg: &Fr7Config) -> ZoomWeb {
-        let state =
-            ZoomWebState { rate: None, stop_at: None, heard_at: Instant::now(), lapsed: false, failed: false, quit: false };
+    fn start(cfg: &Fr7Config, camera: Arc<Mutex<State>>) -> ZoomWeb {
+        let state = ZoomWebState {
+            rate: None,
+            stop_at: None,
+            heard_at: Instant::now(),
+            active: false,
+            stopping: false,
+            lapsed: false,
+            failed: false,
+            quit: false,
+        };
         let shared = Arc::new((Mutex::new(state), Condvar::new()));
         let (theirs, mut cgi) = (shared.clone(), Cgi::new(&cfg.http, &cfg.user, &cfg.password, ZOOM_WEB_WAIT));
         let spawned = std::thread::Builder::new().name("fr7-zoom".into()).spawn(move || {
@@ -951,6 +976,7 @@ impl ZoomWeb {
                     let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
                     loop {
                         if let Some(rate) = s.rate.take() {
+                            s.active = true;
                             break rate;
                         }
                         if s.quit {
@@ -970,12 +996,22 @@ impl ZoomWeb {
                         s = wake.wait_timeout(s, due - now).unwrap_or_else(|e| e.into_inner()).0;
                     }
                 };
-                // A connection the camera has closed fails once and works when opened again.
+                // Serialize the web writes. A stop supersedes the pending rate, and no retry
+                // of a superseded speed is allowed after a stop.
+                let valid = || rate == 0.0 || matches!(camera.lock().unwrap_or_else(|e| e.into_inner()).mode, Mode::Drive(_));
                 let request = ZoomGlide::request(rate);
-                if cgi.get(&request).is_err() && cgi.get(&request).is_err() {
-                    state.lock().unwrap_or_else(|e| e.into_inner()).failed = true;
+                if valid() {
+                    let failed = cgi.get(&request).is_err() && valid() && cgi.get(&request).is_err();
+                    running = rate != 0.0;
+                    let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+                    s.failed |= failed;
+                    s.active = running;
+                    if !running {
+                        s.stopping = false;
+                    }
+                } else {
+                    state.lock().unwrap_or_else(|e| e.into_inner()).active = running;
                 }
-                running = rate != 0.0;
             }
         });
         if spawned.is_err() {
@@ -994,6 +1030,22 @@ impl ZoomWeb {
         s.heard_at = Instant::now();
         drop(s);
         self.shared.1.notify_one();
+    }
+
+    fn stop(&self) {
+        let mut s = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
+        if !s.stopping && (s.active || s.rate.is_some()) {
+            s.rate = Some(0.0);
+            s.stop_at = None;
+            s.stopping = true;
+            drop(s);
+            self.shared.1.notify_one();
+        }
+    }
+
+    fn is_stopped(&self) -> bool {
+        let s = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
+        !s.active && !s.stopping && s.rate.is_none()
     }
 
     /// Nothing new: the lens carries on as it was told.
@@ -1238,6 +1290,10 @@ impl Fr7 {
         s.moving || s.mode == Mode::Stop
     }
 
+    pub fn stop_pending(&self) -> bool {
+        self.lock().mode == Mode::Stop
+    }
+
     pub fn set_axes(&self, axes: &AxisTable) {
         self.lock().axes = *axes;
     }
@@ -1245,7 +1301,7 @@ impl Fr7 {
     pub fn drive(&self, cmd: &Drive) {
         let mut s = self.lock();
         // A preset sync owns the head until it ends or is stopped.
-        if s.mode != Mode::Sync {
+        if s.connected && matches!(s.mode, Mode::Idle | Mode::Drive(_)) {
             s.mode = Mode::Drive(*cmd);
             s.told_at = Instant::now();
             s.starved = false;
@@ -1259,6 +1315,7 @@ impl Fr7 {
             s.sync_progress = None;
         }
         s.mode = Mode::Stop;
+        s.starved = false;
     }
 
     pub fn begin_sync(&self) -> Result<(), String> {
@@ -1433,7 +1490,7 @@ impl Worker {
             if let Err(why) = outcome {
                 // A preset move refuses questions until it arrives. That is not the camera going away,
                 // and stopping here is what cuts the move off.
-                if !busy(&why) && !waiting {
+                if why != DRIVE_SUPERSEDED && !busy(&why) && !waiting {
                     // Nothing can be steered without the link, so nothing is left running.
                     self.stop_web_zoom();
                     self.link = None;
@@ -1474,7 +1531,6 @@ impl Worker {
             // speed. Where the web interface takes a zoom speed, the lens is steered by speed instead.
             self.zoom_by_speed = self.cgi.get(&ZoomGlide::request(0.0)).is_ok();
             self.zoom_web = true;
-            self.zoom_sender = None;
             self.zoom_glide = ZoomGlide::new(Instant::now());
             self.zoom_ramp = ZoomRamp::new(Instant::now());
             self.focus_sent = None;
@@ -1492,9 +1548,9 @@ impl Worker {
             let now = Instant::now();
             s.read_at = ReadTimes { pan_tilt: now, zoom: now, focus: now };
             // A server that died while live leaves the head on its last speed command.
-            if s.mode == Mode::Idle {
-                s.mode = Mode::Stop;
-            }
+            s.mode = Mode::Stop;
+            s.starved = false;
+            self.was = Mode::Idle;
         }
         let before = self.state.lock().unwrap_or_else(|e| e.into_inner()).head;
 
@@ -1585,19 +1641,27 @@ impl Worker {
 
         match mode {
             Mode::Idle => {}
-            Mode::Drive(cmd) => self.follow(&cmd, &head, &axes)?,
+            Mode::Drive(cmd) => {
+                self.link.as_mut().expect("connected").drive_owner = Some(self.state.clone());
+                let result = self.follow(&cmd, &head, &axes);
+                self.link.as_mut().expect("connected").drive_owner = None;
+                result?;
+            }
             Mode::Stop => {
                 // Stop is repeated until the head reads the same twice running.
                 let stopped = self.link.as_mut().expect("connected").stop_all();
                 self.stop_web_zoom();
                 stopped?;
                 self.stops_sent += 1;
-                self.still = if moved { 0 } else { self.still + 1 };
+                self.still = if moved || quiet { 0 } else { self.still + 1 };
                 self.zoom_sent = None;
                 // Stop has stopped the lens too.
                 self.zoom_ramp = ZoomRamp::new(Instant::now());
                 self.focus_sent = None;
-                if self.stops_sent >= 2 && self.still >= STILL_READINGS {
+                if self.stops_sent >= 2
+                    && self.still >= STILL_READINGS
+                    && self.zoom_sender.as_ref().is_none_or(ZoomWeb::is_stopped)
+                {
                     let mut s = self.lock();
                     if s.mode == Mode::Stop {
                         s.mode = Mode::Idle;
@@ -1678,7 +1742,7 @@ impl Worker {
         let link = self.link.as_mut().expect("connected");
         if self.zoom_by_speed && self.zoom_web {
             let now = Instant::now();
-            let sender = self.zoom_sender.get_or_insert_with(|| ZoomWeb::start(&self.cfg));
+            let sender = self.zoom_sender.get_or_insert_with(|| ZoomWeb::start(&self.cfg, self.state.clone()));
             if sender.failed() {
                 // Without the web interface the lens is still reachable through VISCA, in seven speeds.
                 self.zoom_web = false;
@@ -1776,8 +1840,8 @@ impl Worker {
     fn stop_web_zoom(&mut self) {
         let now = Instant::now();
         self.zoom_glide.settle(now);
-        if let Some(sender) = self.zoom_sender.as_ref().filter(|_| self.zoom_glide.running != 0.0) {
-            sender.order(ZoomOrder { rate: 0.0, stop_at: None }, true);
+        if let Some(sender) = &self.zoom_sender {
+            sender.stop();
         }
         self.zoom_glide = ZoomGlide::new(now);
     }

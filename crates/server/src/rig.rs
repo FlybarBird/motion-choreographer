@@ -95,6 +95,11 @@ pub trait RigAdapter: Send {
     /// Stop every axis where it is.
     fn stop(&mut self);
 
+    /// A stop has not yet been confirmed by the devices that would receive the next command.
+    fn stop_pending(&self, _column: bool) -> bool {
+        false
+    }
+
     fn is_moving(&self) -> bool;
 
     /// Presets stored on the device, with poses, when they can be read without moving it.
@@ -115,7 +120,7 @@ pub trait RigAdapter: Send {
         None
     }
 
-    /// Hand control. Only the simulator accepts it.
+    /// Simulator-native jog. The engine drives hardware jog with bounded feedback targets.
     fn jog(&mut self, _jog: Jog) -> Result<(), String> {
         Err("The rig controller drives the simulator only. Use the camera's own controller for hardware".into())
     }

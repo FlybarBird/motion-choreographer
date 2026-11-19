@@ -149,7 +149,17 @@ pub struct CameraStatus {
     /// What the monitor shows for this camera.
     pub pose: Pose,
     pub pose_source: PoseSource,
+    /// Latest device feedback. Consult the adapters for connection state.
     pub rig_pose: Pose,
+    /// The current show target, even when the rig is held, disarmed or in hand.
+    pub intended_pose: Pose,
+    /// This camera is enabled for automation when the show is live.
+    #[serde(default = "camera_armed_by_default")]
+    pub armed: bool,
+    /// A current, nonzero jog owns the camera.
+    pub manual: bool,
+    /// Automation is reconciling the rig to the current show target.
+    pub catching_up: bool,
     /// Rig position minus target per axis while live.
     pub error: Pose,
     pub fault: Option<String>,
@@ -161,6 +171,17 @@ pub struct CameraStatus {
     /// Real hardware, not the simulator.
     pub hardware: bool,
     pub adapters: Vec<AdapterStatus>,
+}
+
+fn camera_armed_by_default() -> bool {
+    true
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+pub struct CameraArmRequest {
+    pub armed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sequence: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
@@ -363,6 +384,8 @@ impl Jog {
 pub struct JogRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub camera: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sequence: Option<u64>,
     #[serde(flatten)]
     pub jog: Jog,
 }

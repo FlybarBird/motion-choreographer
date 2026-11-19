@@ -370,9 +370,20 @@ async fn preset_thumb(State(app): State<App>, Path(id): Path<String>) -> Result<
     }
 }
 
+async fn camera_armed(
+    State(app): State<App>,
+    Client(c): Client,
+    Path(camera): Path<String>,
+    Json(req): Json<CameraArmRequest>,
+) -> Reply<Status> {
+    let mut s = lock(&app.show);
+    s.set_camera_armed(&c, &camera, req)?;
+    Ok(Json(s.status(&c)))
+}
+
 async fn rig_jog(State(app): State<App>, Client(c): Client, Json(req): Json<JogRequest>) -> Reply<Status> {
     let mut s = lock(&app.show);
-    s.jog(&c, req.camera.as_deref(), req.jog)?;
+    s.jog(&c, req)?;
     Ok(Json(s.status(&c)))
 }
 
@@ -621,6 +632,7 @@ pub fn router(app: App) -> Router {
         .route("/estop/reset", post(estop_reset))
         .route("/project", get(get_project).put(put_project))
         .route("/cameras/default", post(post_default))
+        .route("/cameras/{camera}/armed", put(camera_armed))
         .route("/inputs", get(get_inputs))
         .route("/presets", get(get_presets).post(post_preset))
         .route("/presets/sync", post(sync_presets))
@@ -649,6 +661,7 @@ pub fn router(app: App) -> Router {
 /// A server running on its own thread.
 pub struct Running {
     pub addr: SocketAddr,
+    pub osc_addr: Option<SocketAddr>,
     pub show: Shared,
     stop: Option<tokio::sync::oneshot::Sender<()>>,
     thread: Option<std::thread::JoinHandle<()>>,
@@ -713,6 +726,11 @@ async fn asked_to_stop(owner: tokio::sync::oneshot::Receiver<()>) {
 
 /// Open the data folder and serve it on `bind`.
 pub fn start(cfg: &Config, bind: &str, access_key: Option<String>) -> Result<Running, String> {
+    start_with_osc(cfg, bind, access_key, None)
+}
+
+/// Open the HTTP server and, if configured, its OSC control socket.
+pub fn start_with_osc(cfg: &Config, bind: &str, access_key: Option<String>, osc_bind: Option<&str>) -> Result<Running, String> {
     let addr: SocketAddr = bind.parse().map_err(|_| format!("{bind} is not an address like 127.0.0.1:8787"))?;
     if !addr.ip().is_loopback() && access_key.as_deref().unwrap_or("").is_empty() {
         return Err(format!("Refusing to listen on {addr} without --access-key. Anyone on the network could drive the rig."));
@@ -720,6 +738,8 @@ pub fn start(cfg: &Config, bind: &str, access_key: Option<String>) -> Result<Run
     let listener = std::net::TcpListener::bind(addr).map_err(|e| format!("Could not listen on {addr}: {e}"))?;
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;
     let addr = listener.local_addr().map_err(|e| e.to_string())?;
+    let osc_socket = osc_bind.map(|bind| crate::osc::bind(bind, access_key.as_deref())).transpose()?;
+    let osc_addr = osc_socket.as_ref().map(std::net::UdpSocket::local_addr).transpose().map_err(|e| e.to_string())?;
     let (show, _rx) = Show::open(cfg).map_err(|e| format!("Could not open {}: {e}", cfg.data.display()))?;
     let show: Shared = Arc::new(Mutex::new(show));
     spawn_tick(&show);
@@ -732,9 +752,15 @@ pub fn start(cfg: &Config, bind: &str, access_key: Option<String>) -> Result<Run
             let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().expect("runtime");
             rt.block_on(async move {
                 let listener = tokio::net::TcpListener::from_std(listener).expect("listener");
+                let osc =
+                    osc_socket.map(|socket| tokio::spawn(crate::osc::receive(socket, app.show.clone(), app.access_key.clone())));
                 let shutdown = async move {
                     asked_to_stop(stop_rx).await;
-                    // The rigs are stopped before anything else is wound down.
+                    if let Some(osc) = osc {
+                        osc.abort();
+                        let _ = osc.await;
+                    }
+                    // Stop the rigs before winding down HTTP.
                     let stopped = tokio::task::spawn_blocking(move || halt_for_exit(&halting, HALT_ON_EXIT)).await;
                     if !matches!(stopped, Ok(true)) {
                         eprintln!("ptz-server: a rig did not confirm that it stopped. Use its own stop control");
@@ -748,5 +774,5 @@ pub fn start(cfg: &Config, bind: &str, access_key: Option<String>) -> Result<Run
             rt.shutdown_timeout(Duration::from_millis(200));
         })
         .map_err(|e| e.to_string())?;
-    Ok(Running { addr, show, stop: Some(stop_tx), thread: Some(thread) })
+    Ok(Running { addr, osc_addr, show, stop: Some(stop_tx), thread: Some(thread) })
 }

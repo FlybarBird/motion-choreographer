@@ -136,15 +136,18 @@ fn the_order_of_work_is_enforced_by_the_server_and_explained_on_the_panel() {
     b.press(K7);
     b.wait("Record to be off", || !b.status().transport.record);
 
-    // Playing: no arming, no hand control, no other song.
+    // Rehearsal playback still blocks global Arm and loading another song. The simulator
+    // remains available for hand control.
     b.press(K1);
     b.wait("the show to play", || b.status().transport.run == Run::Playing);
     b.hold(K4, Duration::from_millis(1300));
     refused(&b, "arm", "Panel", "Stop before arming");
     b.mode(CAMERA);
     b.panel.deflect(JOY_PAN, 400);
-    b.wait_refused("Stop to position the rig by hand, or turn Record on to capture the move");
+    b.wait("the joystick to take the simulated camera", || b.status().first().manual);
     b.panel.deflect(JOY_PAN, 0);
+    b.wait("the joystick to release the simulated camera", || !b.status().first().manual);
+    assert_eq!(b.status().transport.run, Run::Playing);
     b.mode(SHOW);
     b.press_key("New");
     b.wait_refused("Song 2 is created but not loaded. Stop before loading another song");
@@ -153,16 +156,16 @@ fn the_order_of_work_is_enforced_by_the_server_and_explained_on_the_panel() {
     b.press_key("Stop");
     b.wait("the show to stop", || b.status().transport.run == Run::Stopped);
 
-    // Armed: no hand control and no editing.
+    // Armed: hand control is available, and editing still needs confirmation.
     let took = b.hold_until(K4, "the hold to arm", || b.status().transport.output != Output::Rehearse);
     assert!(took >= Duration::from_millis(950));
     b.wait("the rig to be armed", || b.status().transport.output == Output::Armed);
     b.mode(CAMERA);
-    let before = pan(&b);
     b.panel.deflect(JOY_PAN, 400);
-    b.wait_refused("Disarm to drive the rig by hand");
+    b.wait("the joystick to take the armed camera", || b.status().first().manual);
     b.panel.deflect(JOY_PAN, 0);
-    assert_eq!(pan(&b), before);
+    b.wait("the joystick to release the armed camera", || !b.status().first().manual);
+    assert_eq!(b.status().transport.output, Output::Armed);
     b.mode(TIMELINE);
     b.press_key("Next");
     b.wait_key("Delete");

@@ -19,6 +19,32 @@ fn refused(result: Result<impl std::fmt::Debug, ApiErr>) -> String {
 }
 
 #[test]
+fn delayed_camera_commands_do_not_replace_newer_intent() {
+    let t = TestServer::start("camera-command-order");
+    let api = t.client("operator");
+    api.take_lease("Operator", false).unwrap();
+    let camera = ptz_core::FIRST_CAMERA;
+    let arm = |armed, sequence| {
+        api.put::<_, Status>(&format!("/cameras/{camera}/armed"), &CameraArmRequest { armed, sequence: Some(sequence) }).unwrap()
+    };
+    let jog = |pan, sequence| {
+        api.post::<_, Status>(
+            "/rig/jog",
+            &JogRequest { camera: Some(camera.into()), jog: Jog { pan, ..Jog::default() }, sequence: Some(sequence) },
+        )
+        .unwrap()
+    };
+
+    assert!(!arm(false, 10).first().armed);
+    assert!(!arm(true, 9).first().armed);
+    assert!(!arm(true, 10).first().armed);
+    assert!(arm(true, 11).first().armed);
+    assert!(jog(0.5, 20).first().manual);
+    assert!(!jog(0.0, 22).first().manual);
+    assert!(!jog(0.5, 21).first().manual);
+}
+
+#[test]
 fn round_trip_new_edit_save_commit_load_with_files_checked() {
     let t = TestServer::start("roundtrip");
     let api = t.client("a");

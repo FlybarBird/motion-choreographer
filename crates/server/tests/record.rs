@@ -9,7 +9,7 @@ use ptz_core::client::{Api, ApiErr};
 use ptz_core::eval::{pose_at, pose_at_f};
 use ptz_core::pose::Axis;
 use ptz_core::song::Song;
-use ptz_core::transport::{Action, Run};
+use ptz_core::transport::{Action, Output, Run};
 use std::time::{Duration, Instant};
 
 const CAM: &str = ptz_core::FIRST_CAMERA;
@@ -234,10 +234,12 @@ fn the_rig_stops_within_250_ms_of_the_last_jog_message() {
     let top = api.project().unwrap().cameras[0].axes.get(Axis::Pan).max_speed;
     assert!(later - start <= top * 0.30, "travelled {} degrees", later - start);
 
-    // Jog is refused while armed and while the E-Stop is latched.
+    // E-Stop overrides manual control. Once armed again, the parked show can be jogged.
     api.post_empty::<Status>("/estop").unwrap();
     assert!(refusal(api.jog(CAM, &Jog { pan: 1.0, ..Jog::default() }), 409).contains("Reset E-Stop"));
     api.post_empty::<Status>("/estop/reset").unwrap();
     act(&api, Action::Arm);
-    assert!(refusal(api.jog(CAM, &Jog { pan: 1.0, ..Jog::default() }), 409).contains("Disarm"));
+    wait_for(&api, |s| s.transport.output == Output::Armed);
+    assert!(api.jog(CAM, &Jog { pan: 1.0, ..Jog::default() }).unwrap().first().manual);
+    assert!(!api.jog(CAM, &Jog::default()).unwrap().first().manual);
 }

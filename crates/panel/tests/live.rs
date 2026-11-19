@@ -17,14 +17,14 @@ fn program_a_long_move(b: &Bench, rig: Option<&Rig>) {
     b.new_song();
     b.mode(CAMERA);
     match rig {
-        // The server drives only the simulator by hand. A real camera is put in place with its own
-        // controller, and the panel shows the server's reason when its joystick is tried.
+        // In Rehearse a real camera is placed with its own controller. The panel displays the
+        // server's explanation when its joystick is tried.
         Some(rig) => {
             let (_, tilt, zoom, focus) = rig.fr7.pose();
             rig.fr7.place(40.0, tilt, zoom, focus);
             b.wait("the server to read where the rig stands", || (b.status().first().rig_pose.pan - 40.0).abs() < 0.5);
             b.panel.deflect(JOY_PAN, 500);
-            b.wait_refused("The rig controller drives the simulator only. Use the camera's own controller for hardware");
+            b.wait_refused("In Rehearse the rig controller drives the simulator only. Arm the show to drive hardware");
             b.panel.deflect(JOY_PAN, 0);
             assert!(!rig.is_moving() && (rig.pose().pan - 40.0).abs() < 0.01, "the joystick did not move the rig");
         }
@@ -136,11 +136,30 @@ fn live(b: &Bench, rig: Option<&Rig>) {
         assert!(rig.is_moving(), "the rig follows the timeline");
     }
 
-    // Hand control is refused while the rig is live, in the server's words.
+    // The panel joystick takes the camera while the show keeps running. Let it go and the
+    // camera returns to the shot scheduled for the current playhead.
     b.mode(CAMERA);
+    let before = b.status().frame;
     b.panel.deflect(JOY_TILT, 300);
-    b.wait_refused("Disarm to drive the rig by hand");
+    b.wait("the joystick to take and tilt the camera", || {
+        let status = b.status();
+        status.first().manual && status.first().rig_pose.tilt.abs() > 2.0 && status.frame > before
+    });
+    let manually = b.status();
+    assert_eq!((manually.transport.run, manually.transport.output), (Run::Playing, Output::Armed));
+    assert!(manually.first().armed && !manually.first().catching_up);
     b.panel.deflect(JOY_TILT, 0);
+    b.wait("the camera to catch up to its preset", || {
+        let status = b.status();
+        let camera = status.first();
+        !camera.manual
+            && !camera.catching_up
+            && (camera.rig_pose.tilt - preset.tilt).abs() < 1.0
+            && (camera.rig_pose.pan - preset.pan).abs() < 1.0
+    });
+    let resumed = b.status();
+    assert_eq!((resumed.transport.run, resumed.transport.output), (Run::Playing, Output::Armed));
+    assert!(resumed.frame > manually.frame && resumed.first().fault.is_none());
 
     // The primary key is Stop now; it stops the show and stays armed.
     b.press_key("Stop");

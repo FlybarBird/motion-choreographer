@@ -152,6 +152,10 @@ impl RigAdapter for HardwareRig {
         }
     }
 
+    fn stop_pending(&self, column: bool) -> bool {
+        self.fr7.as_ref().is_some_and(Fr7::stop_pending) || (column && self.pod.as_ref().is_some_and(AutoPod::stop_pending))
+    }
+
     fn is_moving(&self) -> bool {
         self.fr7.as_ref().is_some_and(|f| f.is_moving()) || self.pod.as_ref().is_some_and(|p| p.is_moving())
     }

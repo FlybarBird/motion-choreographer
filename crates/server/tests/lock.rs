@@ -235,6 +235,47 @@ fn art_net_code_is_chased_through_dropouts_a_jump_a_stop_and_the_end_of_the_song
 }
 
 #[test]
+fn a_cameras_disarm_and_rearm_during_art_net_chase_leave_play_to_code_running() {
+    use ptz_core::edit;
+    use ptz_core::pose::{Pose, Preset};
+
+    let (_t, api, id) = server_with_song("lock-camera-arm");
+    let addr = art_net_port(&api);
+    let project = api.project().unwrap();
+    let pose = Pose { pan: 26.0, ..Pose::home() };
+    let preset = Preset::new("code-cue", "Code cue", pose);
+    let working = api.working(&id).unwrap();
+    let (song, clip) = edit::insert_preset_move(&working.song, &project, &preset, 12).unwrap();
+    let end = song.motion_clip(&clip).unwrap().end_frame();
+    api.put_working(&PutWorking { expected_counter: working.edit_counter, song }).unwrap();
+    api.save(&id).unwrap();
+    api.commit(&id).unwrap();
+    lock_to(&api, "artnet").unwrap();
+    do_act(&api, Action::Arm);
+    wait_for(&api, |s| s.transport.output == Output::Armed);
+    do_act(&api, Action::Play);
+
+    let desk = ArtNetDesk::start(addr, CodeRate::F25);
+    desk.roll_from("00:59:59:12");
+    let state = wait_for(&api, |s| s.transport.run == Run::Playing);
+    assert!(state.frame < 12, "code was already on the camera move: {}", state.frame);
+    let disarmed = api.set_camera_armed(&preset.camera, false).unwrap();
+    let state = wait_for(&api, |s| s.frame > end + 8);
+    assert_eq!(state.transport, disarmed.transport);
+    assert_eq!(state.lock.chase, ChaseState::Locked);
+    assert_follows(&state, desk.now(), "camera disarmed");
+    assert_eq!(state.first().rig_pose, disarmed.first().rig_pose);
+    assert_eq!(state.first().intended_pose.pan, pose.pan);
+
+    api.set_camera_armed(&preset.camera, true).unwrap();
+    let caught = wait_for(&api, |s| !s.first().catching_up && (s.first().rig_pose.pan - pose.pan).abs() < 0.5);
+    assert_eq!(caught.transport, disarmed.transport);
+    assert_eq!(caught.lock.chase, ChaseState::Locked);
+    assert_follows(&caught, desk.now(), "camera rearmed");
+    assert!(caught.frame > state.frame);
+}
+
+#[test]
 fn the_songs_files_are_silent_while_the_playhead_follows_code_from_outside() {
     use ptz_core::edit;
     use ptz_core::song::Track;

@@ -203,7 +203,8 @@ impl Session {
         let mut status = idle_status();
         status.you_hold_lease = true;
         status.rate = project.rate;
-        status.cameras = project.cameras.iter().map(|c| CameraStatus { id: c.id.clone(), ..Default::default() }).collect();
+        status.cameras =
+            project.cameras.iter().map(|c| CameraStatus { id: c.id.clone(), armed: true, ..Default::default() }).collect();
         status.guidance = ptz_core::transport::guidance(&status.transport, &ptz_core::transport::Context::ready());
         let hello = crate::link::Hello {
             status,

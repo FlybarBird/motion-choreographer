@@ -514,7 +514,7 @@ impl Rig {
     }
 
     fn jogs(&self) -> Vec<Jog> {
-        self.cmds.try_iter().filter_map(|c| if let Cmd::Jog(_, j) = c { Some(j) } else { None }).collect()
+        self.cmds.try_iter().filter_map(|c| if let Cmd::Jog(_, j, _) = c { Some(j) } else { None }).collect()
     }
 
     fn toasts(&self) -> Vec<String> {
@@ -651,14 +651,14 @@ fn the_rig_pad_sends_velocity_while_held_and_stops_on_release() {
     r.harness.key_down(egui::Key::ArrowLeft);
     r.harness.run_steps(3);
     let cmds: Vec<Cmd> = r.cmds.try_iter().collect();
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::Jog(_, j) if (j.pan + speed).abs() < 1e-9)), "{}", cmds.len());
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::Jog(_, j, _) if (j.pan + speed).abs() < 1e-9)), "{}", cmds.len());
     assert!(!cmds.iter().any(|c| matches!(c, Cmd::Act(Action::Seek, _))), "the arrow did not scrub");
     r.harness.key_up(egui::Key::ArrowLeft);
     r.harness.run_steps(3);
     assert_eq!(r.jogs().last(), Some(&Jog::default()));
 
-    // Armed: the controller says why and sends nothing.
-    r.harness.state_mut().session.status.transport.output = Output::Armed;
+    // While the show arms at a stopped playhead, the controller says why and sends nothing.
+    r.harness.state_mut().session.status.transport.output = Output::Positioning;
     r.harness.run_steps(2);
     r.harness.hover_at(right);
     r.harness.run_steps(2);
@@ -667,7 +667,7 @@ fn the_rig_pad_sends_velocity_while_held_and_stops_on_release() {
     r.harness.drop_at(right);
     r.harness.run_steps(2);
     assert!(r.jogs().is_empty());
-    assert!(r.toasts().iter().any(|t| t.contains("Disarm to drive the rig by hand")), "{:?}", r.toasts());
+    assert!(r.toasts().iter().any(|t| t.contains("Wait for the show to finish arming")), "{:?}", r.toasts());
 }
 
 #[test]
@@ -1050,6 +1050,8 @@ fn arm_says_that_it_moves_the_rig_and_a_fault_is_shown_until_it_is_cleared() {
         s.status.hardware_live = false;
         s.status.telemetry.fault = Some("Tracking fault: pan is 3.2° from the timeline. The rig is held".into());
         s.status.telemetry.halting = true;
+        s.status.cameras[0].fault = s.status.telemetry.fault.clone();
+        s.status.cameras[0].halting = true;
     }
     r.harness.run_steps(3);
     assert_eq!(r.harness.query_all_by_label("Tracking fault: pan is 3.2° from the timeline. The rig is held").count(), 2);

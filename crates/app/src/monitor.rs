@@ -74,28 +74,50 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
 
     let live = s.status.hardware_live;
     let t = &s.status.transport;
-    let simulated = !s.cam_status().hardware;
-    let held = s.cam_status().held;
+    let camera_status = s.cam_status();
+    let simulated = !camera_status.hardware;
+    let fault = camera_status.held || camera_status.fault.is_some();
     // The picture is framed in the state of the machine, as the rule under the transport is, and in
-    // red while this camera is held where it stopped.
+    // red while this camera has a fault.
     let machine = machine_ink(t, live);
-    let frame = if held { Some(RED) } else { machine };
+    let frame = if t.estop || fault {
+        Some(RED)
+    } else if camera_status.manual || camera_status.catching_up {
+        Some(AMBER)
+    } else if camera_status.armed {
+        machine
+    } else {
+        None
+    };
     let rule = Stroke::new(if frame.is_some() { RULE_STRONG } else { RULE }, frame.unwrap_or(CONTROL_LINE));
     painter.rect_stroke(pic, 0.0, rule, StrokeKind::Outside);
 
     let (text, fill_c, ink) = if t.estop {
         ("E-STOP".to_string(), RED, ink_on(RED))
-    } else if held {
-        ("HELD  this camera stopped where it was".to_string(), RED, ink_on(RED))
+    } else if camera_status.held {
+        ("HELD  camera automation suspended".to_string(), RED, ink_on(RED))
+    } else if fault {
+        ("FAULT  check camera status".to_string(), RED, ink_on(RED))
+    } else if camera_status.manual {
+        ("MANUAL  release to hand back control".to_string(), AMBER, ink_on(AMBER))
+    } else if camera_status.catching_up {
+        ("CATCHING UP  to the playhead".to_string(), AMBER, ink_on(AMBER))
+    } else if !camera_status.armed {
+        ("DISARMED  camera automation off".to_string(), plate_fill(), OFF_WHITE)
     } else if live {
         // A tag in the machine's colour, Ink on it, as the brand's LIVE.
         let fill = machine.unwrap_or(GREEN);
-        (if simulated { "LIVE  simulator".to_string() } else { "LIVE  rig is moving".to_string() }, fill, ink_on(fill))
+        (
+            if simulated { "LIVE  simulator".to_string() } else { "LIVE  camera automation enabled".to_string() },
+            fill,
+            ink_on(fill),
+        )
     } else {
         ("REHEARSE  nothing is sent to the rig".to_string(), plate_fill(), OFF_WHITE)
     };
     let what = match source {
         PoseSource::Timeline => "Programmed pose",
+        PoseSource::Rig if camera_status.adapters.iter().any(|a| !a.connected) => "Last reported rig pose",
         PoseSource::Rig => "Rig pose",
         PoseSource::Record => "Recording: rig on record axes",
     };

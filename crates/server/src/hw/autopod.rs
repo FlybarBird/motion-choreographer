@@ -193,13 +193,27 @@ impl Link {
         Link { host: host.to_string(), last_round_trip: Duration::ZERO, last_refused: false }
     }
 
-    fn fetch(&self, cmd: &str) -> std::io::Result<Vec<u8>> {
+    fn fetch(&self, cmd: &str, drive_owner: Option<&Mutex<State>>) -> std::io::Result<Vec<u8>> {
         let deadline = Instant::now() + TIMEOUT;
         let addr = self.host.to_socket_addrs()?.next().ok_or(std::io::ErrorKind::AddrNotAvailable)?;
         let mut stream = TcpStream::connect_timeout(&addr, TIMEOUT)?;
         stream.set_nodelay(true)?;
         stream.set_write_timeout(Some(TIMEOUT))?;
-        stream.write_all(&request_bytes(cmd))?;
+        let request = request_bytes(cmd);
+        if let Some(state) = drive_owner {
+            // Connect off the lock. A command displaced by a stop never writes to the
+            // socket after the connection finishes.
+            stream.set_nonblocking(true)?;
+            let owner = state.lock().unwrap_or_else(|e| e.into_inner());
+            if !matches!(owner.mode, Mode::Drive(_)) {
+                return Err(std::io::Error::other(DRIVE_SUPERSEDED));
+            }
+            stream.write_all(&request)?;
+            drop(owner);
+            stream.set_nonblocking(false)?;
+        } else {
+            stream.write_all(&request)?;
+        }
         let mut raw = Vec::new();
         let mut chunk = [0u8; 1024];
         loop {
@@ -219,10 +233,21 @@ impl Link {
     }
 
     pub fn send(&mut self, cmd: &str) -> Result<String, String> {
+        self.send_with_owner(cmd, None)
+    }
+
+    fn send_with_owner(&mut self, cmd: &str, drive_owner: Option<&Mutex<State>>) -> Result<String, String> {
         self.last_refused = false;
         let began = Instant::now();
         let gone = |why: String| format!("the AutoPod+ is not answering at {}: {why}", self.host);
-        let raw = self.fetch(cmd).map_err(|e| gone(e.to_string()))?;
+        let raw = self.fetch(cmd, drive_owner).map_err(|e| {
+            let why = e.to_string();
+            if why == DRIVE_SUPERSEDED {
+                why
+            } else {
+                gone(why)
+            }
+        })?;
         let (code, body) = parse_reply(&raw).ok_or_else(|| gone("the reply was not HTTP".into()))?;
         self.last_round_trip = began.elapsed();
         if code != 200 {
@@ -310,6 +335,7 @@ pub struct AutoPod {
     state: Arc<Mutex<State>>,
 }
 
+const DRIVE_SUPERSEDED: &str = "AutoPod+ drive superseded by stop";
 const STARVED_AFTER: Duration = Duration::from_millis(300);
 const GAIN: f64 = 4.0;
 /// The leg box now and then misses a request on a healthy network. It is only called gone
@@ -419,6 +445,10 @@ impl AutoPod {
         s.moving || s.mode == Mode::Stop
     }
 
+    pub fn stop_pending(&self) -> bool {
+        self.lock().mode == Mode::Stop
+    }
+
     pub fn set_limits(&self, limits: &AxisLimits) {
         self.lock().limits = *limits;
     }
@@ -433,7 +463,7 @@ impl AutoPod {
 
     pub fn drive(&self, cmd: &Drive) {
         let mut s = self.lock();
-        if s.wrong_way {
+        if s.wrong_way || !s.connected || s.mode == Mode::Stop {
             return;
         }
         s.mode = Mode::Drive(*cmd);
@@ -442,7 +472,9 @@ impl AutoPod {
     }
 
     pub fn stop(&self) {
-        self.lock().mode = Mode::Stop;
+        let mut s = self.lock();
+        s.mode = Mode::Stop;
+        s.starved = false;
     }
 }
 
@@ -485,8 +517,11 @@ fn run(cfg: PodConfig, state: Arc<Mutex<State>>) {
             let (mode, limits, moved) = {
                 let mut s = lock();
                 // A server that died while live leaves the column on its last speed command.
-                if fresh && s.mode == Mode::Idle {
+                if fresh {
                     s.mode = Mode::Stop;
+                    s.starved = false;
+                    stops_sent = 0;
+                    still = 0;
                 }
                 let moved = s.connected && (raw - s.raw).abs() > 1.0;
                 s.raw = raw;
@@ -555,7 +590,7 @@ fn run(cfg: PodConfig, state: Arc<Mutex<State>>) {
                         }
                     }
                     if last_byte != Some(byte) || cycle - sent_at_cycle >= 10 {
-                        link.send(&velocity_command(byte))?;
+                        link.send_with_owner(&velocity_command(byte), Some(&state))?;
                         last_byte = Some(byte);
                         sent_at_cycle = cycle;
                         lock().refused = None;
@@ -577,6 +612,9 @@ fn run(cfg: PodConfig, state: Arc<Mutex<State>>) {
             Ok(())
         })();
         if let Err(why) = step {
+            if why == DRIVE_SUPERSEDED {
+                continue;
+            }
             let mut s = lock();
             if link.last_refused && s.connected {
                 // The unit is there and said no: a setting or firmware matter, not a lost cable.

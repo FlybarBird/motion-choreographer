@@ -451,7 +451,7 @@ fn e_stop_is_sent_to_a_server_out_of_reach_and_the_operator_is_told_when_it_does
 }
 
 fn cam_jogs(r: &Rig) -> Vec<(String, Jog)> {
-    r.cmds.try_iter().filter_map(|c| if let Cmd::Jog(camera, jog) = c { Some((camera, jog)) } else { None }).collect()
+    r.cmds.try_iter().filter_map(|c| if let Cmd::Jog(camera, jog, _) = c { Some((camera, jog)) } else { None }).collect()
 }
 
 /// Run a few frames, far enough apart for a held control to repeat its velocity.
@@ -485,6 +485,66 @@ fn assert_stopped(sent: &[(String, Jog)], camera: &str, when: &str) {
     assert_eq!(last, Some(Jog::default()), "{when}: the last thing {camera} was sent is a stop: {sent:?}");
     let others: Vec<_> = sent.iter().filter(|(c, jog)| c != camera && !jog.is_zero()).collect();
     assert!(others.is_empty(), "{when}: no other camera was set moving: {others:?}");
+}
+
+#[test]
+fn manual_takeover_and_release_work_during_live_playback() {
+    let (mut r, right) = at_the_controller();
+    {
+        let s = &mut r.harness.state_mut().session;
+        s.status.transport.run = ptz_core::transport::Run::Playing;
+        s.status.transport.output = ptz_core::transport::Output::Armed;
+        s.status.hardware_live = true;
+    }
+    r.harness.run_steps(3);
+    press_and_hold(&mut r, right);
+    let moving = cam_jogs(&r);
+    assert!(moving.iter().any(|(camera, jog)| camera == "cam1" && jog.pan > 0.0), "{moving:?}");
+
+    let pad = r.harness.state().session.rig.probe.unwrap().pad;
+    r.harness.state_mut().session.status.cameras[0].manual = true;
+    r.harness.run_steps(3);
+    r.harness.get_by_label("Manual");
+    assert_eq!(r.harness.state().session.rig.probe.unwrap().pad, pad, "the pad stays under the operator's hand");
+
+    r.harness.drop_at(right);
+    r.harness.run_steps(3);
+    assert_stopped(&cam_jogs(&r), "cam1", "the operator let go");
+    let camera = &mut r.harness.state_mut().session.status.cameras[0];
+    camera.manual = false;
+    camera.catching_up = true;
+    r.harness.run_steps(3);
+    r.harness.get_by_label("Catching up");
+}
+
+#[test]
+fn camera_arm_buttons_address_only_the_selected_camera_while_the_show_plays() {
+    let (mut r, _) = at_the_controller();
+    {
+        let s = &mut r.harness.state_mut().session;
+        s.status.transport.run = ptz_core::transport::Run::Playing;
+        s.status.transport.output = ptz_core::transport::Output::Armed;
+        s.status.hardware_live = true;
+    }
+    r.harness.key_press(egui::Key::Num2);
+    r.harness.run_steps(3);
+    assert_eq!(r.harness.state().session.cam_id(), "cam2");
+
+    r.harness.get_by_label("Disarm camera 2").click();
+    r.harness.run_steps(3);
+    assert!(r.cmds.try_iter().any(|cmd| matches!(cmd, Cmd::SetCameraArmed(camera, false) if camera == "cam2")));
+
+    let camera = &mut r.harness.state_mut().session.status.cameras[1];
+    camera.armed = false;
+    camera.manual = true;
+    r.harness.run_steps(3);
+    r.harness.get_by_label("Disarmed");
+    r.harness.get_by_label("Manual");
+    assert_eq!(r.harness.query_all_by_label("Armed").count(), 2);
+
+    r.harness.get_by_label("Arm camera 2").click();
+    r.harness.run_steps(3);
+    assert!(r.cmds.try_iter().any(|cmd| matches!(cmd, Cmd::SetCameraArmed(camera, true) if camera == "cam2")));
 }
 
 #[test]

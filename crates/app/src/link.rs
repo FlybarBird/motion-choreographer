@@ -55,8 +55,10 @@ pub enum Cmd {
     DeletePreset(String),
     /// Read one camera's presets from its rig.
     SyncPresets(String),
-    /// Hand control of one camera.
-    Jog(String, Jog),
+    /// Whether one camera follows automation when the show is armed.
+    SetCameraArmed(String, bool),
+    /// Hand control of one camera. The time is when the operator last deflected the control.
+    Jog(String, Jog, Instant),
     Upload(PathBuf),
     SetMediaTc {
         id: String,
@@ -393,7 +395,8 @@ fn coalesce(batch: Vec<Cmd>) -> Vec<Cmd> {
     let mut out: Vec<Cmd> = Vec::with_capacity(batch.len());
     for cmd in batch {
         let replaces_last = match (out.last(), &cmd) {
-            (Some(Cmd::Jog(a, _)), Cmd::Jog(b, _)) => a == b,
+            // A new deflection after a release must still let go of that camera first.
+            (Some(Cmd::Jog(a, before, _)), Cmd::Jog(b, after, _)) => a == b && (!before.is_zero() || after.is_zero()),
             (Some(Cmd::PutProject(_)), Cmd::PutProject(_)) => true,
             (Some(Cmd::Act(Action::Seek, _)), Cmd::Act(Action::Seek, _)) => true,
             (Some(Cmd::PutWorking { song: a, .. }), Cmd::PutWorking { song: b, .. }) => a.id == b.id,
@@ -579,7 +582,18 @@ impl Worker {
                 Ok(p) => self.emit(Event::SyncAccepted(p)),
                 Err(e) => self.refused("Sync presets", e),
             },
-            Cmd::Jog(camera, jog) => {
+            Cmd::SetCameraArmed(camera, armed) => {
+                // Use the status stream for indicators. It includes changes from all control stations.
+                if let Err(e) = self.api.set_camera_armed(&camera, armed) {
+                    self.refused(if armed { "Arm camera" } else { "Disarm camera" }, e);
+                }
+            }
+            Cmd::Jog(camera, jog, sampled_at) => {
+                // If another request held the connection, a buffered deflection must never
+                // start a movement after the jog watchdog would already have stopped it.
+                if !jog.is_zero() && sampled_at.elapsed() >= Duration::from_millis(250) {
+                    return;
+                }
                 if let Err(e) = self.api.jog(&camera, &jog) {
                     if !jog.is_zero() {
                         self.refused("Rig controller", e);
@@ -1188,6 +1202,18 @@ mod tests {
     }
 
     #[test]
+    fn coalesce_preserves_a_release_before_the_next_takeover() {
+        let at = Instant::now();
+        let jog = Jog { pan: 0.5, ..Jog::default() };
+        let out = coalesce(vec![
+            Cmd::Jog("cam1".into(), jog, at),
+            Cmd::Jog("cam1".into(), Jog::default(), at),
+            Cmd::Jog("cam1".into(), jog, at),
+        ]);
+        assert!(matches!(out.as_slice(), [Cmd::Jog(_, release, _), Cmd::Jog(_, next, _)] if release.is_zero() && *next == jog));
+    }
+
+    #[test]
     fn coalesce_keeps_only_the_latest_scrub_jog_and_song() {
         let song = |name: &str| {
             let mut s = Song::new("a", name, "01:00:00:00", 100);
@@ -1203,14 +1229,14 @@ mod tests {
             seek(9),
             Cmd::PutWorking { seq: 1, song: song("one") },
             Cmd::PutWorking { seq: 2, song: song("two") },
-            Cmd::Jog("cam1".into(), Jog { pan: 0.1, ..Jog::default() }),
-            Cmd::Jog("cam1".into(), Jog { pan: 0.9, ..Jog::default() }),
+            Cmd::Jog("cam1".into(), Jog { pan: 0.1, ..Jog::default() }, Instant::now()),
+            Cmd::Jog("cam1".into(), Jog { pan: 0.9, ..Jog::default() }, Instant::now()),
         ]);
         assert_eq!(out.len(), 5);
         assert!(matches!(&out[0], Cmd::Act(Action::Seek, r) if r.frame == Some(3)));
         assert!(matches!(&out[1], Cmd::Act(Action::Play, _)));
         assert!(matches!(&out[2], Cmd::Act(Action::Seek, r) if r.frame == Some(9)));
         assert!(matches!(&out[3], Cmd::PutWorking { seq: 2, song } if song.name == "two"));
-        assert!(matches!(&out[4], Cmd::Jog(_, j) if j.pan == 0.9));
+        assert!(matches!(&out[4], Cmd::Jog(_, j, _) if j.pan == 0.9));
     }
 }
