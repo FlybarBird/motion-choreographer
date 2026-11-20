@@ -1397,10 +1397,12 @@ const FOLLOW_SAVE: &str = "/analytics/ptzautoframingexe.cgi?PtzAutoFramingDecide
 enum FollowStep {
     Settle(Instant),
     SelectAuto,
+    ConfirmAuto(Instant),
     SaveStart,
     Configure,
     Initialize,
     SetMotionProfile,
+    ConfirmStartMode,
     Enable,
     Verify(Instant),
     Active(Instant),
@@ -1807,6 +1809,11 @@ impl Worker {
         }
     }
 
+    fn auto_tracking_start(&mut self) -> Result<bool, String> {
+        let answer = self.follow_cgi.get_text(FOLLOW_INQUIRY)?;
+        Ok(cgi::field(&cgi::fields(&answer), "PtzAutoFramingTriggerType") == Some("auto"))
+    }
+
     fn stop_framing(&mut self) -> Result<(), String> {
         if self.follow_may_be_on {
             let off = self.follow_cgi.get(&format!("{FOLLOW_SETTINGS}?PtzAutoFraming=off"));
@@ -1885,7 +1892,16 @@ impl Worker {
             }
             Some(FollowStep::SelectAuto) => {
                 self.follow_cgi.get(&format!("{FOLLOW_SETTINGS}?PtzAutoFramingTriggerType=auto"))?;
-                FollowStep::SaveStart
+                FollowStep::ConfirmAuto(Instant::now() + Duration::from_secs(2))
+            }
+            Some(FollowStep::ConfirmAuto(until)) => {
+                if self.auto_tracking_start()? {
+                    FollowStep::SaveStart
+                } else if Instant::now() < until {
+                    FollowStep::ConfirmAuto(until)
+                } else {
+                    return Err("The FR7 did not confirm Tracking Start Mode Auto".into());
+                }
             }
             Some(FollowStep::SaveStart) => {
                 self.follow_cgi.get(FOLLOW_SAVE)?;
@@ -1915,6 +1931,12 @@ impl Worker {
             }
             Some(FollowStep::SetMotionProfile) => {
                 self.set_follow_motion_profile()?;
+                FollowStep::ConfirmStartMode
+            }
+            Some(FollowStep::ConfirmStartMode) => {
+                if !self.auto_tracking_start()? {
+                    return Err("The FR7 did not confirm Tracking Start Mode Auto after setup".into());
+                }
                 FollowStep::Enable
             }
             Some(FollowStep::Enable) => {

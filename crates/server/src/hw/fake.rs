@@ -191,6 +191,7 @@ struct Head {
     framing_enabled: bool,
     framing_initialized: bool,
     framing_auto: bool,
+    ignore_framing_mode_write: bool,
     framing_ramp: u8,
     framing_start: Option<(f64, f64, f64)>,
     at: Instant,
@@ -401,6 +402,7 @@ impl FakeFr7 {
             framing_enabled: false,
             framing_initialized: false,
             framing_auto: false,
+            ignore_framing_mode_write: false,
             framing_ramp: 8,
             framing_start: None,
             at: Instant::now(),
@@ -536,9 +538,10 @@ impl FakeFr7 {
                     )))
                 }
                 ("/command/inquiry.cgi", Some("ptzautoframing")) => Some(Response::text(format!(
-                    "PtzAutoFraming={}&PtzAutoFramingPmt=enable&PtzAutoFramingInitialSetup={}",
+                    "PtzAutoFraming={}&PtzAutoFramingPmt=enable&PtzAutoFramingInitialSetup={}&PtzAutoFramingTriggerType={}",
                     if head.framing_enabled { "on" } else { "off" },
                     if head.framing_initialized { "initialized" } else { "uninitialized" },
+                    if head.framing_auto { "auto" } else { "manual" },
                 ))),
                 ("/analytics/ptzautoframingexe.cgi", _) if req.query("PtzAutoFramingDecideStartPosition").is_some() => {
                     if !head.framing_auto || head.framing_enabled {
@@ -548,8 +551,10 @@ impl FakeFr7 {
                     Some(Response::status(204))
                 }
                 ("/analytics/ptzautoframing.cgi", _) => {
-                    if let Some(mode) = req.query("PtzAutoFramingTriggerType") {
-                        head.framing_auto = mode == "auto";
+                    if !head.ignore_framing_mode_write {
+                        if let Some(mode) = req.query("PtzAutoFramingTriggerType") {
+                            head.framing_auto = mode == "auto";
+                        }
                     }
                     if let Some(setup) = req.query("PtzAutoFramingInitialSetup") {
                         head.framing_initialized = setup == "initialized";
@@ -631,6 +636,10 @@ impl FakeFr7 {
 
     pub fn framing_enabled(&self) -> bool {
         self.head().framing_enabled
+    }
+
+    pub fn ignore_framing_mode_write(&self) {
+        self.head().ignore_framing_mode_write = true;
     }
 
     pub fn framing_start(&self) -> Option<(f64, f64, f64)> {

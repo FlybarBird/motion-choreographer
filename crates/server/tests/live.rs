@@ -701,10 +701,13 @@ fn auto_follow_uses_the_preset_search_frame_and_holds_where_tracking_stops() {
     assert!((pan - 4.0).abs() < 0.8 && (tilt - 1.0).abs() < 0.8 && (zoom - 0.08).abs() < 0.02, "{pan} {tilt} {zoom}");
     let requests = rig.fr7.web_requests();
     let index = |query: &str| requests.iter().position(|r| r.contains(query)).unwrap();
-    assert!(index("PtzAutoFramingTriggerType=auto") < index("PtzAutoFramingDecideStartPosition=on"));
+    let inquiries =
+        |from: usize, to: usize| requests[from + 1..to].iter().any(|r| r == "/command/inquiry.cgi?inq=ptzautoframing");
+    assert!(inquiries(index("PtzAutoFramingTriggerType=auto"), index("PtzAutoFramingDecideStartPosition=on")));
     assert!(index("PtzAutoFramingDecideStartPosition=on") < index("PtzAutoFramingDetectionArea=500,1000,7000,7000"));
     assert!(index("PtzAutoFramingAdjustSetting=0,-12,1200") < index("PtzAutoFraming=on"));
     assert!(index("PtzAutoFramingLeadRoomLevel=middle") < index("PtzAutoFraming=on"));
+    assert!(inquiries(index("PtzAutoFramingLeadRoomLevel=middle"), index("PtzAutoFraming=on")));
 
     // Pretend the FR7 tracked a person across the stage while autofocus changed the lens distance.
     rig.fr7.clear_seen();
@@ -734,6 +737,45 @@ fn auto_follow_uses_the_preset_search_frame_and_holds_where_tracking_stops() {
     do_act(&api, Action::Estop);
     wait_for(&api, |s| !s.first().halting);
     assert!(!rig.fr7.framing_enabled(), "E-Stop also switches off camera-owned tracking");
+}
+
+#[test]
+fn auto_follow_stays_off_when_the_fr7_keeps_manual_tracking_start_mode() {
+    use ptz_core::song::{ClipBody, PresetRef};
+
+    let t = TestServer::start("manual-tracking-start");
+    let api = t.client("a");
+    api.take_lease("Operator", false).unwrap();
+    let rig = Rig::start();
+    rig.fr7.ignore_framing_mode_write();
+    let project = rig.connect(&api);
+
+    let preset = store(&api, "Entrance", Pose::home());
+    let created = api.new_song("Auto Follow", None).unwrap();
+    let id = created.song.id.clone();
+    api.load_song(&id).unwrap();
+    let (song, _) = edit::insert_camera_control(
+        &created.song,
+        &project,
+        CAM,
+        15,
+        ClipBody::AutoFollow { preset: Some(PresetRef::of(&preset)), detection: Default::default() },
+    )
+    .unwrap();
+    api.put_working(&PutWorking { expected_counter: 0, song }).unwrap();
+    api.save(&id).unwrap();
+    api.commit(&id).unwrap();
+
+    do_act(&api, Action::Arm);
+    wait_for(&api, |s| s.transport.output == Output::Armed);
+    do_act(&api, Action::Play);
+    let failed = wait_for(&api, |s| s.first().fault.is_some());
+    assert_eq!(failed.first().fault.as_deref(), Some("FR7 Auto Follow: The FR7 did not confirm Tracking Start Mode Auto"));
+    assert!(!rig.fr7.framing_enabled());
+    let requests = rig.fr7.web_requests();
+    assert!(requests.iter().any(|r| r.contains("PtzAutoFramingTriggerType=auto")));
+    assert!(requests.iter().all(|r| !r.contains("PtzAutoFraming=on") && !r.contains("PtzAutoFramingDecideStartPosition=on")));
+    drop(t);
 }
 
 #[test]

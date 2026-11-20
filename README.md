@@ -660,8 +660,9 @@ onto the clip. The preset frames the search area. The Inspector can narrow that
 area, and **Show Settings → Cameras → Auto Follow** controls subject size,
 placement, and Lead Room. During armed playback the FR7 moves to the preset,
 saves that framing as its tracking start, and looks for a person in the search
-area. When the clip ends, the FR7 switches tracking off and holds its last
-framing until the next programmed move.
+area. Motion Choreographer confirms **Tracking Start Mode → Auto** before
+enabling tracking. When the clip ends, the FR7 switches tracking off and holds
+its last framing until the next programmed move.
 
 Auto Follow uses Sony PTZ Auto Framing on supported FR7 firmware. Allow time
 inside the clip for the camera to reach the preset and engage tracking.
