@@ -641,14 +641,31 @@ and it cannot work if the server or the network is down. Only one controller
 should drive a camera at a time; a second one sending to the same FR7 will
 fight this one.
 
-Going live switches the FR7's focus to manual so the timeline can drive it.
-Nothing switches it back; set it at the camera if you want autofocus after the
-show. A camera set to **FR7 and AutoPod+** with the AutoPod+ address left
-empty runs without a pedestal: its elevation is taken to be wherever the
-timeline says.
+A camera set to **FR7 and AutoPod+** with the AutoPod+ address left empty runs
+without a pedestal. Its elevation is taken to be wherever the timeline says.
 
 While live the Rig controller tab shows how far each axis is from the timeline
 against its tolerance.
+
+### Autofocus and FR7 Auto Follow
+
+Set **Default Autofocus** in Show Settings. The preset menu in **Presets**
+can set **On**, **Off**, or **Use Show Default**. The Inspector can override
+that choice for each placement. Drag an **Autofocus** clip onto a camera lane
+for a timed override. After it ends, the camera resumes the latest preset or
+show setting. Focus keys drive the lens while autofocus is off.
+
+Drag **Auto Follow** onto a camera lane, then drop one of that camera's presets
+onto the clip. The preset frames the search area. The Inspector can narrow that
+area, and **Show Settings → Cameras → Auto Follow** controls subject size,
+placement, and Lead Room. During armed playback the FR7 moves to the preset,
+saves that framing as its tracking start, and looks for a person in the search
+area. When the clip ends, the FR7 switches tracking off and holds its last
+framing until the next programmed move.
+
+Auto Follow uses Sony PTZ Auto Framing on supported FR7 firmware. Allow time
+inside the clip for the camera to reach the preset and engage tracking.
+[FR7 PTZ Auto Framing help](https://helpguide.sony.net/ilc/2240/v1/en/contents/TP1002001797.html)
 
 ### Manual + Preset
 

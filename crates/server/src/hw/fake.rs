@@ -188,6 +188,11 @@ struct Head {
     focus: f64,
     focus_target: Option<f64>,
     focus_manual: bool,
+    framing_enabled: bool,
+    framing_initialized: bool,
+    framing_auto: bool,
+    framing_ramp: u8,
+    framing_start: Option<(f64, f64, f64)>,
     at: Instant,
     last_seq: Option<u32>,
     silent: bool,
@@ -334,6 +339,11 @@ impl Head {
                 self.focus_target = None;
                 done
             }
+            Command::FocusAuto => {
+                self.focus_manual = false;
+                self.focus_target = None;
+                done
+            }
             Command::FocusManual => {
                 self.focus_manual = true;
                 done
@@ -388,6 +398,11 @@ impl FakeFr7 {
             focus: 32768.0,
             focus_target: None,
             focus_manual: false,
+            framing_enabled: false,
+            framing_initialized: false,
+            framing_auto: false,
+            framing_ramp: 8,
+            framing_start: None,
             at: Instant::now(),
             last_seq: None,
             silent: false,
@@ -504,7 +519,7 @@ impl FakeFr7 {
                     // The end stops in counts: pan as left then right, tilt as down then up.
                     let stop = |degrees: f64, sign: f64| (degrees * sign * COUNTS_PER_DEGREE).round() as i32 as u32 & 0xF_FFFF;
                     Some(Response::text(format!(
-                        "AbsolutePTZF={:05x},{:05x},{zoom:04x},{focus:04x}&PanDirection={}&TiltDirection={}&PanLimit={:05x},{:05x}&TiltLimit={:05x},{:05x}&PanTiltSpeedMode={}&PanTiltSpeedScale={}&PanTiltSpeedStep={}&ZoomSpeedScale={}\r\n",
+                        "AbsolutePTZF={:05x},{:05x},{zoom:04x},{focus:04x}&PanDirection={}&TiltDirection={}&PanLimit={:05x},{:05x}&TiltLimit={:05x},{:05x}&PanTiltSpeedMode={}&PanTiltSpeedScale={}&PanTiltSpeedStep={}&ZoomSpeedScale={}&RampCurve={}\r\n",
                         pan as u32 & 0xF_FFFF,
                         tilt as u32 & 0xF_FFFF,
                         direction(head.pan_sign),
@@ -516,12 +531,46 @@ impl FakeFr7 {
                         if head.slow_mode { "slow" } else { "normal" },
                         head.pan_tilt_scale,
                         if head.extended_steps { "extended" } else { "normal" },
-                        head.zoom_scale
+                        head.zoom_scale,
+                        head.framing_ramp
                     )))
+                }
+                ("/command/inquiry.cgi", Some("ptzautoframing")) => Some(Response::text(format!(
+                    "PtzAutoFraming={}&PtzAutoFramingPmt=enable&PtzAutoFramingInitialSetup={}",
+                    if head.framing_enabled { "on" } else { "off" },
+                    if head.framing_initialized { "initialized" } else { "uninitialized" },
+                ))),
+                ("/analytics/ptzautoframingexe.cgi", _) if req.query("PtzAutoFramingDecideStartPosition").is_some() => {
+                    if !head.framing_auto || head.framing_enabled {
+                        return Some(Response::status(403));
+                    }
+                    head.framing_start = Some((head.pan, head.tilt, head.zoom / visca::ZOOM_TELE as f64));
+                    Some(Response::status(204))
+                }
+                ("/analytics/ptzautoframing.cgi", _) => {
+                    if let Some(mode) = req.query("PtzAutoFramingTriggerType") {
+                        head.framing_auto = mode == "auto";
+                    }
+                    if let Some(setup) = req.query("PtzAutoFramingInitialSetup") {
+                        head.framing_initialized = setup == "initialized";
+                    }
+                    if let Some(enable) = req.query("PtzAutoFraming") {
+                        if enable == "on"
+                            && (!head.framing_initialized
+                                || !head.framing_auto
+                                || head.framing_start.is_none()
+                                || !head.extended_steps
+                                || !(7..=9).contains(&head.framing_ramp))
+                        {
+                            return Some(Response::status(403));
+                        }
+                        head.framing_enabled = enable == "on";
+                    }
+                    Some(Response::status(204))
                 }
                 // A speed setting is changed one at a time, and answered with no content.
                 ("/command/ptzf.cgi", _)
-                    if ["PanTiltSpeedScale", "ZoomSpeedScale", "PanTiltSpeedMode", "PanTiltSpeedStep"]
+                    if ["PanTiltSpeedScale", "ZoomSpeedScale", "PanTiltSpeedMode", "PanTiltSpeedStep", "RampCurve"]
                         .iter()
                         .any(|name| req.query(name).is_some()) =>
                 {
@@ -538,6 +587,9 @@ impl FakeFr7 {
                     }
                     if let Some(mode) = req.query("PanTiltSpeedMode") {
                         head.slow_mode = mode == "slow";
+                    }
+                    if let Some(ramp) = req.query("RampCurve").and_then(|v| v.parse().ok()) {
+                        head.framing_ramp = ramp;
                     }
                     if let Some(steps) = req.query("PanTiltSpeedStep") {
                         head.extended_steps = steps == "extended";
@@ -575,6 +627,18 @@ impl FakeFr7 {
     pub fn pose(&self) -> (f64, f64, f64, f64) {
         let h = self.head();
         (h.pan, h.tilt, h.zoom / visca::ZOOM_TELE as f64, h.focus / 65535.0)
+    }
+
+    pub fn framing_enabled(&self) -> bool {
+        self.head().framing_enabled
+    }
+
+    pub fn framing_start(&self) -> Option<(f64, f64, f64)> {
+        self.head().framing_start
+    }
+
+    pub fn autofocus_enabled(&self) -> bool {
+        !self.head().focus_manual
     }
 
     pub fn place(&self, pan: f64, tilt: f64, zoom: f64, focus: f64) {

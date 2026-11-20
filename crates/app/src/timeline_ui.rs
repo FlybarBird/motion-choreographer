@@ -14,6 +14,8 @@ pub struct PresetDrag(pub Preset);
 #[derive(Clone)]
 pub struct MediaDrag(pub MediaInfo);
 
+struct CameraControlDrag(ClipBody);
+
 /// The scroll bar along the bottom of the timeline: this high, with the thumb inset in it.
 pub const SCROLL_BAR_H: f32 = 4.0 * U;
 
@@ -151,6 +153,28 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
         let info = &payload.0;
         let stamp = Stamp::of(info, &doc, m);
         ghost = s.timeline.media_ghost(&base, &doc, &info.name, media_track(info), info.duration_frames, stamp, p, m);
+    }
+    if let (Some(payload), Some(p)) = (egui::DragAndDrop::payload::<CameraControlDrag>(ui.ctx()), pointer) {
+        let doc = Doc { song: &song, project: &s.project, playhead };
+        ghost = s.timeline.control_ghost(&base, &doc, &payload.0, p, m);
+    }
+    if egui::DragAndDrop::has_payload_of_type::<CameraControlDrag>(ui.ctx()) {
+        if let Some(payload) = resp.dnd_release_payload::<CameraControlDrag>() {
+            if let Some(g) = &ghost {
+                if let Lane::Motion(i) = g.lane {
+                    let camera = s.project.cameras[i].id.clone();
+                    let result = editable.clone().and_then(|_| {
+                        ptz_core::edit::insert_camera_control(&song, &s.project, &camera, g.start, payload.0.clone())
+                            .map_err(|why| why.to_string())
+                    });
+                    outcomes.push(match result {
+                        Ok((song, id)) => s.timeline.select_new_control(Box::new(song), id),
+                        Err(why) => Outcome::Refused(why),
+                    });
+                }
+            }
+            s.timeline.snap_frame = None;
+        }
     }
     // Taking a payload of the wrong type would throw it away, so ask for the type first.
     let holds = |ui: &Ui, preset: bool| {
@@ -353,6 +377,30 @@ fn toolbar(ui: &mut Ui, s: &mut Session, song: &Song) {
         ui.separator();
         if ui.button("Add marker").on_hover_text("Add a marker at the playhead  ( M )").clicked() {
             add_marker(s);
+        }
+        let editable = s.can_edit();
+        for (label, body) in [
+            ("Autofocus", ClipBody::Autofocus { enabled: true }),
+            ("Auto Follow", ClipBody::AutoFollow { preset: None, detection: Default::default() }),
+        ] {
+            ui.add_enabled_ui(editable.is_ok(), |ui| {
+                let resp = ui
+                    .add(egui::Button::new(label).sense(Sense::click_and_drag()))
+                    .on_hover_text("Drag to a camera lane, or click to add at the playhead");
+                resp.dnd_set_drag_payload(CameraControlDrag(body.clone()));
+                if resp.clicked() {
+                    let camera = s.cam_id().to_string();
+                    let frame = s.playhead().floor() as i64;
+                    match ptz_core::edit::insert_camera_control(song, &s.project, &camera, frame, body) {
+                        Ok((song, id)) => {
+                            s.timeline.select_only(&id);
+                            s.timeline.key_selection.clear();
+                            s.commit_edit(song);
+                        }
+                        Err(why) => s.toast(why.to_string(), true),
+                    }
+                }
+            });
         }
         let n = s.timeline.selection.len();
         if ui
@@ -594,6 +642,8 @@ fn clip_ink(kind: ClipKind) -> Color32 {
     match kind {
         ClipKind::Move | ClipKind::AxisPart => MOVE_CLIP,
         ClipKind::Keys => KEYS_CLIP,
+        ClipKind::Autofocus => AMBER,
+        ClipKind::AutoFollow => VIDEO_CLIP,
         ClipKind::Audio => AUDIO_CLIP,
         ClipKind::Video => VIDEO_CLIP,
     }
@@ -879,6 +929,17 @@ fn paint_clip(painter: &Painter, l: &Layout, c: &ClipBox, song: &Song, s: &Sessi
                 );
             }
         }
+        ClipKind::Autofocus | ClipKind::AutoFollow => {
+            if let Some(clip) = song.motion_clip(&c.id) {
+                painter.with_clip_rect(c.rect).text(
+                    c.rect.left_center() + vec2(U, 0.0),
+                    Align2::LEFT_CENTER,
+                    clip.label(),
+                    semibold(SMALL),
+                    OFF_WHITE,
+                );
+            }
+        }
         ClipKind::AxisPart => {}
     }
     // What it is, down its leading edge.
@@ -918,7 +979,7 @@ fn issue_axis(issue: &ptz_core::compile::Issue) -> Option<Axis> {
     use ptz_core::compile::Issue::*;
     match issue {
         TooFast { axis, .. } | TooMuchAcceleration { axis, .. } | OutOfRange { axis, .. } | Jump { axis, .. } => Some(*axis),
-        KeepOut { .. } | MissingCamera { .. } => None,
+        KeepOut { .. } | MissingCamera { .. } | AutoFollow { .. } => None,
     }
 }
 
@@ -931,6 +992,7 @@ fn issue_short(issue: &ptz_core::compile::Issue) -> String {
         Jump { axis, .. } => format!("{} jumps", axis.label()),
         KeepOut { .. } => "Keep-out".into(),
         MissingCamera { .. } => "No camera".into(),
+        AutoFollow { .. } => "Auto Follow".into(),
     }
 }
 

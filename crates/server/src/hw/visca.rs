@@ -166,6 +166,10 @@ pub fn focus_manual() -> Vec<u8> {
     vec![0x81, 0x01, 0x04, 0x38, 0x03, 0xFF]
 }
 
+pub fn focus_auto() -> Vec<u8> {
+    vec![0x81, 0x01, 0x04, 0x38, 0x02, 0xFF]
+}
+
 /// Recall preset `number` (1 is the first): `81 01 04 3F 02 pp FF`.
 pub fn preset_recall(number: u32) -> Vec<u8> {
     vec![0x81, 0x01, 0x04, 0x3F, 0x02, number.saturating_sub(1).min(0x7F) as u8, 0xFF]
@@ -260,6 +264,7 @@ pub enum Command {
     FocusInquiry,
     FocusStop,
     FocusManual,
+    FocusAuto,
     Recall(u32),
 }
 
@@ -283,6 +288,7 @@ pub fn parse_command(p: &[u8]) -> Option<Command> {
         [0x01, 0x04, 0x48, rest @ ..] => Some(Command::FocusDirect(parse_value(rest)?)),
         [0x09, 0x04, 0x48] => Some(Command::FocusInquiry),
         [0x01, 0x04, 0x08, 0x00] => Some(Command::FocusStop),
+        [0x01, 0x04, 0x38, 0x02] => Some(Command::FocusAuto),
         [0x01, 0x04, 0x38, 0x03] => Some(Command::FocusManual),
         [0x01, 0x04, 0x3F, 0x02, n] => Some(Command::Recall(*n as u32 + 1)),
         _ => None,

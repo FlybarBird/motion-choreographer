@@ -4,6 +4,7 @@
 
 use crate::compile::{refresh_auto, suggested_duration};
 use crate::eval::{ease_keys, split_keys, Evaluator};
+use crate::framing::FocusMode;
 use crate::pose::{Axis, Preset, Project};
 use crate::song::{
     Accepted, ClipBody, Ease, FromPose, Interp, Invalid, Key, Marker, MediaClip, MotionClip, PresetRef, Song, Track,
@@ -94,6 +95,55 @@ fn grow(song: &mut Song, end: i64) {
     if song.length_frames < end {
         song.length_frames = end;
     }
+}
+
+pub fn insert_camera_control(
+    song: &Song,
+    project: &Project,
+    camera: &str,
+    frame: i64,
+    body: ClipBody,
+) -> Result<(Song, String), Refusal> {
+    if project.camera(camera).is_none() {
+        return Err(Refusal::NoSuchCamera);
+    }
+    let mut next = song.clone();
+    let frame = frame.max(0);
+    let duration = project.rate.fps().round() as i64 * if matches!(body, ClipBody::AutoFollow { .. }) { 5 } else { 2 };
+    let end = frame.checked_add(duration).ok_or(Refusal::NoRoom)?;
+    let id = next.next_id("c");
+    next.motion.push(MotionClip {
+        id: id.clone(),
+        camera: camera.into(),
+        start_frame: frame,
+        duration_frames: duration,
+        axes: Vec::new(),
+        body,
+        accepted: None,
+        recorded_pass: None,
+    });
+    grow(&mut next, end);
+    Ok((finish(next, project)?, id))
+}
+
+pub fn set_focus_override(song: &Song, project: &Project, id: &str, mode: Option<FocusMode>) -> Edit {
+    let mut next = song.clone();
+    let preset = match &mut motion_mut(&mut next, id)?.body {
+        ClipBody::PresetMove { to, .. } | ClipBody::AutoFollow { preset: Some(to), .. } => to,
+        _ => return Err(Refusal::NotAPresetMove),
+    };
+    preset.focus_override = mode;
+    finish(next, project)
+}
+
+pub fn set_control_body(song: &Song, project: &Project, id: &str, body: ClipBody) -> Edit {
+    let mut next = song.clone();
+    let clip = motion_mut(&mut next, id)?;
+    if !clip.is_control() {
+        return Err(Refusal::NotFound);
+    }
+    clip.body = body;
+    finish(next, project)
 }
 
 /// Drop a preset on a frame. The move is for the preset's camera: it ends on the
@@ -192,7 +242,7 @@ pub fn drop_preview_timed(
     let from_name = song
         .motion
         .iter()
-        .filter(|c| c.camera == preset.camera && c.end_frame() <= frame.max(0))
+        .filter(|c| c.camera == preset.camera && !matches!(c.body, ClipBody::Autofocus { .. }) && c.end_frame() <= frame.max(0))
         .max_by_key(|c| c.start_frame)
         .and_then(|c| match &c.body {
             ClipBody::PresetMove { to, .. } => Some(to.name.clone()),
@@ -254,6 +304,9 @@ pub fn move_clips_to(song: &Song, project: &Project, ids: &[String], delta: i64,
         c.start_frame += delta;
         c.accepted = None;
         if let Some(camera) = camera {
+            if c.camera != camera && matches!(c.body, ClipBody::AutoFollow { preset: Some(_), .. }) {
+                return Err(Refusal::OtherCamera);
+            }
             c.camera = camera.to_string();
         }
         end = end.max(c.end_frame());
@@ -284,6 +337,7 @@ pub fn trim_clip_end(song: &Song, project: &Project, id: &str, new_end: i64) -> 
                     return Err(Refusal::KeysBeyondTrim);
                 }
             }
+            ClipBody::Autofocus { .. } | ClipBody::AutoFollow { .. } => {}
         }
         c.duration_frames = dur;
         let end = c.end_frame();
@@ -319,6 +373,7 @@ pub fn trim_clip_start(song: &Song, project: &Project, id: &str, new_start: i64)
                     }
                 }
             }
+            ClipBody::Autofocus { .. } | ClipBody::AutoFollow { .. } => {}
         }
         c.start_frame = start;
         c.duration_frames = end - start;
@@ -384,22 +439,29 @@ pub fn adopt_presets(song: &Song, project: &Project, presets: &[Preset]) -> Resu
     for clip in &mut next.motion {
         let mut touch = false;
         let camera = clip.camera.clone();
-        if let ClipBody::PresetMove { from, to, .. } = &mut clip.body {
-            let apply = |r: &mut PresetRef| {
-                let Some(preset) = presets.iter().find(|p| p.id == r.preset_id && p.camera == camera) else {
-                    return false;
-                };
-                let now = PresetRef::of(preset);
-                if *r == now {
-                    return false;
-                }
-                *r = now;
-                true
+        let apply = |r: &mut PresetRef| {
+            let Some(preset) = presets.iter().find(|p| p.id == r.preset_id && p.camera == camera) else {
+                return false;
             };
-            if let FromPose::Pinned(r) = from {
-                touch |= apply(r);
+            let before = r.clone();
+            r.update(preset);
+            *r != before
+        };
+        match &mut clip.body {
+            ClipBody::PresetMove { from, to, .. } => {
+                if let FromPose::Pinned(r) = from {
+                    touch |= apply(r);
+                }
+                touch |= apply(to);
             }
-            touch |= apply(to);
+            // A follow clip keeps its programmed start framing. Presets can be dropped again to update it.
+            ClipBody::AutoFollow { preset: Some(r), .. } => {
+                if let Some(p) = presets.iter().find(|p| p.id == r.preset_id && p.camera == camera) {
+                    touch = r.autofocus != p.autofocus;
+                    r.autofocus = p.autofocus;
+                }
+            }
+            _ => {}
         }
         if touch {
             clip.accepted = None;
@@ -419,7 +481,15 @@ pub fn set_to(song: &Song, project: &Project, id: &str, preset: &Preset) -> Edit
     if next.motion_clip(id).ok_or(Refusal::NotFound)?.camera != preset.camera {
         return Err(Refusal::OtherCamera);
     }
-    *preset_body(&mut next, id)?.2 = PresetRef::of(preset);
+    let clip = motion_mut(&mut next, id)?;
+    match &mut clip.body {
+        ClipBody::PresetMove { to, .. } => to.update(preset),
+        ClipBody::AutoFollow { preset: target, .. } => match target {
+            Some(r) => r.update(preset),
+            None => *target = Some(PresetRef::of(preset)),
+        },
+        _ => return Err(Refusal::NotAPresetMove),
+    }
     finish(next, project)
 }
 
@@ -433,6 +503,9 @@ pub fn set_camera(song: &Song, project: &Project, ids: &[String], camera: &str) 
     for c in next.motion.iter_mut().filter(|c| ids.contains(&c.id)) {
         any = true;
         if c.camera != camera {
+            if matches!(c.body, ClipBody::AutoFollow { preset: Some(_), .. }) {
+                return Err(Refusal::OtherCamera);
+            }
             c.camera = camera.to_string();
             c.accepted = None;
         }

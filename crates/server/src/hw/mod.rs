@@ -7,7 +7,7 @@ pub mod fake;
 pub mod fr7;
 pub mod visca;
 
-use crate::rig::{DevicePreset, Drive, PoseReading, RigAdapter, Simulator};
+use crate::rig::{DevicePreset, Drive, FollowRequest, PoseReading, RigAdapter, Simulator};
 use autopod::{AutoPod, PodConfig};
 use fr7::{Fr7, Fr7Config};
 use ptz_core::api::AdapterStatus;
@@ -134,6 +134,11 @@ impl RigAdapter for HardwareRig {
         if let Some(f) = &self.fr7 {
             f.drive(cmd);
         }
+        self.drive_column(cmd);
+    }
+
+    fn drive_column(&mut self, cmd: &Drive) {
+        self.told = cmd.target;
         if let Some(p) = &self.pod {
             if cmd.column {
                 p.drive(cmd);
@@ -141,6 +146,27 @@ impl RigAdapter for HardwareRig {
                 p.rest();
             }
         }
+    }
+
+    fn drive_follow(&mut self, cmd: &Drive, request: FollowRequest) {
+        if let Some(f) = &self.fr7 {
+            f.drive_follow(request);
+        }
+        self.drive_column(cmd);
+    }
+
+    fn follow_status(&self) -> Option<ptz_core::api::AutoFollowStatus> {
+        self.fr7.as_ref().map(Fr7::follow_status)
+    }
+
+    fn stop_follow(&mut self) {
+        if let Some(f) = &self.fr7 {
+            f.stop();
+        }
+    }
+
+    fn follow_stop_pending(&self) -> bool {
+        self.fr7.as_ref().is_some_and(Fr7::stop_pending)
     }
 
     fn stop(&mut self) {

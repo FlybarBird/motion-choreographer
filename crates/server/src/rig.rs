@@ -2,7 +2,8 @@
 //! and AutoPod+ adapters implement the same trait. No method here blocks on the
 //! network: hardware adapters do their I/O on their own threads.
 
-use ptz_core::api::{AdapterStatus, Jog};
+use ptz_core::api::{AdapterStatus, AutoFollowStatus, Jog};
+use ptz_core::framing::{DetectionArea, FollowComposition};
 use ptz_core::pose::{Axis, AxisTable, Pose, Preset};
 use std::time::Instant;
 
@@ -27,12 +28,20 @@ pub struct Drive {
     pub ride: Option<Ride>,
     /// False when the song has no elevation for this camera: the column is left where it stands.
     pub column: bool,
+    pub autofocus: bool,
 }
 
 impl Drive {
     pub fn to(target: Pose, scale: f64) -> Drive {
-        Drive { target, velocity: Pose::default(), scale, ride: None, column: true }
+        Drive { target, velocity: Pose::default(), scale, ride: None, column: true, autofocus: false }
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct FollowRequest {
+    pub detection: DetectionArea,
+    pub composition: FollowComposition,
+    pub autofocus: bool,
 }
 
 /// A pose and the moment the rig was there, axis by axis: the devices are read at different times.
@@ -91,6 +100,27 @@ pub trait RigAdapter: Send {
     /// Follow the command. Called every engine tick while live; an adapter that
     /// stops hearing it stops the rig.
     fn drive(&mut self, cmd: &Drive);
+
+    /// Guide the pedestal while the FR7 owns its own framing.
+    fn drive_column(&mut self, cmd: &Drive) {
+        let mut cmd = *cmd;
+        cmd.target = Pose { elevation: cmd.target.elevation, ..self.pose() };
+        self.drive(&cmd);
+    }
+
+    fn drive_follow(&mut self, cmd: &Drive, _request: FollowRequest) {
+        self.drive_column(cmd);
+    }
+
+    fn follow_status(&self) -> Option<AutoFollowStatus> {
+        None
+    }
+
+    fn stop_follow(&mut self) {}
+
+    fn follow_stop_pending(&self) -> bool {
+        false
+    }
 
     /// Stop every axis where it is.
     fn stop(&mut self);

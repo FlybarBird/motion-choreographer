@@ -619,6 +619,9 @@ fn general(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::Project, 
                 .response
                 .on_hover_text("How heights and distances are shown and typed at every station. The show itself does not change");
             ui.end_row();
+            field(ui, "Default Autofocus");
+            ui.checkbox(&mut project.default_autofocus, "On");
+            ui.end_row();
             field(ui, "When a camera faults");
             egui::ComboBox::from_id_salt("on_fault").selected_text(project.on_fault.label()).width(260.0).show_ui(ui, |ui| {
                 for choice in OnFault::ALL {
@@ -1085,6 +1088,35 @@ fn cameras(ui: &mut Ui, s: &mut Session, project: &mut ptz_core::pose::Project, 
             .color(MUTED)
             .small(),
     );
+    ui.separator();
+    section(ui, "Auto Follow");
+    let camera = &mut project.cameras[at];
+    if let Some(status) = s.status.camera(&camera.id).and_then(|status| status.auto_follow.as_ref()) {
+        ui.label(RichText::new(status.label()).small().color(MUTED));
+    } else {
+        ui.label(RichText::new("FR7 tracking requires a connected FR7").small().color(MUTED));
+    }
+    let follow = &mut camera.follow_composition;
+    ui.add_enabled_ui(editable, |ui| {
+        egui::Grid::new("follow_composition").num_columns(2).spacing([4.0 * U, GAP]).show(ui, |ui| {
+            field(ui, "Subject size");
+            ui.add(egui::DragValue::new(&mut follow.size).range(250..=3500).suffix(" ‰"));
+            ui.end_row();
+            field(ui, "Horizontal placement");
+            ui.add(egui::DragValue::new(&mut follow.horizontal).range(-50..=50));
+            ui.end_row();
+            field(ui, "Vertical placement");
+            ui.add(egui::DragValue::new(&mut follow.vertical).range(-50..=70));
+            ui.end_row();
+            field(ui, "Lead Room");
+            egui::ComboBox::from_id_salt("follow_lead_room").selected_text(follow.lead_room.label()).show_ui(ui, |ui| {
+                for choice in ptz_core::framing::LeadRoom::ALL {
+                    ui.selectable_value(&mut follow.lead_room, choice, choice.label());
+                }
+            });
+            ui.end_row();
+        });
+    });
 }
 
 /// The lens on the selected camera, and what it sees now.

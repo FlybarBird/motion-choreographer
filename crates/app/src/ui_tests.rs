@@ -20,6 +20,7 @@ pub fn presets() -> Vec<Preset> {
         camera: ptz_core::camera::first_camera(),
         camera_number: None,
         has_thumbnail: false,
+        autofocus: Default::default(),
     };
     vec![
         p("wide", "Stage Wide", 0.0, 2.0, 0.05, 120.0),
@@ -1141,6 +1142,7 @@ fn a_keep_out_rule_is_added_and_edited_in_the_project_settings_and_blocks_the_so
             camera: ptz_core::camera::first_camera(),
             camera_number: None,
             has_thumbnail: false,
+            autofocus: Default::default(),
         };
         let (song, _) = ptz_core::edit::insert_preset_move(s.song.as_ref().unwrap(), &s.project, &low, 100).unwrap();
         s.commit_edit(song);
@@ -2214,3 +2216,28 @@ mod preset_duration;
 mod safety;
 mod settings;
 mod shots;
+
+#[test]
+fn camera_controls_drag_onto_the_timeline_and_auto_follow_takes_a_preset() {
+    use egui_kittest::kittest::Queryable as _;
+
+    let mut r = rig(Song::new("s", "Framing", "01:00:00:00", 1000));
+    let follow_tool = r.harness.get_by_label("Auto Follow").rect().center();
+    r.drag(follow_tool, r.lane_point(Lane::Motion(0), 250.0));
+    let follow = r.song().motion.first().unwrap().clone();
+    assert!(matches!(follow.body, ClipBody::AutoFollow { preset: None, .. }));
+    assert!((follow.start_frame - 250).abs() <= 2);
+    r.drag(r.preset_point("lectern"), r.lane_point(Lane::Motion(0), (follow.start_frame + 50) as f64));
+    let clip = r.song().motion_clip(&follow.id).unwrap();
+    assert_eq!(clip.start_frame, follow.start_frame);
+    assert_eq!(clip.duration_frames, follow.duration_frames);
+    assert!(matches!(&clip.body, ClipBody::AutoFollow { preset: Some(p), .. } if p.preset_id == "lectern"));
+
+    let focus_tool = r.harness.get_by_role_and_label(egui::accesskit::Role::Button, "Autofocus").rect().center();
+    r.drag(focus_tool, r.lane_point(Lane::Motion(0), 500.0));
+    let focus = r.song().motion.iter().find(|clip| matches!(clip.body, ClipBody::Autofocus { .. })).unwrap();
+    assert!((focus.start_frame - 500).abs() <= 2);
+    r.harness.get_by_label("Off").click();
+    r.harness.run_steps(3);
+    assert!(r.song().motion.iter().any(|clip| matches!(clip.body, ClipBody::Autofocus { enabled: false })));
+}

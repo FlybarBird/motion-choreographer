@@ -6,7 +6,7 @@ use crate::audio::{AudioEngine, LtcOut, Mix, PlayClip};
 use crate::lock::{self, CodeSource, Kind};
 use crate::media::{self, Ingested};
 use crate::record::{self, Capture, RecordedPass};
-use crate::rig::{DevicePreset, Drive, Ride, RigAdapter};
+use crate::rig::{DevicePreset, Drive, FollowRequest, Ride, RigAdapter};
 use crate::runlog::RunLog;
 use crate::storage::{self, Storage};
 use ptz_core::api::*;
@@ -15,10 +15,10 @@ use ptz_core::chase::{Chase, ChaseState};
 use ptz_core::codes::CodeRate;
 use ptz_core::compile::{compile, Compiled, Issue};
 use ptz_core::edit;
-use ptz_core::eval::{keys_value, Evaluator};
+use ptz_core::eval::{ease_value, keys_value, Evaluator};
 use ptz_core::fit::{default_tolerance, overruns};
 use ptz_core::pose::{Axis, Pose, Preset, Project, Routing};
-use ptz_core::song::{ClipBody, MotionClip, Song};
+use ptz_core::song::{ClipBody, FromPose, MotionClip, Song};
 use ptz_core::time::{frame_to_sample, FrameRate, Timecode};
 use ptz_core::transport::{self, Action, Context, Event, Output, Run, TimeMode, TransportState};
 use serde_json::json;
@@ -249,6 +249,7 @@ struct Unit {
     id: String,
     rig: Box<dyn RigAdapter>,
     live: Live,
+    manual_follow_block: Option<(String, String)>,
     /// Faulted while live and left standing where it stopped, while the other cameras carry on.
     held: bool,
     /// E-Stop was pressed at this moment and the rig has not yet read as standing still.
@@ -271,6 +272,7 @@ impl Unit {
             id: camera.id.clone(),
             rig: crate::hw::build(&project.rig_of(camera), &camera.axes),
             live: Live::default(),
+            manual_follow_block: None,
             held: false,
             halting: None,
             adapters_were: Vec::new(),
@@ -288,6 +290,18 @@ impl Unit {
     fn interrupt_automation(&mut self) {
         self.rig.stop();
         self.live.clear();
+    }
+
+    fn cancel_follow(&mut self, now: Instant, hold_from: Option<i64>) {
+        if self.live.follow.take().is_some() {
+            self.rig.stop_follow();
+            self.live.follow_exit = Some((now, hold_from));
+        } else if hold_from.is_none() {
+            if let Some((_, frame)) = &mut self.live.follow_exit {
+                *frame = None;
+            }
+            self.live.follow_hold = None;
+        }
     }
 
     fn waiting_for_device(&self) -> bool {
@@ -369,6 +383,35 @@ pub struct StageUpload {
     pub file: PathBuf,
 }
 
+const FRAMING_AXES: [Axis; 3] = [Axis::Pan, Axis::Tilt, Axis::Zoom];
+
+struct FollowHold {
+    from: i64,
+    pose: Pose,
+    released: [bool; 3],
+}
+
+struct FollowPlayback {
+    clip: String,
+    settled: Option<Instant>,
+    end_frame: i64,
+    requested: Option<FollowRequest>,
+}
+
+#[derive(Clone, Copy)]
+enum HeadControl {
+    Timeline,
+    Approach,
+    Follow(FollowRequest),
+    Stopping,
+}
+
+impl HeadControl {
+    fn independent(self) -> bool {
+        matches!(self, Self::Follow(_) | Self::Stopping)
+    }
+}
+
 /// What the live loop remembers between ticks.
 #[derive(Default)]
 struct Live {
@@ -393,6 +436,10 @@ struct Live {
     /// Why output was last cut, until the operator arms or plays again.
     fault: Option<String>,
     pose_logged: Option<Instant>,
+    autofocus: bool,
+    follow: Option<FollowPlayback>,
+    follow_exit: Option<(Instant, Option<i64>)>,
+    follow_hold: Option<FollowHold>,
 }
 
 struct RejoinFeedback {
@@ -421,10 +468,10 @@ impl RejoinFeedback {
         tolerance: Pose,
         now: Instant,
         window: Duration,
-        column: bool,
+        checked: impl Fn(Axis) -> bool,
     ) -> Result<bool, (CameraFailure, String)> {
         let mut confirmed = true;
-        for axis in Axis::ALL.into_iter().filter(|axis| *axis != Axis::Elevation || column) {
+        for axis in Axis::ALL.into_iter().filter(|&axis| checked(axis)) {
             let progress = &mut self.axes[axis.index()];
             let read_at = reading.at[axis.index()];
             let fresh = read_at >= self.started && progress.read_at.is_none_or(|last| read_at > last);
@@ -504,6 +551,7 @@ impl Live {
 /// How long positioning may take beyond the time the travel needs.
 const POSITIONING_GRACE: Duration = Duration::from_secs(3);
 const FEEDBACK_GRACE: Duration = Duration::from_secs(3);
+const FOLLOW_STOP_GRACE: Duration = Duration::from_secs(6);
 /// E-Stop's stop is sent again if the rig still reads as moving after this long.
 const HALT_AGAIN: Duration = Duration::from_secs(2);
 
@@ -982,6 +1030,10 @@ impl Show {
     fn change_song(&mut self, id: &str, by: &str) {
         let before = self.transport;
         let kept = (before.time == TimeMode::LockedExternal).then(|| (self.external.take(), self.lock_source.take()));
+        for unit in &mut self.units {
+            unit.cancel_follow(Instant::now(), None);
+            unit.manual_follow_block = None;
+        }
         self.current = Some(id.to_string());
         self.reset_for_new_song();
         let mut after = self.transport;
@@ -1550,8 +1602,8 @@ impl Show {
         Ok(Captured { preset, reused: false, pose })
     }
 
-    /// Change a stored preset: to a given pose, to a given column height, or, with neither,
-    /// to where its camera's rig stands now. Nothing moves. A move on the timeline keeps
+    /// Change a stored preset's pose, height or autofocus setting. An empty update
+    /// captures where its camera's rig stands now. Nothing moves. A move on the timeline keeps
     /// the pose it was made with until the operator updates it.
     pub fn update_preset(&mut self, client: &str, id: &str, req: &UpdatePreset) -> Res<Preset> {
         self.require_lease(client)?;
@@ -1562,6 +1614,7 @@ impl Show {
         let mut pose = match (req.pose, req.elevation) {
             (Some(pose), _) => pose,
             (None, Some(_)) => self.presets[at].pose,
+            (None, None) if req.autofocus.is_some() => self.presets[at].pose,
             (None, None) => {
                 let i = self.unit_index(Some(&camera))?;
                 let unit = &self.units[i];
@@ -1581,12 +1634,22 @@ impl Show {
             return Err(Fail::bad("That pose is not a usable number"));
         }
         let by = self.who(client);
-        let preset = &mut self.presets[at];
+        let mut presets = self.presets.clone();
+        let preset = &mut presets[at];
         let before = preset.pose;
         preset.pose = pose;
+        if let Some(mode) = req.autofocus {
+            preset.autofocus = mode;
+        }
         let preset = preset.clone();
-        self.storage.save_presets(&self.presets).map_err(Fail::io)?;
-        self.log("preset_updated", json!({ "preset": id, "camera": camera, "by": by, "from": before, "to": pose }));
+        self.storage.save_presets(&presets).map_err(Fail::io)?;
+        self.presets = presets;
+        self.log(
+            "preset_updated",
+            json!({
+                "preset": id, "camera": camera, "by": by, "from": before, "to": pose, "autofocus": preset.autofocus
+            }),
+        );
         self.push(WsMsg::PresetsChanged);
         self.relink_timeline();
         Ok(preset)
@@ -2021,8 +2084,19 @@ impl Show {
                 }
             }
             // While armed the rig keeps following the timeline, which now stands still.
-            Action::Stop => self.audio.stop(),
+            Action::Stop => {
+                self.audio.stop();
+                let now = Instant::now();
+                let frame = self.frame_f.floor() as i64;
+                for unit in &mut self.units {
+                    unit.cancel_follow(now, Some(frame));
+                }
+            }
             Action::Cue => {
+                for unit in &mut self.units {
+                    unit.cancel_follow(Instant::now(), None);
+                    unit.manual_follow_block = None;
+                }
                 self.audio.stop();
                 self.audio.seek(0.0, rate);
                 self.frame_f = 0.0;
@@ -2033,6 +2107,10 @@ impl Show {
                 let Some(frame) = req.frame else {
                     return Err(Fail::bad("Seek needs a frame"));
                 };
+                for unit in &mut self.units {
+                    unit.cancel_follow(Instant::now(), None);
+                    unit.manual_follow_block = None;
+                }
                 self.frame_f = (frame as f64).clamp(0.0, length);
                 self.clear_manual();
                 self.capture_stand();
@@ -2075,6 +2153,7 @@ impl Show {
             Action::Arm => {
                 for u in &mut self.units {
                     u.finish_jog(false, true);
+                    u.manual_follow_block = None;
                     let pose = u.rig.pose();
                     u.live = Live { commanded: Some(pose), stand: Some(pose), ..Live::default() };
                     u.held = false;
@@ -2164,7 +2243,16 @@ impl Show {
             return;
         }
         match event {
-            Event::SongEnded => self.audio.stop(),
+            Event::SongEnded | Event::CodeLost | Event::Relocated => {
+                if event == Event::SongEnded {
+                    self.audio.stop();
+                }
+                let now = Instant::now();
+                let hold = (event != Event::Relocated).then_some(self.frame_f.floor() as i64);
+                for unit in &mut self.units {
+                    unit.cancel_follow(now, hold);
+                }
+            }
             Event::Fault => {
                 self.audio.stop();
                 for u in &mut self.units {
@@ -2394,21 +2482,160 @@ impl Show {
                 }
                 continue;
             }
-            let target = self.playhead_target(i);
+            let mut target = self.playhead_target(i);
+            if self.units[i].camera_failure.is_some() {
+                if let Some(problem) = self.invalid_target(i, target) {
+                    self.camera_fault(i, CameraFailure::InvalidTarget, problem);
+                    continue;
+                }
+                self.recover_camera(i);
+            }
+            let (head, autofocus) = match self.control_head(i, now, &mut target) {
+                Ok(control) => control,
+                Err(problem) => {
+                    self.fault(i, problem);
+                    continue;
+                }
+            };
             if let Some(problem) = self.invalid_target(i, target) {
                 self.camera_fault(i, CameraFailure::InvalidTarget, problem);
                 continue;
             }
-            if self.units[i].camera_failure.is_some() {
-                self.recover_camera(i);
-            }
-            let step = self.tick_live(i, now, dt, target);
+            let step = self.tick_live(i, now, dt, target, head, autofocus);
             // A local reconciliation stays independent of the show's global positioning.
             waiting |= step == Step::Travelling && !self.units[i].catching_up;
         }
         if positioning && self.transport.output == Output::Positioning && !waiting {
             self.event(Event::RigArrived);
         }
+    }
+
+    fn control_head(&mut self, i: usize, now: Instant, target: &mut Pose) -> Result<(HeadControl, bool), String> {
+        let frame = self.frame_f.floor() as i64;
+        let id = &self.units[i].id;
+        let can_follow = self.transport.run == Run::Playing && self.transport.output == Output::Armed;
+        let song = self.current.as_ref().and_then(|id| self.songs.get(id)).map(|entry| &entry.song);
+        let cue = song
+            .filter(|_| can_follow)
+            .and_then(|song| song.auto_follow_at(id, frame).map(|clip| (song, clip)))
+            .filter(|(song, clip)| self.units[i].manual_follow_block.as_ref().is_none_or(|(s, c)| s != &song.id || c != &clip.id))
+            .map(|(_, clip)| clip);
+        let default = self.project.default_autofocus;
+        let autofocus = song.map_or(default, |song| song.autofocus_at(id, frame, default, cue.is_some()));
+        let unit = &mut self.units[i];
+
+        if let Some(playing) = &unit.live.follow {
+            if cue.is_none_or(|c| c.id != playing.clip) {
+                unit.cancel_follow(now, Some(frame.min(playing.end_frame)));
+            }
+        }
+        if let Some((since, hold)) = unit.live.follow_exit {
+            if unit.rig.follow_stop_pending() {
+                if now.saturating_duration_since(since) > FOLLOW_STOP_GRACE {
+                    return Err("The FR7 did not confirm that Auto Follow stopped".into());
+                }
+                let measured = unit.rig.pose();
+                *target = Pose { elevation: target.elevation, ..measured };
+                return Ok((HeadControl::Stopping, autofocus));
+            }
+            unit.live.follow_exit = None;
+            let measured = unit.rig.pose();
+            if let Some(at) = hold {
+                unit.live.follow_hold = Some(FollowHold { from: at, pose: measured, released: [false; 3] });
+            }
+            // Restart the head from fresh measurements; the pedestal is still following its own target.
+            let mut commanded = unit.live.commanded.unwrap_or(measured);
+            for axis in FRAMING_AXES.into_iter().chain([Axis::Focus]) {
+                commanded.set(axis, measured.get(axis));
+            }
+            unit.live.commanded = Some(commanded);
+            unit.live.history.clear();
+            unit.live.over_since = None;
+        }
+
+        if let Some(clip) = cue {
+            let ClipBody::AutoFollow { preset: Some(preset), detection } = &clip.body else {
+                return Err("Drop a preset onto this Auto Follow clip".into());
+            };
+            let status = unit.rig.follow_status();
+            match &status {
+                Some(AutoFollowStatus::Unsupported) => return Err("This FR7 does not report Auto Follow support".into()),
+                Some(AutoFollowStatus::Failed(why)) if unit.live.follow.as_ref().is_some_and(|cue| cue.requested.is_some()) => {
+                    return Err(why.clone());
+                }
+                None if !unit.rig.is_simulator() => return Err("Auto Follow requires an FR7 on this camera".into()),
+                _ => {}
+            }
+            unit.live.follow_hold = None;
+            let playback = unit.live.follow.get_or_insert_with(|| FollowPlayback {
+                clip: clip.id.clone(),
+                settled: None,
+                end_frame: clip.end_frame(),
+                requested: None,
+            });
+            playback.end_frame = clip.end_frame();
+            let reading = unit.rig.reading();
+            let measured = reading.pose;
+            let camera = &self.project.cameras[i];
+            let owned_axes = FRAMING_AXES.into_iter().chain((!autofocus).then_some(Axis::Focus));
+            if let Some(request) = playback.requested {
+                if FRAMING_AXES.iter().any(|axis| now.saturating_duration_since(reading.at[axis.index()]) > FEEDBACK_GRACE) {
+                    return Err("The FR7 stopped reporting its framing during Auto Follow".into());
+                }
+                *target = Pose { elevation: target.elevation, ..measured };
+                return Ok((HeadControl::Follow(request), request.autofocus));
+            }
+
+            *target = Pose { elevation: target.elevation, ..preset.pose };
+            let close = owned_axes.into_iter().all(|axis| {
+                (measured.get(axis) - target.get(axis)).abs() <= camera.rig.tolerance.get(axis) * 0.25
+                    && now.saturating_duration_since(reading.at[axis.index()]) < FEEDBACK_GRACE
+            });
+            if !close || unit.rig.follow_stop_pending() {
+                playback.settled = None;
+            } else {
+                let since = *playback.settled.get_or_insert(now);
+                if now.saturating_duration_since(since) >= Duration::from_millis(150) {
+                    let request = FollowRequest { detection: *detection, composition: camera.follow_composition, autofocus };
+                    playback.requested = Some(request);
+                    *target = Pose { elevation: target.elevation, ..measured };
+                    return Ok((HeadControl::Follow(request), autofocus));
+                }
+            }
+            return Ok((HeadControl::Approach, autofocus));
+        }
+
+        let mut rebased = false;
+        if let Some(hold) = &mut unit.live.follow_hold {
+            for (axis, released) in FRAMING_AXES.into_iter().zip(hold.released.iter_mut()) {
+                let next = song.and_then(|song| {
+                    song.motion
+                        .iter()
+                        .filter(|c| c.camera == unit.id && c.has_axis(axis) && c.start_frame >= hold.from)
+                        .min_by_key(|c| c.start_frame)
+                });
+                let from = hold.pose.get(axis);
+                let Some(next) = next.filter(|c| c.start_frame <= frame) else {
+                    target.set(axis, from);
+                    continue;
+                };
+                if !*released {
+                    *released = true;
+                    unit.catching_up = true;
+                    unit.live.rejoin_feedback = None;
+                }
+                // Linked moves take their starting position from the shot Auto Follow actually left.
+                // Pinned moves and recorded paths retain their programmed coordinates.
+                if frame < next.end_frame() {
+                    if let ClipBody::PresetMove { from: FromPose::Linked(_), to, ease, .. } = &next.body {
+                        let share = (self.frame_f - next.start_frame as f64) / next.duration_frames as f64;
+                        target.set(axis, from + (to.pose.get(axis) - from) * ease_value(*ease, share));
+                        rebased = true;
+                    }
+                }
+            }
+        }
+        Ok((if rebased { HeadControl::Approach } else { HeadControl::Timeline }, autofocus))
     }
 
     fn recover_camera(&mut self, i: usize) {
@@ -2478,10 +2705,10 @@ impl Show {
     }
 
     /// One turn of the live loop for one camera: check the target, send it, compare the rig with it.
-    fn tick_live(&mut self, i: usize, now: Instant, dt: f64, target: Pose) -> Step {
+    fn tick_live(&mut self, i: usize, now: Instant, dt: f64, target: Pose, head: HeadControl, autofocus: bool) -> Step {
         // A column the song has no elevation for is at its target wherever it stands.
         let column = !self.column_stays(i);
-        if self.wait_for_stop(i, column, now) {
+        if !head.independent() && self.wait_for_stop(i, column, now) {
             return Step::Travelling;
         }
         let target = if column { target } else { Pose { elevation: self.units[i].rig.pose().elevation, ..target } };
@@ -2496,12 +2723,23 @@ impl Show {
         let scale = if positioning || (catching_up && stopped) { camera.rig.positioning_speed.clamp(0.01, 1.0) } else { 1.0 };
         let (speeds, limits) = (camera.axes, self.project.limits_of(camera));
         let (tol, window) = (camera.rig.tolerance, Duration::from_millis(camera.rig.tracking_window_ms));
-        let before = self.units[i].live.commanded.unwrap_or_else(|| self.units[i].rig.pose());
+        let checked = |a: Axis| match a {
+            Axis::Elevation => column,
+            Axis::Focus => !autofocus && !head.independent(),
+            _ => !head.independent(),
+        };
+        let measured = self.units[i].rig.pose();
+        let mut before = self.units[i].live.commanded.unwrap_or(measured);
+        if self.units[i].live.autofocus != autofocus {
+            self.units[i].live.autofocus = autofocus;
+            self.units[i].live.over_since = None;
+            before.focus = measured.focus;
+        }
         // The rig is told to be where the timeline is, no faster than each axis can go. A move
         // someone accepted as too fast therefore lags by design instead of tripping a fault.
         let next = Pose::from_fn(|a| {
-            if a == Axis::Elevation && !column {
-                return target.elevation;
+            if !checked(a) {
+                return measured.get(a);
             }
             let step = speeds.get(a).max_speed * scale * dt;
             before.get(a) + (target.get(a) - before.get(a)).clamp(-step, step)
@@ -2532,9 +2770,14 @@ impl Show {
             return Step::Faulted;
         }
         let velocity = if dt > 1e-6 { Pose::from_fn(|a| (next.get(a) - before.get(a)) / dt) } else { Pose::default() };
-        let ride = if catching_up { None } else { self.ride(i) };
+        let ride = if catching_up || !matches!(head, HeadControl::Timeline) { None } else { self.ride(i) };
         let unit = &mut self.units[i];
-        unit.rig.drive(&Drive { target: next, velocity, scale, ride, column });
+        let cmd = Drive { target: next, velocity, scale, ride, column, autofocus };
+        match head {
+            HeadControl::Follow(request) => unit.rig.drive_follow(&cmd, request),
+            HeadControl::Stopping => unit.rig.drive_column(&cmd),
+            _ => unit.rig.drive(&cmd),
+        }
         unit.live.commanded = Some(next);
         unit.live.history.push_back((now, next));
         while unit.live.history.front().is_some_and(|(at, _)| now.duration_since(*at) > Duration::from_secs(1)) {
@@ -2544,13 +2787,19 @@ impl Show {
         let reading = unit.rig.reading();
         // Each axis against what was asked of it at the moment it was read.
         let error = Pose::from_fn(|a| {
+            if !checked(a) {
+                return 0.0;
+            }
             let asked = unit.live.commanded_at(reading.at[a.index()]).unwrap_or(next);
             reading.pose.get(a) - asked.get(a)
         });
         unit.live.error = error;
         if positioning {
             unit.live.over_since = None;
-            let there = Axis::ALL.iter().all(|a| (reading.pose.get(*a) - target.get(*a)).abs() <= tol.get(*a) * 0.25);
+            let there = Axis::ALL
+                .into_iter()
+                .filter(|&a| checked(a))
+                .all(|a| (reading.pose.get(a) - target.get(a)).abs() <= tol.get(a) * 0.25);
             if there {
                 unit.live.positioning = None;
                 unit.live.late = false;
@@ -2559,8 +2808,9 @@ impl Show {
             let moved = unit.live.positioning.is_none_or(|(to, _)| to != target && stopped);
             if moved {
                 let travel = Axis::ALL
-                    .iter()
-                    .map(|a| (target.get(*a) - reading.pose.get(*a)).abs() / (speeds.get(*a).max_speed * scale).max(1e-9))
+                    .into_iter()
+                    .filter(|&a| checked(a))
+                    .map(|a| (target.get(a) - reading.pose.get(a)).abs() / (speeds.get(a).max_speed * scale).max(1e-9))
                     .fold(0.0, f64::max);
                 unit.live.positioning = Some((target, now + Duration::from_secs_f64(travel * 1.5) + POSITIONING_GRACE));
                 unit.live.late = false;
@@ -2582,11 +2832,11 @@ impl Show {
         }
         unit.live.positioning = None;
         if catching_up {
-            let there = Axis::ALL.into_iter().all(|a| {
+            let there = Axis::ALL.into_iter().filter(|&a| checked(a)).all(|a| {
                 (reading.pose.get(a) - target.get(a)).abs() <= tol.get(a) && (next.get(a) - target.get(a)).abs() <= tol.get(a)
             });
             let feedback = unit.live.rejoin_feedback.get_or_insert_with(|| RejoinFeedback::new(now));
-            match feedback.observe(&reading, error, tol, now, window.max(Duration::from_secs(1)), column) {
+            match feedback.observe(&reading, error, tol, now, window.max(Duration::from_secs(1)), checked) {
                 Ok(true) if there => {
                     unit.catching_up = false;
                     unit.live.rejoin_feedback = None;
@@ -2601,10 +2851,10 @@ impl Show {
             return Step::Tracking;
         }
         // While the head runs a move by its own ramp, pan and tilt are not expected to match the curve.
-        let checked = |a: &Axis| ride.is_none() || !matches!(a, Axis::Pan | Axis::Tilt);
+        let tracked = |a: &Axis| checked(*a) && (ride.is_none() || !matches!(a, Axis::Pan | Axis::Tilt));
         let worst = Axis::ALL
             .into_iter()
-            .filter(checked)
+            .filter(tracked)
             .map(|a| (a, error.get(a).abs() / tol.get(a).max(1e-9)))
             .filter(|(_, share)| *share > 1.0 && !carry_on)
             .max_by(|a, b| a.1.total_cmp(&b.1));
@@ -3250,9 +3500,14 @@ impl Show {
             self.camera_fault(i, CameraFailure::Device, problem.clone());
             return Err(Fail::refused(problem));
         }
+        let interrupted = self.entry().and_then(|entry| {
+            let song = &entry.song;
+            song.auto_follow_at(&self.units[i].id, self.frame_f.floor() as i64).map(|clip| (song.id.clone(), clip.id.clone()))
+        });
         let unit = &mut self.units[i];
         let taking_over = unit.jog_deadline.is_none();
         if taking_over && live {
+            unit.manual_follow_block = interrupted;
             unit.interrupt_automation();
             unit.catching_up = false;
         }
@@ -3488,6 +3743,14 @@ impl Show {
                     preset_sync: unit.rig.preset_sync_progress(),
                     hardware: !unit.rig.is_simulator(),
                     adapters: unit.rig.status(),
+                    auto_follow: unit.rig.follow_status().map(|status| {
+                        if unit.live.follow.is_some() && matches!(status, AutoFollowStatus::Ready | AutoFollowStatus::NeedsSetup)
+                        {
+                            AutoFollowStatus::Starting
+                        } else {
+                            status
+                        }
+                    }),
                 }
             })
             .collect();
@@ -3683,7 +3946,7 @@ mod tests {
             let now = start + Duration::from_millis(ms);
             let reading = crate::rig::PoseReading::all_at(Pose { pan, ..Pose::home() }, now);
             let lag = Pose { pan: pan - target, ..Pose::default() };
-            feedback.observe(&reading, lag, Pose::from_fn(|_| 2.0), now, Duration::from_secs(1), true)
+            feedback.observe(&reading, lag, Pose::from_fn(|_| 2.0), now, Duration::from_secs(1), |_| true)
         };
         // 0.05 degrees/s, well below a quarter of the two-degree tracking tolerance per second.
         for n in 0..=8 {
@@ -3704,7 +3967,9 @@ mod tests {
         let mut feedback = RejoinFeedback::new(start);
         let mut reading = crate::rig::PoseReading::all_at(Pose::home(), start - Duration::from_millis(50));
         let mut check = |reading: &crate::rig::PoseReading, now, column| {
-            feedback.observe(reading, Pose::default(), Pose::from_fn(|_| 2.0), now, Duration::from_secs(1), column)
+            feedback.observe(reading, Pose::default(), Pose::from_fn(|_| 2.0), now, Duration::from_secs(1), |a| {
+                a != Axis::Elevation || column
+            })
         };
         assert_eq!(check(&reading, start, true), Ok(false));
         reading.at = [start; 5];

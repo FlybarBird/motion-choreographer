@@ -561,9 +561,13 @@ Read this part through once before you connect anything.
 - **Arm, Cue and a click on the ruler move the rig.** While armed and stopped,
   moving the playhead (or a jump in the timecode the show is locked to) sends
   every camera to the pose there.
-- **Going live switches the FR7's focus to manual**, so the timeline can drive
-  it. Nothing switches it back afterwards; set it at the camera if you want
-  autofocus again.
+- **Set the FR7's focus mode before going live.** Show Settings defaults to
+  manual focus. Override it on a preset, in the Inspector, or with a timed
+  Autofocus clip.
+- **Check Auto Follow on the connected FR7.** Its readiness and tracking
+  composition are under **Show Settings → Cameras → Auto Follow**. For a camera
+  position where autonomous tracking can move the head, configure the FR7's own
+  pan and tilt travel limits before rolling an Auto Follow clip.
 - **A camera with no AutoPod+ address runs without a pedestal.** If **Drives**
   is FR7 and AutoPod+ and the AutoPod+ address is empty, only the head is
   driven and the elevation is taken to be whatever the timeline says.

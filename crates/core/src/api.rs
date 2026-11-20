@@ -142,6 +142,34 @@ pub struct Telemetry {
     pub hardware: bool,
 }
 
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoFollowStatus {
+    Checking,
+    Unsupported,
+    NeedsSetup,
+    Ready,
+    Starting,
+    Active,
+    Stopping,
+    Failed(String),
+}
+
+impl AutoFollowStatus {
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Checking => "Checking FR7 Auto Follow",
+            Self::Unsupported => "FR7 Auto Follow is unavailable",
+            Self::NeedsSetup => "The first Auto Follow clip will configure the FR7",
+            Self::Ready => "FR7 Auto Follow ready",
+            Self::Starting => "Starting FR7 Auto Follow",
+            Self::Active => "FR7 Auto Follow active",
+            Self::Stopping => "Confirming FR7 Auto Follow stopped",
+            Self::Failed(why) => why,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
 #[serde(default)]
 pub struct CameraStatus {
@@ -171,6 +199,7 @@ pub struct CameraStatus {
     /// Real hardware, not the simulator.
     pub hardware: bool,
     pub adapters: Vec<AdapterStatus>,
+    pub auto_follow: Option<AutoFollowStatus>,
 }
 
 fn camera_armed_by_default() -> bool {
@@ -582,6 +611,9 @@ pub struct UpdatePreset {
     /// Only the column height, in millimetres; the rest of the pose stays as it is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub elevation: Option<f64>,
+    /// Update the focus setting without capturing the camera pose.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub autofocus: Option<crate::framing::FocusMode>,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]

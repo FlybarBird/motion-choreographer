@@ -647,3 +647,165 @@ fn with_absolute_moves_a_preset_move_is_one_command_and_the_other_axes_still_tra
     assert!(close(&rig.pose(), &mark.pose, &tol, 0.5), "ended at {:?}", rig.pose());
     do_act(&api, Action::Disarm);
 }
+
+#[test]
+fn auto_follow_uses_the_preset_search_frame_and_holds_where_tracking_stops() {
+    use ptz_core::framing::{DetectionArea, FocusMode, LeadRoom};
+    use ptz_core::song::{ClipBody, PresetRef};
+
+    let t = TestServer::start("auto-follow");
+    let api = t.client("a");
+    api.take_lease("Operator", false).unwrap();
+    let rig = Rig::start();
+    let mut project = rig.connect(&api);
+    project.cameras[0].follow_composition.horizontal = -12;
+    project.cameras[0].follow_composition.lead_room = LeadRoom::Medium;
+    let project = api.put_project(&project).unwrap();
+
+    let start = store(&api, "Stage entrance", Pose { pan: 4.0, tilt: 1.0, zoom: 0.08, ..Pose::home() });
+    let start: Preset = api
+        .put(&format!("/presets/{}", start.id), &UpdatePreset { autofocus: Some(FocusMode::On), ..Default::default() })
+        .unwrap();
+    assert_eq!(start.pose.pan, 4.0, "editing autofocus must not capture the current pose");
+
+    let created = api.new_song("Auto Follow", None).unwrap();
+    let id = created.song.id.clone();
+    api.load_song(&id).unwrap();
+    let detection = DetectionArea { left: 500, top: 1000, width: 7000, height: 7000 };
+    let (song, cue) = edit::insert_camera_control(
+        &created.song,
+        &project,
+        CAM,
+        15,
+        ClipBody::AutoFollow { preset: Some(PresetRef::of(&start)), detection },
+    )
+    .unwrap();
+    let end = song.motion_clip(&cue).unwrap().end_frame();
+    let next = store(&api, "Next shot", Pose { pan: 12.0, tilt: 3.0, zoom: 0.12, ..Pose::home() });
+    let (song, next_move) = edit::insert_preset_move(&song, &project, &next, end + 25).unwrap();
+    let next_end = song.motion_clip(&next_move).unwrap().end_frame();
+    api.put_working(&PutWorking { expected_counter: 0, song }).unwrap();
+    api.save(&id).unwrap();
+    api.commit(&id).unwrap();
+
+    do_act(&api, Action::Arm);
+    wait_for(&api, |s| s.transport.output == Output::Armed);
+    assert!(!rig.fr7.framing_enabled());
+    do_act(&api, Action::Play);
+    let tracking = wait_for(&api, |s| s.first().auto_follow == Some(AutoFollowStatus::Active) || s.telemetry.fault.is_some());
+    assert_eq!(tracking.first().auto_follow, Some(AutoFollowStatus::Active), "{tracking:?}");
+    assert!(tracking.frame < end);
+    assert!(rig.fr7.autofocus_enabled());
+
+    let (pan, tilt, zoom) = rig.fr7.framing_start().expect("the FR7 saved its measured framing");
+    assert!((pan - 4.0).abs() < 0.8 && (tilt - 1.0).abs() < 0.8 && (zoom - 0.08).abs() < 0.02, "{pan} {tilt} {zoom}");
+    let requests = rig.fr7.web_requests();
+    let index = |query: &str| requests.iter().position(|r| r.contains(query)).unwrap();
+    assert!(index("PtzAutoFramingTriggerType=auto") < index("PtzAutoFramingDecideStartPosition=on"));
+    assert!(index("PtzAutoFramingDecideStartPosition=on") < index("PtzAutoFramingDetectionArea=500,1000,7000,7000"));
+    assert!(index("PtzAutoFramingAdjustSetting=0,-12,1200") < index("PtzAutoFraming=on"));
+    assert!(index("PtzAutoFramingLeadRoomLevel=middle") < index("PtzAutoFraming=on"));
+
+    // Pretend the FR7 tracked a person across the stage while autofocus changed the lens distance.
+    rig.fr7.clear_seen();
+    rig.fr7.place(9.0, 2.0, 0.1, 0.65);
+    let during = wait_for(&api, |s| s.first().rig_pose.pan > 8.5);
+    assert_eq!(during.first().auto_follow, Some(AutoFollowStatus::Active));
+    assert!(rig.fr7.commands().is_empty(), "there are only VISCA inquiries while the FR7 owns the head");
+
+    let held = wait_for(&api, |s| s.frame >= end + 10);
+    assert_eq!(held.first().auto_follow, Some(AutoFollowStatus::Ready));
+    assert!(!rig.fr7.framing_enabled());
+    assert!(!rig.fr7.autofocus_enabled(), "the show default resumes after the follow preset");
+    assert!((rig.fr7.pose().0 - 9.0).abs() < 0.5, "the FR7 holds the last followed shot");
+    assert!(held.telemetry.fault.is_none(), "{held:?}");
+
+    let after = wait_for(&api, |s| {
+        assert!(s.first().rig_pose.pan > 8.5, "the next linked shot starts at the held framing");
+        s.frame >= next_end && (s.first().rig_pose.pan - 12.0).abs() < 1.0
+    });
+    assert!(after.telemetry.fault.is_none(), "{after:?}");
+
+    do_act(&api, Action::Stop);
+    seek(&api, 0);
+    wait_for(&api, |s| s.transport.output == Output::Armed);
+    do_act(&api, Action::Play);
+    wait_for(&api, |s| s.first().auto_follow == Some(AutoFollowStatus::Active));
+    do_act(&api, Action::Estop);
+    wait_for(&api, |s| !s.first().halting);
+    assert!(!rig.fr7.framing_enabled(), "E-Stop also switches off camera-owned tracking");
+}
+
+#[test]
+fn auto_follow_never_starts_after_a_clip_expires_while_positioning() {
+    use ptz_core::song::{ClipBody, PresetRef};
+
+    let t = TestServer::start("expired-auto-follow");
+    let api = t.client("a");
+    api.take_lease("Operator", false).unwrap();
+    let rig = Rig::start();
+    let project = rig.connect(&api);
+    let start = store(&api, "Far side", Pose { pan: 32.0, ..Pose::home() });
+    let created = api.new_song("Brief Auto Follow", None).unwrap();
+    let id = created.song.id.clone();
+    api.load_song(&id).unwrap();
+    let (song, cue) = edit::insert_camera_control(
+        &created.song,
+        &project,
+        CAM,
+        15,
+        ClipBody::AutoFollow { preset: Some(PresetRef::of(&start)), detection: Default::default() },
+    )
+    .unwrap();
+    let song = edit::trim_clip_end(&song, &project, &cue, 17).unwrap();
+    api.put_working(&PutWorking { expected_counter: 0, song }).unwrap();
+    api.save(&id).unwrap();
+    api.commit(&id).unwrap();
+
+    do_act(&api, Action::Arm);
+    wait_for(&api, |s| s.transport.output == Output::Armed);
+    do_act(&api, Action::Play);
+    wait_for(&api, |s| s.frame > 40);
+    assert!(!rig.fr7.framing_enabled());
+    assert!(rig.fr7.web_requests().iter().all(|r| !r.contains("PtzAutoFraming=on")));
+}
+
+#[test]
+fn a_timed_autofocus_clip_yields_focus_to_the_fr7_then_restores_programmed_focus() {
+    use ptz_core::song::ClipBody;
+
+    let t = TestServer::start("timed-autofocus");
+    let api = t.client("a");
+    api.take_lease("Operator", false).unwrap();
+    let rig = Rig::start();
+    let project = rig.connect(&api);
+    let manual = store(&api, "Manual focus", Pose { focus: 0.55, ..Pose::home() });
+    let created = api.new_song("Focus", None).unwrap();
+    let id = created.song.id.clone();
+    api.load_song(&id).unwrap();
+    let (song, movement) = edit::insert_preset_move(&created.song, &project, &manual, 0).unwrap();
+    let song = edit::set_axes(&song, &project, &movement, &[Axis::Focus]).unwrap();
+    let start = song.motion_clip(&movement).unwrap().end_frame() + 10;
+    let (song, clip) = edit::insert_camera_control(&song, &project, CAM, start, ClipBody::Autofocus { enabled: true }).unwrap();
+    let end = song.motion_clip(&clip).unwrap().end_frame();
+    api.put_working(&PutWorking { expected_counter: 0, song }).unwrap();
+    api.save(&id).unwrap();
+    api.commit(&id).unwrap();
+
+    do_act(&api, Action::Arm);
+    wait_for(&api, |s| s.transport.output == Output::Armed);
+    assert!(!rig.fr7.autofocus_enabled());
+    do_act(&api, Action::Play);
+    wait_for(&api, |_| rig.fr7.autofocus_enabled());
+    rig.fr7.clear_seen();
+    rig.fr7.place(0.0, 0.0, 0.0, 0.75);
+
+    let focused = wait_for(&api, |s| s.frame >= start + 25);
+    assert!(focused.frame < end && focused.first().fault.is_none(), "{focused:?}");
+    assert_eq!(focused.first().error.focus, 0.0);
+    assert!(rig.fr7.commands().iter().all(|c| !matches!(visca::parse_command(c), Some(visca::Command::FocusDirect(_)))));
+
+    let manual =
+        wait_for(&api, |s| s.frame >= end && !rig.fr7.autofocus_enabled() && (s.first().rig_pose.focus - 0.55).abs() < 0.02);
+    assert!(manual.first().fault.is_none(), "{manual:?}");
+}

@@ -46,6 +46,11 @@ pub enum Issue {
         frame: i64,
         rule: String,
     },
+    AutoFollow {
+        clip: String,
+        frame: i64,
+        reason: String,
+    },
     /// The clip moves a camera the project no longer has.
     MissingCamera {
         clip: String,
@@ -60,7 +65,8 @@ impl Issue {
             Issue::TooFast { clip, .. }
             | Issue::TooMuchAcceleration { clip, .. }
             | Issue::Jump { clip, .. }
-            | Issue::MissingCamera { clip, .. } => Some(clip),
+            | Issue::MissingCamera { clip, .. }
+            | Issue::AutoFollow { clip, .. } => Some(clip),
             Issue::OutOfRange { clip, .. } => clip.as_deref(),
             Issue::KeepOut { .. } => None,
         }
@@ -73,7 +79,8 @@ impl Issue {
             | Issue::OutOfRange { frame, .. }
             | Issue::Jump { frame, .. }
             | Issue::KeepOut { frame, .. }
-            | Issue::MissingCamera { frame, .. } => *frame,
+            | Issue::MissingCamera { frame, .. }
+            | Issue::AutoFollow { frame, .. } => *frame,
         }
     }
 
@@ -81,7 +88,10 @@ impl Issue {
     pub fn camera<'a>(&'a self, song: &'a Song) -> &'a str {
         match self {
             Issue::OutOfRange { camera, .. } | Issue::KeepOut { camera, .. } | Issue::MissingCamera { camera, .. } => camera,
-            Issue::TooFast { clip, .. } | Issue::TooMuchAcceleration { clip, .. } | Issue::Jump { clip, .. } => {
+            Issue::TooFast { clip, .. }
+            | Issue::TooMuchAcceleration { clip, .. }
+            | Issue::Jump { clip, .. }
+            | Issue::AutoFollow { clip, .. } => {
                 song.motion_clip(clip).map(|c| c.camera.as_str()).unwrap_or(crate::camera::FIRST_CAMERA)
             }
         }
@@ -114,6 +124,7 @@ impl Issue {
                 format!("{} steps by {} at the start of this move", axis.label(), say(axis, distance))
             }
             Issue::KeepOut { rule, .. } => format!("Keep-out rule broken: {rule}"),
+            Issue::AutoFollow { reason, .. } => reason.clone(),
             Issue::MissingCamera { .. } => "This move is for a camera that is no longer in the project".into(),
         }
     }
@@ -163,6 +174,36 @@ pub fn compile(song: &Song, project: &Project) -> Compiled {
     }
     for c in song.motion.iter().filter(|c| project.camera(&c.camera).is_none()) {
         out.issues.push(Issue::MissingCamera { clip: c.id.clone(), camera: c.camera.clone(), frame: c.start_frame });
+    }
+    for c in &song.motion {
+        let ClipBody::AutoFollow { preset, .. } = &c.body else { continue };
+        let Some(cam) = project.camera(&c.camera) else { continue };
+        let mut add =
+            |reason: &str| out.issues.push(Issue::AutoFollow { clip: c.id.clone(), frame: c.start_frame, reason: reason.into() });
+        let Some(preset) = preset else {
+            add("Drop a preset onto this Auto Follow clip");
+            continue;
+        };
+        if !preset.pose.is_finite()
+            || [Axis::Pan, Axis::Tilt, Axis::Zoom, Axis::Focus].into_iter().any(|a| {
+                let limits = project.limits_of(cam);
+                let value = preset.pose.get(a);
+                !(limits.get(a).min..=limits.get(a).max).contains(&value)
+            })
+        {
+            add("The Auto Follow preset is outside the camera limits");
+        }
+        let effective = |f| song.autofocus_at(&c.camera, f, project.default_autofocus, true);
+        let start_focus = effective(c.start_frame);
+        let change = song
+            .motion
+            .iter()
+            .filter(|other| other.camera == c.camera && matches!(other.body, ClipBody::Autofocus { .. }))
+            .flat_map(|other| [other.start_frame, other.end_frame()])
+            .any(|frame| frame > c.start_frame && frame < c.end_frame() && effective(frame) != start_focus);
+        if change {
+            add("Autofocus must stay in one mode throughout Auto Follow");
+        }
     }
     out.issues.sort_by_key(|i| i.frame());
     out
@@ -386,7 +427,7 @@ pub fn refresh_auto(song: &mut Song, project: &Project) {
                 o.id != clip.id
                     && o.camera == clip.camera
                     && o.start_frame >= clip.start_frame
-                    && o.axes.iter().any(|a| clip.has_axis(*a))
+                    && (o.axes.iter().any(|a| clip.has_axis(*a)) || (o.is_auto_follow() && clip.drives_head()))
             })
             .map(|o| o.start_frame - clip.start_frame)
             .min()
@@ -435,7 +476,12 @@ mod tests {
             body: ClipBody::PresetMove {
                 auto_duration: auto,
                 from: FromPose::Linked(LinkedTag::Linked),
-                to: PresetRef { preset_id: "p".into(), name: "P".into(), pose: Pose { pan, ..Pose::home() } },
+                to: PresetRef {
+                    preset_id: "p".into(),
+                    name: "P".into(),
+                    pose: Pose { pan, ..Pose::home() },
+                    ..Default::default()
+                },
                 ease: Ease::EaseInOut,
             },
             accepted: None,
@@ -517,7 +563,7 @@ mod tests {
                             body: ClipBody::PresetMove {
                                 auto_duration: true,
                                 from: FromPose::linked(),
-                                to: PresetRef { preset_id: "pole".into(), name: "Pole".into(), pose: to },
+                                to: PresetRef { preset_id: "pole".into(), name: "Pole".into(), pose: to, ..Default::default() },
                                 ease,
                             },
                             accepted: None,
@@ -568,8 +614,12 @@ mod tests {
         let mut song = Song::new("s", "S", "01:00:00:00", 500);
         let mut pinned = pan_move(50, 200, 30.0, false);
         if let ClipBody::PresetMove { from, .. } = &mut pinned.body {
-            *from =
-                FromPose::Pinned(PresetRef { preset_id: "x".into(), name: "X".into(), pose: Pose { pan: 15.0, ..Pose::home() } });
+            *from = FromPose::Pinned(PresetRef {
+                preset_id: "x".into(),
+                name: "X".into(),
+                pose: Pose { pan: 15.0, ..Pose::home() },
+                ..Default::default()
+            });
         }
         song.motion.push(pinned);
         let c = compile(&song, &p);
@@ -748,8 +798,12 @@ mod tests {
 
         // A move from the song's home height of zero up to a mark arms as it always did.
         let mut song = Song::new("s", "S", "01:00:00:00", 500);
-        let to =
-            PresetRef { preset_id: "p".into(), name: "P".into(), pose: Pose { pan: 30.0, elevation: 160.0, ..Pose::home() } };
+        let to = PresetRef {
+            preset_id: "p".into(),
+            name: "P".into(),
+            pose: Pose { pan: 30.0, elevation: 160.0, ..Pose::home() },
+            ..Default::default()
+        };
         let mut rise = pan_move(10, 300, 30.0, false);
         rise.axes = Axis::ALL.to_vec();
         if let ClipBody::PresetMove { to: mark, .. } = &mut rise.body {

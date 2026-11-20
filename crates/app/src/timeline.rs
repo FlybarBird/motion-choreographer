@@ -136,6 +136,8 @@ impl View {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ClipKind {
+    Autofocus,
+    AutoFollow,
     Move,
     Keys,
     Audio,
@@ -310,7 +312,12 @@ pub fn layout(song: &Song, project: &Project, view: &View, rect: Rect) -> Layout
         let Some(lr) = out.lane_rect(lane) else { continue };
         let row_count = row_ends.get(&lane).map(|r| r.len()).unwrap_or(1).max(1);
         let rect = span(&out, lr, c.start_frame, c.end_frame(), rows[*i], row_count);
-        let kind = if c.is_keys() { ClipKind::Keys } else { ClipKind::Move };
+        let kind = match c.body {
+            ClipBody::Autofocus { .. } => ClipKind::Autofocus,
+            ClipBody::AutoFollow { .. } => ClipKind::AutoFollow,
+            ClipBody::Keys { .. } => ClipKind::Keys,
+            ClipBody::PresetMove { .. } => ClipKind::Move,
+        };
         out.clips.push(ClipBox { id: c.id.clone(), lane, kind, rect, start: c.start_frame, end: c.end_frame() });
     }
     {
@@ -569,21 +576,26 @@ pub fn move_label(song: &Song, clip_id: &str, project: &Project) -> String {
         ClipBody::PresetMove { from, to, .. } => {
             let from_name = match from {
                 ptz_core::song::FromPose::Pinned(p) => Some(p.name.clone()),
-                ptz_core::song::FromPose::Linked(_) => {
-                    song.motion.iter().filter(|c| c.end_frame() <= clip.start_frame).max_by_key(|c| c.end_frame()).and_then(|c| {
-                        match &c.body {
-                            ClipBody::PresetMove { to, .. } => Some(to.name.clone()),
-                            _ => None,
-                        }
+                ptz_core::song::FromPose::Linked(_) => song
+                    .motion
+                    .iter()
+                    .filter(|c| {
+                        c.camera == clip.camera
+                            && !matches!(c.body, ClipBody::Autofocus { .. })
+                            && c.end_frame() <= clip.start_frame
                     })
-                }
+                    .max_by_key(|c| c.end_frame())
+                    .and_then(|c| match &c.body {
+                        ClipBody::PresetMove { to, .. } => Some(to.name.clone()),
+                        _ => None,
+                    }),
             };
             match from_name {
                 Some(f) => format!("{f} to {}, {}", to.name, secs_text(clip.duration_frames, project)),
                 None => format!("To {}, {}", to.name, secs_text(clip.duration_frames, project)),
             }
         }
-        ClipBody::Keys { .. } => format!("{}, {}", clip.label(), secs_text(clip.duration_frames, project)),
+        _ => format!("{}, {}", clip.label(), secs_text(clip.duration_frames, project)),
     }
 }
 
@@ -723,7 +735,7 @@ impl Timeline {
         }
     }
 
-    fn select_only(&mut self, id: &str) {
+    pub(super) fn select_only(&mut self, id: &str) {
         self.selection.clear();
         self.selection.insert(id.to_string());
     }
@@ -911,15 +923,19 @@ impl Timeline {
     /// there replaces where that move goes instead of inserting over it.
     fn clip_under_preset<'a>(layout: &Layout, doc: &'a Doc, preset: &Preset, pos: Pos2, frame: i64) -> Option<&'a MotionClip> {
         let pointed = match hit(layout, pos) {
-            Hit::ClipBody { id } | Hit::ClipStart { id } | Hit::ClipEnd { id } | Hit::Key { clip: id, .. } => {
-                doc.song.motion_clip(&id).filter(|c| c.camera == preset.camera)
-            }
+            Hit::ClipBody { id } | Hit::ClipStart { id } | Hit::ClipEnd { id } | Hit::Key { clip: id, .. } => doc
+                .song
+                .motion_clip(&id)
+                .filter(|c| matches!(c.body, ClipBody::AutoFollow { .. }) || (c.camera == preset.camera && !c.is_control())),
             _ => None,
         };
         if pointed.is_some() {
             return pointed;
         }
-        doc.song.motion.iter().find(|c| c.camera == preset.camera && c.start_frame <= frame && frame < c.end_frame())
+        doc.song
+            .motion
+            .iter()
+            .find(|c| c.camera == preset.camera && !c.is_control() && c.start_frame <= frame && frame < c.end_frame())
     }
 
     fn replace_ghost(preset: &Preset, clip: &MotionClip, lane: Lane) -> Ghost {
@@ -934,6 +950,8 @@ impl Timeline {
         }
         let old = match &clip.body {
             ClipBody::PresetMove { to, .. } => to.name.as_str(),
+            ClipBody::AutoFollow { preset: Some(to), .. } => to.name.as_str(),
+            ClipBody::AutoFollow { preset: None, .. } => "Auto Follow start position",
             _ => "this move",
         };
         Ghost {
@@ -965,7 +983,12 @@ impl Timeline {
         let lane = doc.project.camera_index(&preset.camera).map(Lane::Motion).unwrap_or(Lane::Missing);
         if let Some(clip) = Self::clip_under_preset(layout, doc, preset, pos, frame) {
             self.snap_frame = None;
-            return Some(Self::replace_ghost(preset, clip, lane));
+            let lane = doc.project.camera_index(&clip.camera).map_or(Lane::Missing, Lane::Motion);
+            let mut ghost = Self::replace_ghost(preset, clip, lane);
+            if clip.camera != preset.camera {
+                ghost.refusal = Some(edit::Refusal::OtherCamera.to_string());
+            }
+            return Some(ghost);
         }
         Some(match edit::drop_preview_timed(doc.song, doc.project, preset, frame, self.preset_duration.timing()) {
             Ok(p) => {
@@ -1018,6 +1041,37 @@ impl Timeline {
             }
             Err(r) => Outcome::Refused(r.to_string()),
         }
+    }
+
+    pub fn control_ghost(&mut self, layout: &Layout, doc: &Doc, body: &ClipBody, pos: Pos2, mods: Mods) -> Option<Ghost> {
+        let lane @ Lane::Motion(i) = layout.lane_at(pos.y)? else { return None };
+        if !layout.body.contains(pos) {
+            return None;
+        }
+        let mut frame = (layout.frame_at(pos.x).round() as i64).max(0);
+        self.snap_frame = None;
+        if !mods.shift {
+            if let Some(snapped) = Self::snap(frame, &self.snap_targets(doc, &[]), layout.px_per_frame) {
+                frame = snapped;
+                self.snap_frame = Some(frame);
+            }
+        }
+        let camera = &doc.project.cameras[i].id;
+        let edit = edit::insert_camera_control(doc.song, doc.project, camera, frame, body.clone());
+        let (label, duration, refusal) = match edit {
+            Ok((song, id)) => {
+                let clip = song.motion_clip(&id)?;
+                (clip.label(), clip.duration_frames, None)
+            }
+            Err(why) => ("Camera control".into(), doc.project.rate.nominal(), Some(why.to_string())),
+        };
+        Some(Ghost { lane, start: frame, duration, label, refusal })
+    }
+
+    pub fn select_new_control(&mut self, song: Box<Song>, id: String) -> Outcome {
+        self.select_only(&id);
+        self.key_selection.clear();
+        Outcome::Edit { song, select: Some(vec![id]) }
     }
 
     /// Where dragged media would land: on its own track, on its own timecode
@@ -1123,6 +1177,7 @@ mod tests {
             camera: ptz_core::camera::first_camera(),
             camera_number: None,
             has_thumbnail: false,
+            autofocus: Default::default(),
         };
         vec![
             p("wide", "Stage Wide", 0.0, 120.0),

@@ -98,6 +98,8 @@ pub struct CameraConfig {
     /// column height stay with the position and zoom. None keeps today's home.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_pose: Option<Pose>,
+    #[serde(skip_serializing_if = "crate::framing::FollowComposition::is_default")]
+    pub follow_composition: crate::framing::FollowComposition,
 }
 
 impl Default for CameraConfig {
@@ -135,6 +137,7 @@ impl CameraConfig {
             lens: Lens::default(),
             mount: Mount::default(),
             default_pose: None,
+            follow_composition: Default::default(),
         }
     }
 }

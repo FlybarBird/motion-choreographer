@@ -187,6 +187,7 @@ impl<'a> Evaluator<'a> {
                             kind: SegKind::Move(ease_keys(start, end, c.duration_frames, *ease)),
                         }
                     }
+                    ClipBody::Autofocus { .. } | ClipBody::AutoFollow { .. } => continue,
                     ClipBody::Keys { curves } => {
                         let keys = curves.get(&axis).map(|v| v.as_slice()).unwrap_or(&[]);
                         let end = keys.last().map(|k| k.value).unwrap_or(prev_end);

@@ -92,6 +92,14 @@ fn preset_menu(ui: &mut Ui, s: &mut Session, preset: &Preset) {
         s.link.send(Cmd::UpdatePreset(preset.id.clone(), Default::default()));
         ui.close();
     }
+    ui.horizontal(|ui| {
+        field(ui, "Autofocus");
+        let mut mode = Some(preset.autofocus);
+        if focus_combo(ui, "preset_focus", &mut mode, None, can) {
+            let request = ptz_core::api::UpdatePreset { autofocus: mode, ..Default::default() };
+            s.link.send(Cmd::UpdatePreset(preset.id.clone(), request));
+        }
+    });
     if let Some(camera) = s.project.camera(&preset.camera) {
         if s.project.measured_span(camera).is_some() {
             ui.separator();
@@ -122,7 +130,10 @@ fn height_slider(ui: &mut Ui, s: &mut Session, preset: &Preset, can: bool, no_le
         .on_disabled_hover_text(no_lease);
     if slider.changed() && (next - share).abs() > 0.05 {
         let mm = low + next / 100.0 * (high - low);
-        s.link.send(Cmd::UpdatePreset(preset.id.clone(), ptz_core::api::UpdatePreset { pose: None, elevation: Some(mm) }));
+        s.link.send(Cmd::UpdatePreset(
+            preset.id.clone(),
+            ptz_core::api::UpdatePreset { elevation: Some(mm), ..Default::default() },
+        ));
     }
 }
 
@@ -299,6 +310,122 @@ fn issue_rows(ui: &mut Ui, issues: &[Issue], units: Units) {
     }
 }
 
+fn focus_combo(
+    ui: &mut Ui,
+    id: &str,
+    value: &mut Option<ptz_core::framing::FocusMode>,
+    inherited: Option<&str>,
+    enabled: bool,
+) -> bool {
+    let before = *value;
+    ui.add_enabled_ui(enabled, |ui| {
+        egui::ComboBox::from_id_salt(id)
+            .selected_text(value.map_or(inherited.unwrap_or("Use Show Default"), |m| m.label()))
+            .show_ui(ui, |ui| {
+                if let Some(label) = inherited {
+                    ui.selectable_value(value, None, label);
+                }
+                for choice in ptz_core::framing::FocusMode::ALL {
+                    ui.selectable_value(value, Some(choice), choice.label());
+                }
+            });
+    });
+    before != *value
+}
+
+fn inspect_control(ui: &mut Ui, s: &mut Session, clip: &ptz_core::song::MotionClip, presets: &[Preset]) {
+    let id = clip.id.as_str();
+    let can = s.can_edit().is_ok();
+    egui::Grid::new("control_timing").num_columns(2).spacing([PAD, GAP]).show(ui, |ui| {
+        tc_row(ui, s, "Start", clip.start_frame);
+        tc_row(ui, s, "End", clip.end_frame());
+        field(ui, "Duration");
+        ui.label(format!("{:.2} s", clip.duration_frames as f64 / s.project.rate.fps()));
+        ui.end_row();
+    });
+    match &clip.body {
+        ClipBody::Autofocus { enabled } => {
+            let mut on = *enabled;
+            ui.add_enabled_ui(can, |ui| {
+                ui.horizontal(|ui| {
+                    field(ui, "Autofocus");
+                    ui.selectable_value(&mut on, true, "On");
+                    ui.selectable_value(&mut on, false, "Off");
+                });
+            });
+            if on != *enabled {
+                s.edit(|song, project| edit::set_control_body(song, project, id, ClipBody::Autofocus { enabled: on }));
+            }
+        }
+        ClipBody::AutoFollow { preset, detection } => {
+            ui.add_enabled_ui(can, |ui| {
+                ui.horizontal(|ui| {
+                    field(ui, "Start preset");
+                    egui::ComboBox::from_id_salt("follow_preset")
+                        .selected_text(preset.as_ref().map_or("Drop or choose a preset", |p| p.name.as_str()))
+                        .show_ui(ui, |ui| {
+                            for p in presets {
+                                let selected = preset.as_ref().is_some_and(|r| r.preset_id == p.id && r.pose == p.pose);
+                                if ui.selectable_label(selected, &p.name).clicked() && !selected {
+                                    s.edit(|song, project| edit::set_to(song, project, id, p));
+                                }
+                            }
+                        });
+                });
+            });
+            if let Some(preset) = preset {
+                ui.horizontal(|ui| {
+                    field(ui, "Autofocus");
+                    let mut mode = preset.focus_override;
+                    if focus_combo(ui, "follow_focus", &mut mode, Some("Use Preset Setting"), can) {
+                        s.edit(|song, project| edit::set_focus_override(song, project, id, mode));
+                    }
+                });
+            }
+            section(ui, "Detection area");
+            note(ui, "Percent of the start preset’s image");
+            let mut area = *detection;
+            ui.add_enabled_ui(can, |ui| {
+                let right = 10_000 - area.width;
+                let bottom = 10_000 - area.height;
+                let max_width = 10_000 - area.left;
+                let max_height = 10_000 - area.top;
+                egui::Grid::new("follow_detection").num_columns(2).spacing([PAD, GAP]).show(ui, |ui| {
+                    for (label, value, range) in [
+                        ("Width", &mut area.width, 1000..=max_width),
+                        ("Height", &mut area.height, 2000..=max_height),
+                        ("Left", &mut area.left, 0..=right),
+                        ("Top", &mut area.top, 0..=bottom),
+                    ] {
+                        field(ui, label);
+                        ui.add(
+                            egui::DragValue::new(value)
+                                .range(range)
+                                .suffix("%")
+                                .custom_formatter(|v, _| format!("{:.2}", v / 100.0))
+                                .custom_parser(|v| v.trim().parse::<f64>().ok().map(|v| v * 100.0)),
+                        );
+                        ui.end_row();
+                    }
+                });
+                if ui.button("Use full frame").clicked() {
+                    area = Default::default();
+                }
+            });
+            if area != *detection {
+                let preset = preset.clone();
+                s.edit(|song, project| {
+                    edit::set_control_body(song, project, id, ClipBody::AutoFollow { preset, detection: area })
+                });
+            }
+            if let Some(status) = s.status.camera(&clip.camera).and_then(|status| status.auto_follow.as_ref()) {
+                note(ui, status.label());
+            }
+        }
+        _ => {}
+    }
+}
+
 fn inspect_move(ui: &mut Ui, s: &mut Session, id: &str) {
     let Some(song) = s.song.clone() else { return };
     let Some(clip) = song.motion_clip(id).cloned() else { return };
@@ -364,6 +491,11 @@ fn inspect_move(ui: &mut Ui, s: &mut Session, id: &str) {
         }
     }
 
+    if clip.is_control() {
+        inspect_control(ui, s, &clip, &presets);
+        return;
+    }
+
     match &clip.body {
         ClipBody::PresetMove { auto_duration, from, to, ease } => {
             section(ui, "Preset move");
@@ -397,7 +529,19 @@ fn inspect_move(ui: &mut Ui, s: &mut Session, id: &str) {
                 ui.end_row();
 
                 // A move keeps its own copy of the pose, so a preset stored again later does not reach it by itself.
-                let newer = |r: &PresetRef| presets.iter().find(|p| p.id == r.preset_id && PresetRef::of(p) != *r).cloned();
+                field(ui, "Autofocus");
+                let mut mode = to.focus_override;
+                if focus_combo(ui, "move_focus", &mut mode, Some("Use Preset Setting"), s.can_edit().is_ok()) {
+                    s.edit(|song, project| edit::set_focus_override(song, project, id, mode));
+                }
+                ui.end_row();
+
+                let newer = |r: &PresetRef| {
+                    presets
+                        .iter()
+                        .find(|p| p.id == r.preset_id && (p.pose != r.pose || p.name != r.name || p.autofocus != r.autofocus))
+                        .cloned()
+                };
                 let stale_from = match from {
                     FromPose::Pinned(r) => newer(r),
                     FromPose::Linked(_) => None,
@@ -497,6 +641,7 @@ fn inspect_move(ui: &mut Ui, s: &mut Session, id: &str) {
                 ui.label(RichText::new(format!("Raw samples: {pass}")).small().color(MUTED));
             }
         }
+        ClipBody::Autofocus { .. } | ClipBody::AutoFollow { .. } => {}
     }
 
     section(ui, "Axes this move drives");

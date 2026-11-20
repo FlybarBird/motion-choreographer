@@ -238,7 +238,7 @@ fn the_rig_follows_a_moving_target_and_touches_nothing_until_it_is_driven() {
     loop {
         let t = began.elapsed().as_secs_f64();
         let (target, velocity) = eased(from, to, 4.0, t);
-        rig.drive(&Drive { target, velocity, scale: 1.0, ride: None, column: true });
+        rig.drive(&Drive { target, velocity, scale: 1.0, ride: None, column: true, autofocus: false });
         rig.tick(1.0 / 60.0, &axes);
         asked.push((Instant::now(), target));
         // Compare each reading with what was asked at the moment it was taken.
@@ -271,7 +271,7 @@ fn the_rig_follows_a_moving_target_and_touches_nothing_until_it_is_driven() {
     // Stop goes to every axis, more than once, until the rig reads as standing still.
     fr7.clear_seen();
     pod.clear_seen();
-    rig.drive(&Drive { target: from, velocity: Pose::default(), scale: 1.0, ride: None, column: true });
+    rig.drive(&Drive { target: from, velocity: Pose::default(), scale: 1.0, ride: None, column: true, autofocus: false });
     std::thread::sleep(Duration::from_millis(200));
     assert!(fr7.is_moving() && pod.is_moving());
     rig.stop();
@@ -283,7 +283,7 @@ fn the_rig_follows_a_moving_target_and_touches_nothing_until_it_is_driven() {
     assert!(pod.seen().iter().filter(|c| *c == "#PTS5050").count() >= 2);
 
     // A show that stops sending targets is a show that has hung: the adapters stop the rig themselves.
-    rig.drive(&Drive { target: to, velocity: Pose::default(), scale: 1.0, ride: None, column: true });
+    rig.drive(&Drive { target: to, velocity: Pose::default(), scale: 1.0, ride: None, column: true, autofocus: false });
     std::thread::sleep(Duration::from_millis(150));
     assert!(fr7.is_moving());
     wait_until("the watchdog stops the head", || !fr7.is_moving() && !pod.is_moving());
@@ -322,6 +322,7 @@ fn an_absolute_move_is_one_command_and_the_head_runs_its_own_ramp() {
             scale: 1.0,
             ride: Some(Ride { seconds: left, ..ride }),
             column: true,
+            autofocus: false,
         });
         std::thread::sleep(Duration::from_millis(16));
     }

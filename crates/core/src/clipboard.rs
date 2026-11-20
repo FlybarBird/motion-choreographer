@@ -224,10 +224,15 @@ fn checked_end(song: &Song) -> Result<i64, Error> {
         }
         let clip_end = clip.start_frame.checked_add(clip.duration_frames).ok_or(Error::InvalidData("frame numbers overflow"))?;
         end = end.max(clip_end);
-        if let ClipBody::PresetMove { from, to, .. } = &clip.body {
-            if !to.pose.is_finite() || matches!(from, FromPose::Pinned(preset) if !preset.pose.is_finite()) {
-                return Err(Error::InvalidData("a preset contains a non-finite value"));
+        let finite = match &clip.body {
+            ClipBody::PresetMove { from, to, .. } => {
+                to.pose.is_finite() && !matches!(from, FromPose::Pinned(preset) if !preset.pose.is_finite())
             }
+            ClipBody::AutoFollow { preset: Some(preset), .. } => preset.pose.is_finite(),
+            _ => true,
+        };
+        if !finite {
+            return Err(Error::InvalidData("a preset contains a non-finite value"));
         }
     }
     for clip in &song.media {
@@ -528,8 +533,18 @@ mod tests {
             axes: vec![Axis::Pan],
             body: ClipBody::PresetMove {
                 auto_duration: true,
-                from: FromPose::Pinned(PresetRef { preset_id: "wide".into(), name: "Wide".into(), pose: Pose::home() }),
-                to: PresetRef { preset_id: "close".into(), name: "Close".into(), pose: Pose { pan: 30.0, ..Pose::home() } },
+                from: FromPose::Pinned(PresetRef {
+                    preset_id: "wide".into(),
+                    name: "Wide".into(),
+                    pose: Pose::home(),
+                    ..Default::default()
+                }),
+                to: PresetRef {
+                    preset_id: "close".into(),
+                    name: "Close".into(),
+                    pose: Pose { pan: 30.0, ..Pose::home() },
+                    ..Default::default()
+                },
                 ease: Ease::EaseOut,
             },
             accepted: Some(Accepted { by: "operator".into(), at: "yesterday".into() }),

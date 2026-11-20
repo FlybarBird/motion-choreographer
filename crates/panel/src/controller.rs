@@ -2550,6 +2550,7 @@ impl Controller {
                         ClipBody::PresetMove { auto_duration: true, ease, .. } => format!("auto time, {}", ease.label()),
                         ClipBody::PresetMove { ease, .. } => format!("custom time, {}", ease.label()),
                         ClipBody::Keys { .. } => "keys".into(),
+                        _ => "timed control".into(),
                     };
                     let problems = self.problems_of(&c.id);
                     let problem = match (problems.first(), &c.accepted) {

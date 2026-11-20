@@ -2,6 +2,7 @@
 //! clips and motion clips. Clip-local key frames, so moving a clip moves its keys.
 
 use crate::camera::{first_camera, is_first_camera, CameraConfig};
+use crate::framing::{DetectionArea, FocusMode};
 use crate::pose::{Axis, Pose, Preset};
 use crate::time::{FrameRate, SongClock, Timecode};
 use serde::{Deserialize, Serialize};
@@ -105,17 +106,29 @@ impl Ease {
 
 /// A preset as it was when it was dropped. Clips copy the pose so committed
 /// revisions never change when the preset cache does.
-#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
 pub struct PresetRef {
     pub preset_id: String,
     #[serde(default)]
     pub name: String,
     pub pose: Pose,
+    #[serde(default, skip_serializing_if = "FocusMode::is_default")]
+    pub autofocus: FocusMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focus_override: Option<FocusMode>,
 }
 
 impl PresetRef {
     pub fn of(p: &Preset) -> PresetRef {
-        PresetRef { preset_id: p.id.clone(), name: p.name.clone(), pose: p.pose }
+        PresetRef { preset_id: p.id.clone(), name: p.name.clone(), pose: p.pose, autofocus: p.autofocus, focus_override: None }
+    }
+
+    pub fn update(&mut self, preset: &Preset) {
+        *self = Self { focus_override: self.focus_override, ..Self::of(preset) };
+    }
+
+    pub fn focus(&self) -> FocusMode {
+        self.focus_override.unwrap_or(self.autofocus)
     }
 }
 
@@ -210,6 +223,15 @@ pub enum ClipBody {
         #[serde(default)]
         curves: BTreeMap<Axis, Vec<Key>>,
     },
+    Autofocus {
+        enabled: bool,
+    },
+    AutoFollow {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        preset: Option<PresetRef>,
+        #[serde(default)]
+        detection: DetectionArea,
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
@@ -244,6 +266,18 @@ impl MotionClip {
         matches!(self.body, ClipBody::PresetMove { .. })
     }
 
+    pub fn is_auto_follow(&self) -> bool {
+        matches!(self.body, ClipBody::AutoFollow { .. })
+    }
+
+    pub fn drives_head(&self) -> bool {
+        self.axes.iter().any(|&axis| axis != Axis::Elevation)
+    }
+
+    pub fn is_control(&self) -> bool {
+        matches!(self.body, ClipBody::Autofocus { .. } | ClipBody::AutoFollow { .. })
+    }
+
     pub fn is_keys(&self) -> bool {
         matches!(self.body, ClipBody::Keys { .. })
     }
@@ -258,6 +292,10 @@ impl MotionClip {
     /// Short text for the clip bar.
     pub fn label(&self) -> String {
         match &self.body {
+            ClipBody::Autofocus { enabled } => if *enabled { "Autofocus On" } else { "Autofocus Off" }.into(),
+            ClipBody::AutoFollow { preset, .. } => {
+                preset.as_ref().map_or_else(|| "Auto Follow · Drop a preset".into(), |p| format!("Auto Follow · {}", p.name))
+            }
             ClipBody::PresetMove { from, to, .. } => match from {
                 FromPose::Linked(_) => format!("to {}", to.name),
                 FromPose::Pinned(p) => format!("{} to {}", p.name, to.name),
@@ -281,6 +319,8 @@ pub enum Invalid {
     NoAxes(String),
     Overlap { a: String, b: String, axis: Axis },
     BadCamera(String),
+    ControlOverlap(String),
+    BadDetectionArea,
     BadKeys { clip: String, axis: Axis },
     BadStart(String),
     BadMedia(String),
@@ -297,6 +337,8 @@ impl fmt::Display for Invalid {
             Invalid::Overlap { axis, .. } => {
                 write!(f, "Overlaps another move on {}", axis.label().to_lowercase())
             }
+            Invalid::ControlOverlap(reason) => write!(f, "{reason}"),
+            Invalid::BadDetectionArea => write!(f, "The detection area must fit inside the preset frame"),
             Invalid::BadCamera(_) => write!(f, "A move names no camera"),
             Invalid::BadKeys { axis, .. } => {
                 write!(f, "Keys on {} are out of order or outside the clip", axis.label().to_lowercase())
@@ -384,6 +426,39 @@ impl Song {
         self.motion.iter().find(|c| c.camera == camera && c.has_axis(axis) && c.start_frame <= frame && frame < c.end_frame())
     }
 
+    pub fn auto_follow_at(&self, camera: &str, frame: i64) -> Option<&MotionClip> {
+        self.motion.iter().find(|c| {
+            c.camera == camera && c.start_frame <= frame && frame < c.end_frame() && matches!(c.body, ClipBody::AutoFollow { .. })
+        })
+    }
+
+    pub fn autofocus_at(&self, camera: &str, frame: i64, show_default: bool, following: bool) -> bool {
+        if let Some(enabled) =
+            self.motion.iter().filter(|c| c.camera == camera && c.start_frame <= frame && frame < c.end_frame()).find_map(|c| {
+                match c.body {
+                    ClipBody::Autofocus { enabled } => Some(enabled),
+                    _ => None,
+                }
+            })
+        {
+            return enabled;
+        }
+        if following {
+            if let Some(ClipBody::AutoFollow { preset: Some(preset), .. }) = self.auto_follow_at(camera, frame).map(|c| &c.body) {
+                return preset.focus().enabled(show_default);
+            }
+        }
+        self.motion
+            .iter()
+            .filter(|c| c.camera == camera && c.start_frame <= frame)
+            .filter_map(|c| match &c.body {
+                ClipBody::PresetMove { to, .. } => Some((c.start_frame, &c.id, to)),
+                _ => None,
+            })
+            .max_by_key(|(start, id, _)| (*start, *id))
+            .map_or(show_default, |(_, _, preset)| preset.focus().enabled(show_default))
+    }
+
     /// Every camera a clip of this song moves, in the order first met.
     pub fn cameras(&self) -> Vec<&str> {
         let mut out: Vec<&str> = Vec::new();
@@ -445,7 +520,7 @@ impl Song {
             if c.start_frame < 0 || c.end_frame() > self.length_frames {
                 return Err(Invalid::OutsideSong(c.id.clone()));
             }
-            if c.axes.is_empty() {
+            if c.axes.is_empty() != c.is_control() {
                 return Err(Invalid::NoAxes(c.id.clone()));
             }
             if c.camera.is_empty() {
@@ -454,6 +529,11 @@ impl Song {
             let mut seen = HashSet::new();
             if !c.axes.iter().all(|a| seen.insert(*a)) {
                 return Err(Invalid::NoAxes(c.id.clone()));
+            }
+            if let ClipBody::AutoFollow { detection, .. } = &c.body {
+                if !detection.valid() {
+                    return Err(Invalid::BadDetectionArea);
+                }
             }
             if let ClipBody::Keys { curves } = &c.body {
                 for (axis, keys) in curves {
@@ -471,6 +551,16 @@ impl Song {
         for (i, a) in self.motion.iter().enumerate() {
             for b in &self.motion[i + 1..] {
                 if a.camera == b.camera && a.start_frame < b.end_frame() && b.start_frame < a.end_frame() {
+                    let autofocus = |c: &MotionClip| matches!(c.body, ClipBody::Autofocus { .. });
+                    if autofocus(a) && autofocus(b) {
+                        return Err(Invalid::ControlOverlap("Autofocus clips on the same camera overlap".into()));
+                    }
+                    if (a.is_auto_follow() && (b.is_auto_follow() || b.drives_head())) || (b.is_auto_follow() && a.drives_head())
+                    {
+                        return Err(Invalid::ControlOverlap(
+                            "Auto Follow overlaps another clip driving the same camera head".into(),
+                        ));
+                    }
                     if let Some(axis) = a.axes.iter().find(|x| b.has_axis(**x)) {
                         return Err(Invalid::Overlap { a: a.id.clone(), b: b.id.clone(), axis: *axis });
                     }

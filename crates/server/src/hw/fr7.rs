@@ -7,8 +7,9 @@
 use super::cgi::{self, Cgi};
 use super::visca::{self, Packet, Reply, Turn};
 use super::{with_port, Loop, PERIOD};
-use crate::rig::{DevicePreset, Drive, Ride};
-use ptz_core::api::AdapterStatus;
+use crate::rig::{DevicePreset, Drive, FollowRequest, Ride};
+use ptz_core::api::{AdapterStatus, AutoFollowStatus};
+use ptz_core::framing::LeadRoom;
 use ptz_core::pose::{AxisTable, Pose, Preset, RigConfig};
 use std::collections::VecDeque;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
@@ -1156,6 +1157,7 @@ pub fn preset_picture(cgi: &mut Cgi, number: u32) -> Option<Vec<u8>> {
 enum Mode {
     Idle,
     Drive(Drive),
+    Follow(FollowRequest),
     Stop,
     Sync,
 }
@@ -1176,6 +1178,7 @@ struct State {
     axes: AxisTable,
     sync_progress: Option<String>,
     sync_result: Option<Result<Vec<DevicePreset>, String>>,
+    follow_status: AutoFollowStatus,
     quit: bool,
 }
 
@@ -1230,6 +1233,7 @@ impl Fr7 {
             axes,
             sync_progress: None,
             sync_result: None,
+            follow_status: AutoFollowStatus::Checking,
             quit: false,
         }));
         let (shared, worker_cfg) = (state.clone(), cfg.clone());
@@ -1308,11 +1312,30 @@ impl Fr7 {
         }
     }
 
+    pub fn drive_follow(&self, request: FollowRequest) {
+        let mut s = self.lock();
+        if s.connected && matches!(s.mode, Mode::Idle | Mode::Drive(_) | Mode::Follow(_)) {
+            if !matches!(s.mode, Mode::Follow(_)) {
+                s.follow_status = AutoFollowStatus::Starting;
+                s.mode = Mode::Follow(request);
+            }
+            s.told_at = Instant::now();
+            s.starved = false;
+        }
+    }
+
+    pub fn follow_status(&self) -> AutoFollowStatus {
+        self.lock().follow_status.clone()
+    }
+
     pub fn stop(&self) {
         let mut s = self.lock();
         if s.mode == Mode::Sync {
             s.sync_result = Some(Err("The preset sync was stopped".into()));
             s.sync_progress = None;
+        }
+        if matches!(s.mode, Mode::Follow(_)) && !matches!(s.follow_status, AutoFollowStatus::Failed(_)) {
+            s.follow_status = AutoFollowStatus::Stopping;
         }
         s.mode = Mode::Stop;
         s.starved = false;
@@ -1322,6 +1345,11 @@ impl Fr7 {
         let mut s = self.lock();
         if !s.connected {
             return Err(format!("The FR7 is not answering at {}", self.cfg.visca));
+        }
+        if matches!(s.mode, Mode::Follow(_))
+            || (s.mode == Mode::Stop && matches!(s.follow_status, AutoFollowStatus::Stopping | AutoFollowStatus::Failed(_)))
+        {
+            return Err("Wait for the FR7 to finish stopping".into());
         }
         if s.mode == Mode::Sync {
             return Err("A preset sync is already running".into());
@@ -1361,6 +1389,23 @@ struct SyncJob {
     out: Vec<DevicePreset>,
 }
 
+const FOLLOW_INQUIRY: &str = "/command/inquiry.cgi?inq=ptzautoframing";
+const FOLLOW_SETTINGS: &str = "/analytics/ptzautoframing.cgi";
+const FOLLOW_SAVE: &str = "/analytics/ptzautoframingexe.cgi?PtzAutoFramingDecideStartPosition=on";
+
+#[derive(Clone, Copy)]
+enum FollowStep {
+    Settle(Instant),
+    SelectAuto,
+    SaveStart,
+    Configure,
+    Initialize,
+    SetMotionProfile,
+    Enable,
+    Verify(Instant),
+    Active(Instant),
+}
+
 struct Worker {
     cfg: Fr7Config,
     state: Arc<Mutex<State>>,
@@ -1385,7 +1430,12 @@ struct Worker {
     focus_refused_at: Option<Instant>,
     /// The zoom speeds of the last three commands. See `steady_speed`.
     zoom_speeds: [f64; 3],
-    focus_is_manual: bool,
+    autofocus: Option<bool>,
+    follow_cgi: Cgi,
+    follow_initialized: Option<bool>,
+    follow_may_be_on: bool,
+    follow_step: Option<FollowStep>,
+    restore_follow_motion: Option<(String, u8)>,
     /// The last zoom or focus position command, which holds a place in the camera until the lens arrives.
     lens_move: Option<u32>,
     /// The last lens position sent was a zoom, so focus goes first next time.
@@ -1406,6 +1456,7 @@ struct Worker {
 impl Worker {
     fn new(cfg: Fr7Config, state: Arc<Mutex<State>>) -> Worker {
         let cgi = Cgi::new(&cfg.http, &cfg.user, &cfg.password, Duration::from_secs(3));
+        let follow_cgi = Cgi::new(&cfg.http, &cfg.user, &cfg.password, Duration::from_millis(750));
         Worker {
             cfg,
             state,
@@ -1425,7 +1476,12 @@ impl Worker {
             focus_sent_at: Instant::now(),
             focus_refused_at: None,
             zoom_speeds: [0.0; 3],
-            focus_is_manual: false,
+            autofocus: None,
+            follow_cgi,
+            follow_initialized: None,
+            follow_may_be_on: false,
+            follow_step: None,
+            restore_follow_motion: None,
             lens_move: None,
             zoom_went_last: false,
             crowded_since: None,
@@ -1453,7 +1509,9 @@ impl Worker {
                     if let (Some(pan), Some(tilt)) = (cgi::field(&fields, "PanDirection"), cgi::field(&fields, "TiltDirection")) {
                         self.pan_opposite = pan.eq_ignore_ascii_case("opposite");
                         self.tilt_opposite = tilt.eq_ignore_ascii_case("opposite");
-                        self.speed_note = full_speed(&mut self.cgi, &fields).note();
+                        if !self.follow_may_be_on {
+                            self.speed_note = full_speed(&mut self.cgi, &fields).note();
+                        }
                         return Ok(());
                     }
                     why = "its answer names no pan or tilt direction".into();
@@ -1472,6 +1530,7 @@ impl Worker {
         let mut pace = Loop::new(PERIOD);
         loop {
             if self.lock().quit {
+                let _ = self.stop_framing();
                 if let Some(link) = &mut self.link {
                     let _ = link.stop_all();
                 }
@@ -1495,6 +1554,11 @@ impl Worker {
                     self.stop_web_zoom();
                     self.link = None;
                     let mut s = self.lock();
+                    if matches!(s.mode, Mode::Follow(_)) {
+                        s.mode = Mode::Stop;
+                        s.follow_status =
+                            AutoFollowStatus::Failed("The FR7 stopped reporting its position during Auto Follow".into());
+                    }
                     s.connected = false;
                     s.moving = false;
                     s.detail = why;
@@ -1514,6 +1578,10 @@ impl Worker {
     }
 
     fn cycle(&mut self) -> Result<(), String> {
+        // CGI can still answer when VISCA is down. Cancel camera-owned motion before reconnecting VISCA.
+        if self.lock().mode == Mode::Stop && (self.follow_may_be_on || self.restore_follow_motion.is_some()) {
+            let _ = self.stop_framing();
+        }
         let fresh = self.link.is_none();
         if fresh {
             self.link = Some(Link::connect(&self.cfg)?);
@@ -1521,6 +1589,8 @@ impl Worker {
             if let Some(link) = &mut self.link {
                 link.timeout = Duration::from_millis(400);
             }
+            self.probe_framing();
+            let _ = self.stop_framing();
             if let Err(why) = self.read_camera_setup() {
                 self.link = None;
                 return Err(why);
@@ -1534,7 +1604,7 @@ impl Worker {
             self.zoom_glide = ZoomGlide::new(Instant::now());
             self.zoom_ramp = ZoomRamp::new(Instant::now());
             self.focus_sent = None;
-            self.focus_is_manual = false;
+            self.autofocus = None;
             self.lens_move = None;
         }
         self.cycle += 1;
@@ -1617,7 +1687,10 @@ impl Worker {
                     None => format!("{} answers in {:.1} ms", self.cfg.visca, round_trip_ms),
                 }
             };
-            if matches!(s.mode, Mode::Drive(_)) && s.told_at.elapsed() > STARVED_AFTER {
+            if matches!(s.mode, Mode::Drive(_) | Mode::Follow(_)) && s.told_at.elapsed() > STARVED_AFTER {
+                if matches!(s.mode, Mode::Follow(_)) {
+                    s.follow_status = AutoFollowStatus::Stopping;
+                }
                 s.mode = Mode::Stop;
                 s.starved = true;
             }
@@ -1628,12 +1701,15 @@ impl Worker {
                 self.stops_sent = 0;
                 self.still = 0;
             }
-            if !matches!(mode, Mode::Drive(_)) {
+            if !matches!(mode, Mode::Follow(_)) {
+                self.follow_step = None;
+            }
+            if !matches!(mode, Mode::Drive(_) | Mode::Follow(_)) {
                 self.ride = None;
                 self.last_sent = None;
                 // Recalling a preset can put the camera back in autofocus, where it refuses every
                 // focus position. Manual focus is asked for again whenever driving starts afresh.
-                self.focus_is_manual = false;
+                self.autofocus = None;
                 self.focus_sent = None;
             }
             self.was = mode;
@@ -1647,24 +1723,44 @@ impl Worker {
                 self.link.as_mut().expect("connected").drive_owner = None;
                 result?;
             }
+            Mode::Follow(request) => {
+                if let Err(why) = self.follow_camera(request) {
+                    if busy(&why) || crowded(&why) {
+                        return Err(why);
+                    }
+                    let mut s = self.lock();
+                    if s.mode == Mode::Follow(request) {
+                        s.follow_status = AutoFollowStatus::Failed(format!("FR7 Auto Follow: {why}"));
+                        s.mode = Mode::Stop;
+                    }
+                }
+            }
             Mode::Stop => {
                 // Stop is repeated until the head reads the same twice running.
                 let stopped = self.link.as_mut().expect("connected").stop_all();
                 self.stop_web_zoom();
                 stopped?;
                 self.stops_sent += 1;
-                self.still = if moved || quiet { 0 } else { self.still + 1 };
+                let head_moved = (head.pan - before.pan).abs() > 1.5 / cpd
+                    || (head.tilt - before.tilt).abs() > 1.5 / cpd
+                    || (head.zoom - before.zoom).abs() > 2.0 / visca::ZOOM_TELE as f64;
+                self.still = if head_moved || quiet { 0 } else { self.still + 1 };
                 self.zoom_sent = None;
                 // Stop has stopped the lens too.
                 self.zoom_ramp = ZoomRamp::new(Instant::now());
                 self.focus_sent = None;
                 if self.stops_sent >= 2
+                    && !self.follow_may_be_on
+                    && self.restore_follow_motion.is_none()
                     && self.still >= STILL_READINGS
                     && self.zoom_sender.as_ref().is_none_or(ZoomWeb::is_stopped)
                 {
                     let mut s = self.lock();
                     if s.mode == Mode::Stop {
                         s.mode = Mode::Idle;
+                        if s.follow_status == AutoFollowStatus::Stopping {
+                            s.follow_status = self.framing_ready_status();
+                        }
                     }
                 }
                 self.sync = None;
@@ -1674,15 +1770,200 @@ impl Worker {
         Ok(())
     }
 
+    fn framing_ready_status(&self) -> AutoFollowStatus {
+        match self.follow_initialized {
+            Some(true) => AutoFollowStatus::Ready,
+            Some(false) => AutoFollowStatus::NeedsSetup,
+            None => AutoFollowStatus::Unsupported,
+        }
+    }
+
+    fn probe_framing(&mut self) {
+        self.follow_initialized = None;
+        let mut status = AutoFollowStatus::Unsupported;
+        if let Ok(text) = self.follow_cgi.get_text(FOLLOW_INQUIRY) {
+            let fields = cgi::fields(&text);
+            if let Some(initialized) = cgi::field(&fields, "PtzAutoFramingInitialSetup") {
+                self.follow_initialized = Some(initialized == "initialized");
+                self.follow_may_be_on |= cgi::field(&fields, "PtzAutoFraming") == Some("on");
+                status = if cgi::field(&fields, "PtzAutoFramingPmt").is_some_and(|p| p != "enable")
+                    && self.follow_initialized == Some(true)
+                {
+                    AutoFollowStatus::Failed("FR7 settings currently prevent PTZ Auto Framing".into())
+                } else {
+                    self.framing_ready_status()
+                };
+            }
+        }
+        self.lock().follow_status = status;
+    }
+
+    fn framing_enabled(&mut self) -> Result<bool, String> {
+        let answer = self.follow_cgi.get_text(FOLLOW_INQUIRY)?;
+        match cgi::field(&cgi::fields(&answer), "PtzAutoFraming") {
+            Some("on") => Ok(true),
+            Some("off") => Ok(false),
+            _ => Err("The FR7 did not report its Auto Follow switch".into()),
+        }
+    }
+
+    fn stop_framing(&mut self) -> Result<(), String> {
+        if self.follow_may_be_on {
+            let off = self.follow_cgi.get(&format!("{FOLLOW_SETTINGS}?PtzAutoFraming=off"));
+            if self.framing_enabled()? {
+                off?;
+                return Err("The FR7 has not confirmed Auto Follow off".into());
+            }
+            self.follow_may_be_on = false;
+        }
+        if let Some((speed, ramp)) = self.restore_follow_motion.clone() {
+            self.write_follow_motion_profile(&speed, ramp)?;
+            self.restore_follow_motion = None;
+        }
+        Ok(())
+    }
+
+    fn follow_motion_profile(&mut self) -> Result<(String, u8), String> {
+        let text = self.follow_cgi.get_text("/command/inquiry.cgi?inq=ptzf")?;
+        let fields = cgi::fields(&text);
+        let speed = cgi::field(&fields, "PanTiltSpeedStep")
+            .filter(|mode| matches!(*mode, "normal" | "extended"))
+            .ok_or("The FR7 did not report its pan/tilt speed steps")?;
+        let ramp = cgi::field(&fields, "RampCurve")
+            .and_then(|v| v.parse::<u8>().ok())
+            .filter(|v| (1..=9).contains(v))
+            .ok_or("The FR7 did not report its pan/tilt ramp curve")?;
+        Ok((speed.into(), ramp))
+    }
+
+    fn write_follow_motion_profile(&mut self, speed: &str, ramp: u8) -> Result<(), String> {
+        self.follow_cgi.get(&format!("/command/ptzf.cgi?PanTiltSpeedStep={speed}&RampCurve={ramp}"))?;
+        let (confirmed_speed, confirmed_ramp) = self.follow_motion_profile()?;
+        if confirmed_speed != speed || confirmed_ramp != ramp {
+            return Err("The FR7 did not confirm its requested pan/tilt motion profile".into());
+        }
+        Ok(())
+    }
+
+    /// Sony requires extended speed steps and a ramp in 7–9 for AFR. Restore the
+    /// previous camera settings before sending manual motion via the VISCA speed table.
+    fn set_follow_motion_profile(&mut self) -> Result<(), String> {
+        let (speed, ramp) = self.follow_motion_profile()?;
+        let next_ramp = if (7..=9).contains(&ramp) { ramp } else { 8 };
+        if speed != "extended" || next_ramp != ramp {
+            self.restore_follow_motion = Some((speed, ramp));
+            self.write_follow_motion_profile("extended", next_ramp)?;
+        }
+        Ok(())
+    }
+
+    fn follow_camera(&mut self, request: FollowRequest) -> Result<(), String> {
+        // Renewed by the engine on every tick. Re-check before each operation, including the final enable.
+        {
+            let s = self.lock();
+            if s.mode != Mode::Follow(request) || s.told_at.elapsed() > STARVED_AFTER {
+                return Ok(());
+            }
+        }
+        if self.follow_initialized.is_none() {
+            return Err("This camera does not report PTZ Auto Framing support. Check its firmware and CGI credentials".into());
+        }
+        self.follow_step = Some(match self.follow_step {
+            None => {
+                self.link.as_mut().expect("connected").stop_all()?;
+                self.stop_web_zoom();
+                let settle = if !self.zoom_by_speed && self.zoom_sent.is_some() { 1000 } else { 150 };
+                FollowStep::Settle(Instant::now() + Duration::from_millis(settle))
+            }
+            Some(FollowStep::Settle(until)) => {
+                if Instant::now() < until || self.zoom_sender.as_ref().is_some_and(|sender| !sender.is_stopped()) {
+                    FollowStep::Settle(until)
+                } else {
+                    self.apply_focus_mode(request.autofocus)?;
+                    FollowStep::SelectAuto
+                }
+            }
+            Some(FollowStep::SelectAuto) => {
+                self.follow_cgi.get(&format!("{FOLLOW_SETTINGS}?PtzAutoFramingTriggerType=auto"))?;
+                FollowStep::SaveStart
+            }
+            Some(FollowStep::SaveStart) => {
+                self.follow_cgi.get(FOLLOW_SAVE)?;
+                FollowStep::Configure
+            }
+            Some(FollowStep::Configure) => {
+                let d = request.detection;
+                let c = request.composition;
+                let lead = match c.lead_room {
+                    LeadRoom::Off => "off",
+                    LeadRoom::Low => "low",
+                    LeadRoom::Medium => "middle",
+                    LeadRoom::High => "high",
+                };
+                self.follow_cgi.get(&format!(
+                    "{FOLLOW_SETTINGS}?PtzAutoFramingDetectionArea={},{},{},{}&PtzAutoFramingAdjustSetting={},{},{}&PtzAutoFramingLeadRoomLevel={lead}",
+                    d.left, d.top, d.width, d.height, c.vertical, c.horizontal, c.size,
+                ))?;
+                FollowStep::Initialize
+            }
+            Some(FollowStep::Initialize) => {
+                if self.follow_initialized == Some(false) {
+                    self.follow_cgi.get(&format!("{FOLLOW_SETTINGS}?PtzAutoFramingInitialSetup=initialized"))?;
+                    self.follow_initialized = Some(true);
+                }
+                FollowStep::SetMotionProfile
+            }
+            Some(FollowStep::SetMotionProfile) => {
+                self.set_follow_motion_profile()?;
+                FollowStep::Enable
+            }
+            Some(FollowStep::Enable) => {
+                self.follow_may_be_on = true;
+                self.follow_cgi.get(&format!("{FOLLOW_SETTINGS}?PtzAutoFraming=on"))?;
+                FollowStep::Verify(Instant::now() + Duration::from_secs(3))
+            }
+            Some(FollowStep::Verify(until)) => {
+                if self.framing_enabled()? {
+                    let mut s = self.lock();
+                    if s.mode == Mode::Follow(request) {
+                        s.follow_status = AutoFollowStatus::Active;
+                    }
+                    FollowStep::Active(Instant::now())
+                } else if Instant::now() < until {
+                    FollowStep::Verify(until)
+                } else {
+                    return Err("The camera did not confirm PTZ Auto Framing on".into());
+                }
+            }
+            Some(FollowStep::Active(checked)) => {
+                if checked.elapsed() < Duration::from_secs(1) {
+                    FollowStep::Active(checked)
+                } else if self.framing_enabled()? {
+                    FollowStep::Active(Instant::now())
+                } else {
+                    return Err("The camera stopped PTZ Auto Framing".into());
+                }
+            }
+        });
+        Ok(())
+    }
+
+    fn apply_focus_mode(&mut self, autofocus: bool) -> Result<(), String> {
+        if self.autofocus != Some(autofocus) {
+            let command = if autofocus { visca::focus_auto() } else { visca::focus_manual() };
+            self.link.as_mut().expect("connected").command(&command)?;
+            self.autofocus = Some(autofocus);
+            self.focus_sent = None;
+        }
+        Ok(())
+    }
+
     /// Steer toward the commanded pose: its own speed plus a share of the error.
     fn follow(&mut self, cmd: &Drive, head: &Head, axes: &AxisTable) -> Result<(), String> {
         let (pan_sign, tilt_sign) = (self.cfg.pan_sign, self.cfg.tilt_sign);
         let (pan_opposite, tilt_opposite) = (self.pan_opposite, self.tilt_opposite);
+        self.apply_focus_mode(cmd.autofocus)?;
         let link = self.link.as_mut().expect("connected");
-        if !self.focus_is_manual {
-            link.command(&visca::focus_manual())?;
-            self.focus_is_manual = true;
-        }
         let ride = cmd.ride.filter(|_| self.cfg.absolute_moves);
         if let Some(ride) = ride {
             // One absolute command per move; the head runs its own ramp to the end pose.
@@ -1800,6 +2081,9 @@ impl Worker {
     }
 
     fn steer_focus(&mut self, cmd: &Drive, head: &Head) -> Result<(), String> {
+        if cmd.autofocus {
+            return Ok(());
+        }
         let free = self.lens_is_free();
         let link = self.link.as_mut().expect("connected");
         let focus = focus_counts(cmd.target.focus);
@@ -1911,6 +2195,7 @@ impl Worker {
                             },
                             camera_number: Some(number),
                             has_thumbnail: thumbnail.is_some(),
+                            autofocus: Default::default(),
                         },
                         thumbnail,
                     });

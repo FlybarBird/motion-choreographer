@@ -573,6 +573,7 @@ pub struct Project {
     /// Locked to LTC, MTC or Art-Net with Play pressed, load whichever song the code is in:
     /// one of the set list, or of every song while the set list is empty.
     pub follow_code: bool,
+    pub default_autofocus: bool,
     /// One to twelve, in the order they are numbered for the operator. `validate` refuses
     /// anything else, and the server only ever holds a project that passed it.
     pub cameras: Vec<CameraConfig>,
@@ -595,6 +596,7 @@ impl Default for Project {
             stage: Stage::default(),
             set_list: Vec::new(),
             follow_code: false,
+            default_autofocus: false,
             cameras: vec![CameraConfig::default()],
         }
     }
@@ -619,6 +621,7 @@ struct ProjectFile {
     stage: Stage,
     set_list: Vec<String>,
     follow_code: bool,
+    default_autofocus: bool,
     /// Absent in a file from before cameras; an empty list is a mistake, kept so it can be refused.
     cameras: Option<Vec<CameraConfig>>,
     axes: Option<AxisTable>,
@@ -654,6 +657,7 @@ impl From<ProjectFile> for Project {
             stage: f.stage,
             set_list: f.set_list,
             follow_code: f.follow_code,
+            default_autofocus: f.default_autofocus,
             cameras,
         }
     }
@@ -826,6 +830,9 @@ impl Project {
                     ));
                 }
             }
+            if !cam.follow_composition.valid() {
+                return Err(format!("{label}: invalid Auto Follow composition"));
+            }
             cam.lens.validate().map_err(|why| format!("{label}: {why}"))?;
             cam.mount.validate().map_err(|why| format!("{label}: {why}"))?;
         }
@@ -850,12 +857,22 @@ pub struct Preset {
     pub camera_number: Option<u32>,
     #[serde(default)]
     pub has_thumbnail: bool,
+    #[serde(default, skip_serializing_if = "crate::framing::FocusMode::is_default")]
+    pub autofocus: crate::framing::FocusMode,
 }
 
 impl Preset {
     /// A preset of the first camera with no picture, as the simulator and the tests make them.
     pub fn new(id: &str, name: &str, pose: Pose) -> Preset {
-        Preset { id: id.into(), name: name.into(), pose, camera: first_camera(), camera_number: None, has_thumbnail: false }
+        Preset {
+            id: id.into(),
+            name: name.into(),
+            pose,
+            camera: first_camera(),
+            camera_number: None,
+            has_thumbnail: false,
+            autofocus: Default::default(),
+        }
     }
 }
 

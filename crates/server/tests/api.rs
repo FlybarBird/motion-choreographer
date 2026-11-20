@@ -389,7 +389,7 @@ fn updating_a_preset_updates_every_timeline_move_made_from_it() {
     let mut pose = presets[1].pose;
     pose.pan += 12.0;
     let updated: Preset =
-        api.put(&format!("/presets/{}", presets[1].id), &UpdatePreset { pose: Some(pose), elevation: None }).unwrap();
+        api.put(&format!("/presets/{}", presets[1].id), &UpdatePreset { pose: Some(pose), ..Default::default() }).unwrap();
     let working = api.working(&created.song.id).unwrap();
     match &working.song.motion_clip(&clip).unwrap().body {
         ClipBody::PresetMove { to, .. } => assert_eq!(to.pose, updated.pose),
@@ -400,7 +400,7 @@ fn updating_a_preset_updates_every_timeline_move_made_from_it() {
     let (song, clip) = edit::insert_preset_move(&other.song, &project, &updated, 10).unwrap();
     api.put_working(&PutWorking { expected_counter: other.edit_counter, song }).unwrap();
     pose.tilt = -4.0;
-    api.put::<_, Preset>(&format!("/presets/{}", updated.id), &UpdatePreset { pose: Some(pose), elevation: None }).unwrap();
+    api.put::<_, Preset>(&format!("/presets/{}", updated.id), &UpdatePreset { pose: Some(pose), ..Default::default() }).unwrap();
     let working = api.working(&other.song.id).unwrap();
     match &working.song.motion_clip(&clip).unwrap().body {
         ClipBody::PresetMove { to, .. } => assert!((to.pose.tilt + 4.0).abs() < 1e-9 && (to.pose.pan - pose.pan).abs() < 1e-9),
