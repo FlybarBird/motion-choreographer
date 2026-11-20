@@ -469,8 +469,9 @@ impl egui_dock::TabViewer for Viewer<'_> {
         false
     }
 
-    fn scroll_bars(&self, tab: &Tab) -> [bool; 2] {
-        [false, matches!(tab, Tab::Timeline | Tab::LiveEdit)]
+    fn scroll_bars(&self, _tab: &Tab) -> [bool; 2] {
+        // The timeline scrolls its tracks below its fixed toolbar.
+        [false; 2]
     }
 
     fn allowed_in_windows(&self, _tab: &mut Tab) -> bool {

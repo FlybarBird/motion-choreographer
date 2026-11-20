@@ -2042,6 +2042,62 @@ fn the_set_list_tab_arranges_the_show_and_loads_a_song_at_a_click() {
 }
 
 #[test]
+fn timeline_tools_stay_in_place_when_the_camera_tracks_scroll() {
+    use egui_kittest::kittest::Queryable as _;
+
+    let mut project = Project::default();
+    for i in 2..=8 {
+        project.cameras.push(ptz_core::CameraConfig::new(&format!("cam{i}"), &format!("Camera {i}")));
+    }
+
+    for tab in [Tab::Timeline, Tab::LiveEdit] {
+        let song = Song::new("s", "Scrolling tracks", "01:00:00:00", 1500);
+        let mut r = rig_sized(SMALLEST_WINDOW, project.clone(), presets(), song);
+        if tab == Tab::LiveEdit {
+            let shell = r.harness.state_mut();
+            shell.session.status.transport.output = Output::Armed;
+            shell.session.status.live_edit = true;
+            shell.show_tab(tab);
+            r.harness.run_steps(4);
+        }
+        let tools = ["Fit", "Copy", "Paste", "Autofocus", "Auto Follow"];
+        let tool_rects = |r: &Rig| {
+            let timeline_y = safety::rect_of(r, "Autofocus").center().y;
+            tools.map(|label| {
+                r.harness
+                    .query_all_by_label(label)
+                    .map(|node| node.rect())
+                    .min_by(|a, b| (a.center().y - timeline_y).abs().total_cmp(&(b.center().y - timeline_y).abs()))
+                    .unwrap()
+            })
+        };
+        let before = tool_rects(&r);
+        let scroll_bar = safety::rect_of(&r, "Scroll the timeline");
+        let layout = r.layout();
+        r.harness.hover_at(layout.ruler.center_bottom() + vec2(0.0, 6.0));
+        r.harness.run_steps(2);
+        r.harness.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: vec2(0.0, -1000.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        });
+        r.harness.run_steps(6);
+
+        assert!(r.layout().rect.top() < layout.rect.top() - 40.0, "the tracks scrolled in {tab:?}");
+        assert_eq!(tool_rects(&r), before, "the toolbar stayed in place in {tab:?}");
+        assert_eq!(safety::rect_of(&r, "Scroll the timeline").center().y, scroll_bar.center().y);
+        assert!(r.harness.state().session.timeline.view.scroll > 0.0);
+        r.click(before[0].center());
+        assert_eq!(r.harness.state().session.timeline.view.scroll, 0.0, "Fit still works in {tab:?}");
+        if tab == Tab::Timeline {
+            r.drag(before[3].center(), r.lane_point(Lane::Motion(7), 400.0));
+            assert!(r.song().motion.iter().any(|clip| clip.camera == "cam8" && matches!(clip.body, ClipBody::Autofocus { .. })));
+        }
+    }
+}
+
+#[test]
 fn the_timeline_is_scrolled_by_the_bar_along_its_bottom() {
     let mut r = rig(Song::new("s", "Test Song", "01:00:00:00", 1500));
     let scroll = |r: &Rig| r.harness.state().session.timeline.view.scroll;

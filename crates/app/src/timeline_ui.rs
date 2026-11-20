@@ -37,10 +37,17 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
     };
 
     toolbar(ui, s, &song);
+    egui::ScrollArea::vertical()
+        .id_salt("timeline_tracks")
+        .auto_shrink([false; 2])
+        .min_scrolled_height(0.0)
+        .show(ui, |ui| show_tracks(ui, s, &song));
+}
 
+fn show_tracks(ui: &mut Ui, s: &mut Session, song: &Song) {
     let avail = ui.available_size();
     // Room under the last lane for the scroll bar, so it covers none of it.
-    let height = avail.y.max(Layout::content_height(&song, &s.project, &s.timeline.view) + SCROLL_BAR_H);
+    let height = avail.y.max(Layout::content_height(song, &s.project, &s.timeline.view) + SCROLL_BAR_H);
     let (resp, painter) = ui.allocate_painter(vec2(avail.x, height), Sense::click_and_drag());
     let rect = resp.rect;
     s.probe_timeline = Some(rect);
@@ -65,11 +72,11 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
     s.timeline.view.clamp(song.length_frames, body_w);
     let scroll_bar = scroll_bar(ui, s, song.length_frames, rect);
 
-    request_peaks(s, &song);
+    request_peaks(s, song);
 
     let playhead = s.playhead();
-    let base = timeline::layout(&song, &s.project, &s.timeline.view, rect);
-    request_filmstrip(s, ui.ctx(), &song, &base);
+    let base = timeline::layout(song, &s.project, &s.timeline.view, rect);
+    request_filmstrip(s, ui.ctx(), song, &base);
     let m = mods(ui);
     let editable = s.can_edit();
     let pointer = ui.input(|i| i.pointer.interact_pos());
@@ -77,7 +84,7 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
     // Pointer gestures. The gesture code sees the song as it was when the drag began.
     let mut outcomes = Vec::new();
     {
-        let doc = Doc { song: &song, project: &s.project, playhead };
+        let doc = Doc { song, project: &s.project, playhead };
         if resp.drag_started_by(egui::PointerButton::Primary) {
             let origin = ui.input(|i| i.pointer.press_origin()).or(pointer);
             if let Some(p) = origin {
@@ -145,17 +152,19 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
     // Drops from the Presets and Media tabs.
     let mut ghost: Option<Ghost> = None;
     if let (Some(payload), Some(p)) = (resp.dnd_hover_payload::<PresetDrag>(), ui.ctx().pointer_latest_pos()) {
-        let doc = Doc { song: &song, project: &s.project, playhead };
+        let doc = Doc { song, project: &s.project, playhead };
         ghost = s.timeline.preset_ghost(&base, &doc, &payload.0, p, m);
     }
     if let (Some(payload), Some(p)) = (resp.dnd_hover_payload::<MediaDrag>(), ui.ctx().pointer_latest_pos()) {
-        let doc = Doc { song: &song, project: &s.project, playhead };
+        let doc = Doc { song, project: &s.project, playhead };
         let info = &payload.0;
         let stamp = Stamp::of(info, &doc, m);
         ghost = s.timeline.media_ghost(&base, &doc, &info.name, media_track(info), info.duration_frames, stamp, p, m);
     }
-    if let (Some(payload), Some(p)) = (egui::DragAndDrop::payload::<CameraControlDrag>(ui.ctx()), pointer) {
-        let doc = Doc { song: &song, project: &s.project, playhead };
+    if let (Some(payload), Some(p)) =
+        (egui::DragAndDrop::payload::<CameraControlDrag>(ui.ctx()), pointer.filter(|&p| ui.clip_rect().contains(p)))
+    {
+        let doc = Doc { song, project: &s.project, playhead };
         ghost = s.timeline.control_ghost(&base, &doc, &payload.0, p, m);
     }
     if egui::DragAndDrop::has_payload_of_type::<CameraControlDrag>(ui.ctx()) {
@@ -164,7 +173,7 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
                 if let Lane::Motion(i) = g.lane {
                     let camera = s.project.cameras[i].id.clone();
                     let result = editable.clone().and_then(|_| {
-                        ptz_core::edit::insert_camera_control(&song, &s.project, &camera, g.start, payload.0.clone())
+                        ptz_core::edit::insert_camera_control(song, &s.project, &camera, g.start, payload.0.clone())
                             .map_err(|why| why.to_string())
                     });
                     outcomes.push(match result {
@@ -186,7 +195,7 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
     };
     if let Some(payload) = holds(ui, true).then(|| resp.dnd_release_payload::<PresetDrag>()).flatten() {
         if let Some(p) = ui.ctx().pointer_latest_pos() {
-            let doc = Doc { song: &song, project: &s.project, playhead };
+            let doc = Doc { song, project: &s.project, playhead };
             outcomes.push(match &editable {
                 Ok(()) => s.timeline.drop_preset(&base, &doc, &payload.0, p, m),
                 Err(why) => Outcome::Refused(why.clone()),
@@ -195,7 +204,7 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
     }
     if let Some(payload) = holds(ui, false).then(|| resp.dnd_release_payload::<MediaDrag>()).flatten() {
         if let Some(p) = ui.ctx().pointer_latest_pos() {
-            let doc = Doc { song: &song, project: &s.project, playhead };
+            let doc = Doc { song, project: &s.project, playhead };
             let info = &payload.0;
             let stamp = Stamp::of(info, &doc, m);
             let track = media_track(info);
@@ -245,10 +254,10 @@ pub fn show(ui: &mut Ui, s: &mut Session) {
         }
     }
 
-    context_menu(&resp, s, &song, &base);
+    context_menu(&resp, s, song, &base);
 
     // Paint the preview while a drag is in progress, else the song itself.
-    let shown: &Song = s.timeline.preview.as_ref().unwrap_or(&song);
+    let shown: &Song = s.timeline.preview.as_ref().unwrap_or(song);
     let l = if s.timeline.preview.is_some() { timeline::layout(shown, &s.project, &s.timeline.view, rect) } else { base.clone() };
     paint(&painter, &l, shown, s, playhead);
     if let Some((bar, resp)) = &scroll_bar {
