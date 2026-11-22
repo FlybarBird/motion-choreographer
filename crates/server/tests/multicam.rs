@@ -386,6 +386,42 @@ fn rearming_on_an_invalid_live_edited_preset_reports_the_fault_and_keeps_playing
 }
 
 #[test]
+fn an_elevation_overrun_blocks_show_arm_live_edits_and_camera_rearm() {
+    let t = TestServer::start("elevation-motion-limit");
+    let api = t.client("operator");
+    api.take_lease("Operator", false).unwrap();
+    let project = api.project().unwrap();
+    let high = store(&api, "cam1", "High", Pose { elevation: 200.0, ..Pose::home() });
+    let song = song_at(&api, &project, "Elevation cue", []);
+    let baseline = api.working(&song.id).unwrap();
+    let (mut edited, clip) =
+        edit::insert_preset_move_timed(&song, &project, &high, 25, edit::PresetTiming::Seconds(1.0)).unwrap();
+    assert!(edit::accept_issues(&edited, &project, &clip, "Operator", "now").is_err());
+    edited.motion_clip_mut(&clip).unwrap().accepted =
+        Some(ptz_core::song::Accepted { by: "Operator".into(), at: "earlier".into() });
+
+    play_live(&api);
+    api.confirm_live_edit(&song.id).unwrap();
+    let put = PutWorking { expected_counter: baseline.edit_counter, song: edited };
+    assert!(refused(api.put_working(&put), 409).contains("Fix the elevation move"));
+    assert_eq!(api.working(&song.id).unwrap().edit_counter, baseline.edit_counter);
+
+    api.set_camera_armed("cam1", false).unwrap();
+    api.put_working(&put).unwrap();
+    assert!(refused(api.set_camera_armed("cam1", true), 409).contains("Fix the elevation move"));
+    let live = api.status().unwrap();
+    assert_playing(&live);
+    assert!(!live.first().armed);
+
+    do_act(&api, Action::Stop);
+    do_act(&api, Action::Disarm);
+    api.set_camera_armed("cam1", true).unwrap();
+    api.save(&song.id).unwrap();
+    api.commit(&song.id).unwrap();
+    assert!(refused(api.act(Action::Arm, &TransportRequest::default()), 409).contains("timeline issue"));
+}
+
+#[test]
 fn a_project_holds_one_to_twelve_cameras_and_a_removed_camera_takes_its_presets_and_blocks_its_moves() {
     let t = TestServer::start("multicam-project");
     let api = t.client("a");

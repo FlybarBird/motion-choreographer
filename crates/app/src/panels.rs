@@ -462,7 +462,7 @@ fn inspect_move(ui: &mut Ui, s: &mut Session, id: &str) {
         section(ui, "Issues");
         issue_rows(ui, &issues, s.project.units);
         ui.horizontal_wrapped(|ui| {
-            let overrun = issues.iter().any(|i| i.acceptable());
+            let overrun = issues.iter().any(|i| i.is_motion_overrun());
             if clip.is_preset_move()
                 && overrun
                 && ui.button("Use auto time").on_hover_text("Lengthen the move to the fastest time the rig can do").clicked()
@@ -475,7 +475,7 @@ fn inspect_move(ui: &mut Ui, s: &mut Session, id: &str) {
                 let b = if all_acceptable {
                     b.on_hover_text("Allow Arm with this overrun. The rig will lag behind the timeline here")
                 } else {
-                    b.on_disabled_hover_text("Range, jump and keep-out problems cannot be accepted. Change the move")
+                    b.on_disabled_hover_text("Fix the blocking issues on this move before accepting it")
                 };
                 if b.clicked() {
                     let by = s.station.clone();
@@ -486,7 +486,7 @@ fn inspect_move(ui: &mut Ui, s: &mut Session, id: &str) {
                 s.edit(|song, project| edit::clear_acceptance(song, project, id));
             }
         });
-        if let Some(a) = &clip.accepted {
+        if let Some(a) = clip.accepted.as_ref().filter(|_| issues.iter().any(|i| i.acceptable())) {
             ui.label(RichText::new(format!("Accepted by {} at {}", a.by, a.at)).small().color(MUTED));
         }
     }
@@ -603,13 +603,20 @@ fn inspect_move(ui: &mut Ui, s: &mut Session, id: &str) {
                 }
 
                 field(ui, "Ease");
-                egui::ComboBox::from_id_salt("ease").selected_text(ease.label()).width(list).show_ui(ui, |ui| {
-                    for e in Ease::ALL {
-                        if ui.selectable_label(*ease == e, e.label()).clicked() {
-                            s.edit(|song, project| edit::set_ease(song, project, id, e));
+                if clip.axes.as_slice() == [Axis::Elevation] {
+                    ui.label(Ease::EaseInOut.label());
+                } else {
+                    let combo = egui::ComboBox::from_id_salt("ease").selected_text(ease.label()).width(list).show_ui(ui, |ui| {
+                        for e in Ease::ALL {
+                            if ui.selectable_label(*ease == e, e.label()).clicked() {
+                                s.edit(|song, project| edit::set_ease(song, project, id, e));
+                            }
                         }
+                    });
+                    if clip.has_axis(Axis::Elevation) {
+                        combo.response.on_hover_text("Elevation always eases in and out");
                     }
-                });
+                }
                 ui.end_row();
             });
         }

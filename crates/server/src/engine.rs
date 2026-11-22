@@ -722,7 +722,7 @@ impl Show {
         self.require_lease(client)?;
         let i = self.unit_index(Some(camera))?;
         if accept_sequence(&mut self.arm_sequences, client, camera, request.sequence) {
-            self.apply_camera_arm(i, request.armed, &self.who(client));
+            self.apply_camera_arm(i, request.armed, &self.who(client))?;
         }
         Ok(())
     }
@@ -759,17 +759,31 @@ impl Show {
                 crate::osc::Operation::Toggle(revision) if revision == self.units[i].arm_revision => !self.units[i].armed,
                 _ => return Ok(()),
             };
-            self.apply_camera_arm(i, armed, "OSC");
+            self.apply_camera_arm(i, armed, "OSC")?;
         }
         Ok(())
     }
 
-    fn apply_camera_arm(&mut self, i: usize, armed: bool, by: &str) {
+    fn apply_camera_arm(&mut self, i: usize, armed: bool, by: &str) -> Res<()> {
         let live = self.transport.hardware_live();
-        let unit = &mut self.units[i];
-        if unit.armed == armed {
-            return;
+        if self.units[i].armed == armed {
+            return Ok(());
         }
+        if live && armed {
+            if let Some(issue) = self.entry().and_then(|entry| {
+                entry
+                    .compiled
+                    .issues
+                    .iter()
+                    .find(|issue| issue.is_elevation_motion_issue() && issue.camera(&entry.song) == self.units[i].id)
+            }) {
+                return Err(Fail::refused(format!(
+                    "Fix the elevation move before arming this camera. {}",
+                    issue.message_in(self.project.units)
+                )));
+            }
+        }
+        let unit = &mut self.units[i];
         unit.armed = armed;
         unit.arm_revision = unit.arm_revision.wrapping_add(1);
         if unit.jog_deadline.is_none() {
@@ -795,6 +809,7 @@ impl Show {
         let camera = unit.id.clone();
         self.log("camera_arm", json!({ "camera": camera, "armed": armed, "by": by, "frame": self.frame_f.floor() as i64 }));
         self.poke();
+        Ok(())
     }
 
     // ---- lease ----
@@ -1188,8 +1203,18 @@ impl Show {
     }
 
     fn replace_working(&mut self, id: &str, song: Song, reason: &str) -> Res<WorkingSong> {
-        self.storage.save_working(&song).map_err(Fail::io)?;
         let compiled = compile(&song, &self.project);
+        if self.current.as_deref() == Some(id) && self.transport.hardware_live() {
+            if let Some(issue) = compiled.issues.iter().find(|issue| {
+                issue.is_elevation_motion_issue() && self.units.iter().any(|u| u.armed && u.id == issue.camera(&song))
+            }) {
+                return Err(Fail::refused(format!(
+                    "Fix the elevation move before applying this live edit. {}",
+                    issue.message_in(self.project.units)
+                )));
+            }
+        }
+        self.storage.save_working(&song).map_err(Fail::io)?;
         let entry = self.songs.get_mut(id).ok_or_else(|| Fail::not_found("No such song"))?;
         entry.song = song;
         entry.compiled = compiled;
@@ -3263,7 +3288,8 @@ impl Show {
                 json!({ "song": song_id, "pass": pass.id, "problem": format!("Raw samples were not kept: {e}") }),
             );
         }
-        let curves = record::fit_pass(&pass.samples, 1.0);
+        let limits = self.project.axes_of(&pass.camera);
+        let curves = record::fit_pass_for_rig(&pass.samples, 1.0, &limits.elevation, pass.rate.fps());
         let keys: BTreeMap<Axis, usize> = curves.iter().map(|(a, k)| (*a, k.len())).collect();
         let Some(entry) = self.songs.get(&song_id) else { return };
         let punched = edit::punch_keys(
@@ -3316,7 +3342,8 @@ impl Show {
             return Err(Fail::refused("This clip was trimmed or split after it was recorded. Refit works on a whole pass"));
         }
         let samples: BTreeMap<Axis, Vec<f64>> = pass.samples.into_iter().filter(|(a, _)| clip.axes.contains(a)).collect();
-        let curves = record::fit_pass(&samples, req.scale);
+        let limits = self.project.axes_of(&clip.camera);
+        let curves = record::fit_pass_for_rig(&samples, req.scale, &limits.elevation, self.rate().fps());
         let song = edit::replace_curves(&entry.song, &self.project, clip_id, curves).map_err(|r| Fail::invalid(r.to_string()))?;
         let out = self.replace_working(&song_id, song, "refit")?;
         self.log(
@@ -3340,8 +3367,7 @@ impl Show {
     /// not. A move is smoothed from its raw samples while it still is the whole pass, so
     /// smoothing again starts from the same take; a trimmed one from its keys. A move that was
     /// accepted while still over a limit is smoothed again, and stays accepted only if it still
-    /// is over. Range, jump and keep-out problems are never accepted here:
-    /// the report lists them as left. The rig's limits are read, never changed.
+    /// is over. The report lists remaining blocking issues. The rig's limits are read, never changed.
     pub fn smooth(&mut self, client: &str, req: &Smooth) -> Res<Smoothed> {
         self.require_lease(client)?;
         let Some(entry) = self.entry() else {
@@ -3370,7 +3396,7 @@ impl Show {
         for clip in &recorded {
             let Some(camera) = self.project.camera(&clip.camera) else { continue };
             let fixable =
-                |i: &&Issue| i.clip_id() == Some(clip.id.as_str()) && (i.acceptable() || matches!(i, Issue::Jump { .. }));
+                |i: &&Issue| i.clip_id() == Some(clip.id.as_str()) && (i.is_motion_overrun() || matches!(i, Issue::Jump { .. }));
             if !entry.compiled.issues.iter().any(|i| fixable(&i)) {
                 continue;
             }

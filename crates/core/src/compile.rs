@@ -1,7 +1,7 @@
 //! Auto time, per-frame compile and feasibility issues.
 
 use crate::camera::{first_camera, is_first_camera, CameraConfig};
-use crate::eval::{ease_keys, peak_factor, segment_value, Evaluator};
+use crate::eval::{ease_keys, peak_factor, preset_ease, segment_value, Evaluator};
 use crate::pose::{Axis, AxisLimits, AxisTable, KeepOutRule, Pose, Project, Units};
 use crate::song::{ClipBody, Ease, FromPose, MotionClip, Song};
 use crate::time::FrameRate;
@@ -97,10 +97,22 @@ impl Issue {
         }
     }
 
-    /// Speed and acceleration overruns can be accepted by the operator.
-    /// Range, jump, keep-out and missing-camera problems cannot.
-    pub fn acceptable(&self) -> bool {
+    pub fn is_motion_overrun(&self) -> bool {
         matches!(self, Issue::TooFast { .. } | Issue::TooMuchAcceleration { .. })
+    }
+
+    pub fn is_elevation_motion_issue(&self) -> bool {
+        matches!(
+            self,
+            Issue::TooFast { axis: Axis::Elevation, .. }
+                | Issue::TooMuchAcceleration { axis: Axis::Elevation, .. }
+                | Issue::Jump { axis: Axis::Elevation, .. }
+        )
+    }
+
+    /// Only speed and acceleration overruns on the camera head may be accepted.
+    pub fn acceptable(&self) -> bool {
+        self.is_motion_overrun() && !self.is_elevation_motion_issue()
     }
 
     pub fn message(&self) -> String {
@@ -275,8 +287,10 @@ fn compile_camera(
                     }
                 }
             }
-            if f > 0 && f < last && !is_jump(fi) && !is_jump(fi + 1) {
-                let accel = (v(f + 1) - 2.0 * value + v(f - 1)).abs() * fps * fps;
+            // Outside the song the column is at rest, including when Arming positions it
+            // at a different height on frame zero.
+            if (axis == Axis::Elevation || (f > 0 && f < last)) && (f == 0 || !is_jump(fi)) && !is_jump(fi + 1) {
+                let accel = ((v((f + 1).min(last)) - value) - (value - v(f.saturating_sub(1)))).abs() * fps * fps;
                 if accel > lim.max_accel * SLACK {
                     let c = ev.clip_index_at(axis, fi).or_else(|| ev.clip_index_at(axis, fi - 1));
                     if let Some(c) = c {
@@ -334,18 +348,22 @@ fn compile_camera(
 
 /// True when an eased move of `frames` stays inside the speed and acceleration
 /// limits, sampled per frame the same way `compile` does.
-fn move_fits(from: f64, to: f64, ease: Ease, frames: i64, lim: &AxisLimits, fps: f64) -> bool {
+fn move_fits(axis: Axis, from: f64, to: f64, ease: Ease, frames: i64, lim: &AxisLimits, fps: f64) -> bool {
     if from == to {
         return true;
     }
-    let [k0, k1] = ease_keys(from, to, frames, ease);
+    let [k0, k1] = ease_keys(from, to, frames, preset_ease(axis, ease));
     let at = |f: i64| segment_value(&k0, &k1, f.clamp(0, frames) as f64);
     for f in 0..=frames {
         let speed = (at(f + 1) - at(f)).abs() * fps;
         if speed > lim.max_speed * SLACK {
             return false;
         }
-        let accel = (at(f + 1) - 2.0 * at(f) + at(f - 1)).abs() * fps * fps;
+        let mut accel = (at(f + 1) - 2.0 * at(f) + at(f - 1)).abs() * fps * fps;
+        if axis == Axis::Elevation && (f == 0 || f == frames) {
+            // Reserve half the acceleration at a shared frame for the neighboring preset.
+            accel *= 2.0;
+        }
         if accel > lim.max_accel * SLACK {
             return false;
         }
@@ -357,12 +375,12 @@ fn move_fits(from: f64, to: f64, ease: Ease, frames: i64, lim: &AxisLimits, fps:
 /// travel at its top speed through the ease, plus that axis's settle time.
 pub fn auto_duration(from: &Pose, to: &Pose, axes: &[Axis], ease: Ease, limits: &AxisTable, rate: FrameRate) -> i64 {
     let fps = rate.fps();
-    let peak = peak_factor(ease);
     let mut seconds: f64 = 0.0;
     for &axis in axes {
         let lim = limits.get(axis);
         let travel = (to.get(axis) - from.get(axis)).abs();
         if travel > 1e-9 && lim.max_speed > 0.0 {
+            let peak = peak_factor(preset_ease(axis, ease));
             seconds = seconds.max(travel * peak / lim.max_speed + lim.settle_s);
         }
     }
@@ -372,7 +390,7 @@ pub fn auto_duration(from: &Pose, to: &Pose, axes: &[Axis], ease: Ease, limits: 
     }
     let mut frames = ((seconds * fps) - 1e-9).ceil().max(1.0) as i64;
     let fits =
-        |frames: i64| axes.iter().all(|&axis| move_fits(from.get(axis), to.get(axis), ease, frames, limits.get(axis), fps));
+        |frames: i64| axes.iter().all(|&axis| move_fits(axis, from.get(axis), to.get(axis), ease, frames, limits.get(axis), fps));
     let mut guard = 0;
     while !fits(frames) && guard < 400 {
         frames += (frames / 20).max(1);
@@ -512,6 +530,60 @@ mod tests {
         let pan = auto(&from, &to, &[Axis::Pan], Ease::EaseInOut, &p);
         assert_eq!(both, lift);
         assert!(lift > pan * 5);
+    }
+
+    #[test]
+    fn back_to_back_elevation_presets_can_reverse_at_auto_time_with_any_ease() {
+        let mut p = project();
+        p.first_mut().axes.elevation.max_accel = 45.0;
+        for rate in FrameRate::ALL {
+            p.rate = rate;
+            for ease in Ease::ALL {
+                let mut song = Song::new("s", "S", "01:00:00:00", 1);
+                let lift = |start, elevation| MotionClip {
+                    axes: vec![Axis::Elevation],
+                    body: ClipBody::PresetMove {
+                        from: FromPose::linked(),
+                        to: PresetRef { pose: Pose { elevation, ..Pose::home() }, ..Default::default() },
+                        ease,
+                        auto_duration: true,
+                    },
+                    ..pan_move(start, 1, 0.0, true)
+                };
+                song.motion.push(lift(0, 80.0));
+                refresh_auto(&mut song, &p);
+                let turn = song.motion[0].end_frame();
+                song.motion.push(lift(turn, 0.0));
+                refresh_auto(&mut song, &p);
+                let c = compile(&song, &p);
+                assert!(c.issues.is_empty(), "{rate:?}, {ease:?}: {:?}", c.issues);
+                let poses = c.poses(FIRST_CAMERA);
+                assert_eq!(poses[turn as usize].elevation, 80.0);
+                assert_eq!(poses.last().unwrap().elevation, 0.0);
+            }
+        }
+    }
+
+    #[test]
+    fn elevation_acceleration_is_checked_from_rest_at_both_song_edges_and_cannot_be_accepted() {
+        let p = project();
+        for (values, frame) in [([0.0, 0.4, 0.7, 0.9, 1.0], 0), ([0.0, 0.1, 0.3, 0.6, 1.0], 4)] {
+            let mut song = Song::new("s", "S", "01:00:00:00", 4);
+            let keys = values.into_iter().enumerate().map(|(i, v)| Key::new(i as i64, v, Interp::Linear)).collect();
+            song.motion.push(MotionClip {
+                axes: vec![Axis::Elevation],
+                body: ClipBody::Keys { curves: [(Axis::Elevation, keys)].into() },
+                accepted: Some(crate::song::Accepted { by: "Operator".into(), at: "earlier".into() }),
+                ..pan_move(0, 4, 0.0, false)
+            });
+            let compiled = compile(&song, &p);
+            assert!(
+                matches!(compiled.issues.as_slice(), [Issue::TooMuchAcceleration { axis: Axis::Elevation, frame: f, .. }] if *f == frame),
+                "{:?}",
+                compiled.issues
+            );
+            assert_eq!(compiled.blocking_count(&song), 1);
+        }
     }
 
     #[test]

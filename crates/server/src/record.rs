@@ -38,6 +38,27 @@ pub fn fit_pass(samples: &BTreeMap<Axis, Vec<f64>>, scale: f64) -> BTreeMap<Axis
     samples.iter().map(|(axis, values)| (*axis, fit_keys(values, default_tolerance(*axis) * scale))).collect()
 }
 
+/// Fit the recorded curves and smooth any repairable elevation overrun before writing the clip.
+pub fn fit_pass_for_rig(
+    samples: &BTreeMap<Axis, Vec<f64>>,
+    scale: f64,
+    elevation: &AxisLimits,
+    fps: f64,
+) -> BTreeMap<Axis, Vec<Key>> {
+    let mut curves = fit_pass(samples, scale);
+    if let Some(keys) = curves.get_mut(&Axis::Elevation) {
+        let raw = &samples[&Axis::Elevation];
+        let plays = |keys: &[Key]| (0..raw.len()).filter_map(|f| keys_value(keys, f as f64)).collect::<Vec<_>>();
+        if overruns(&plays(keys), elevation, fps) {
+            let (smooth, _) = smooth_axis(raw, Axis::Elevation, elevation, fps);
+            if !overruns(&plays(&smooth), elevation, fps) {
+                *keys = smooth;
+            }
+        }
+    }
+    curves
+}
+
 /// What of a pass was moved: the axes that left where they stood, from `lead` frames before
 /// the first of them did. An axis nobody touched writes nothing, and the frames before the
 /// first move are not filled in, so the take starts where the rig was standing and what was
@@ -65,6 +86,10 @@ pub fn smooth_axis(samples: &[f64], axis: Axis, limits: &AxisLimits, fps: f64) -
     let mut keys = Vec::new();
     for scale in SMOOTH_FITS {
         keys = fit_keys(&smooth, default_tolerance(axis) * scale);
+        if let Some(last) = keys.last_mut() {
+            // A nearly still section can be flattened by the fit. Keep the take's final pose.
+            last.value = smooth[smooth.len() - 1];
+        }
         if !overruns(&played(&keys), limits, fps) {
             break;
         }

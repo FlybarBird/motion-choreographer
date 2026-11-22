@@ -192,21 +192,22 @@ pub fn overruns(samples: &[f64], limits: &AxisLimits, fps: f64) -> bool {
     fast || values.windows(3).any(|w| (w[2] - 2.0 * w[1] + w[0]).abs() * fps * fps > limits.max_accel * SLACK)
 }
 
-/// The steps of the quickest move over `distance` that starts and ends at rest: no step
-/// longer than `step`, no two neighbours further apart than `bend`.
-fn quickest(distance: f64, step: f64, bend: f64) -> Vec<f64> {
+/// The steps of the quickest move over `distance` that starts and ends at rest
+/// within the available frames.
+fn quickest(distance: f64, step: f64, bend: f64, available: usize) -> Option<Vec<f64>> {
     let shape = |frames: usize| -> Vec<f64> {
         (1..=frames).map(|k| step.min(bend * k as f64).min(bend * (frames + 1 - k) as f64)).collect()
     };
     let mut frames = (distance / step).ceil().max(1.0) as usize;
-    loop {
+    while frames <= available {
         let steps = shape(frames);
         let reach: f64 = steps.iter().sum();
         if reach >= distance {
-            return steps.into_iter().map(|d| d * distance / reach).collect();
+            return Some(steps.into_iter().map(|d| d * distance / reach).collect());
         }
         frames += 1;
     }
+    None
 }
 
 /// Readings that stood still and then caught up in a jump no rig could make: the head had
@@ -229,10 +230,10 @@ fn arrive_on_time(values: &mut [f64], step: f64, bend: f64) {
             j += 1;
         }
         let (from, to) = (values[i], values[j]);
-        let steps = quickest((to - from).abs(), step, bend);
         // The move ends on frame j, so it starts this many frames before it; frame 1 is the
         // first of the take and never moves.
-        if let Some(start) = j.checked_sub(steps.len()).filter(|s| *s >= 1) {
+        if let Some(steps) = quickest((to - from).abs(), step, bend, j - 1) {
+            let start = j - steps.len();
             if values[start..=i].iter().all(|v| (v - from).abs() <= STALE * (to - from).abs()) {
                 let mut at = from;
                 for (k, d) in steps.iter().enumerate() {

@@ -15,7 +15,7 @@ use ptz_core::fit::overruns;
 use ptz_core::pose::{Axis, Project};
 use ptz_core::song::{Ease, Song};
 use ptz_core::transport::{Action, Output};
-use ptz_server::record::{fit_pass, RecordedPass};
+use ptz_server::record::{fit_pass, fit_pass_for_rig, RecordedPass};
 use std::collections::BTreeMap;
 
 /// A move as a real head reports it: read at uneven moments, each frame holding the last
@@ -334,9 +334,15 @@ fn a_take_on_every_axis_is_smoothed_on_every_axis_and_waits_where_it_starts() {
         samples.insert(axis, late_readings(3 + n as u32, 600, truth));
         starts.push((axis, from, l.max - l.min));
     }
+    let fitted = fit_pass_for_rig(&samples, 1.0, &limits.elevation, fps);
+    let elevation = &samples[&Axis::Elevation];
+    let played: Vec<f64> = (0..elevation.len()).map(|f| keys_value(&fitted[&Axis::Elevation], f as f64).unwrap()).collect();
+    assert!(!overruns(&played, &limits.elevation, fps));
+    assert_eq!((played.first(), played.last()), (elevation.first(), elevation.last()));
+
     let clip = take(&t, &project, &mut song, "cam1", 40, samples);
     let recorded = put(&api, &song);
-    assert!(!recorded.issues.is_empty() && recorded.issues.iter().all(|i| i.acceptable()), "{:?}", recorded.issues);
+    assert!(recorded.issues.iter().any(|i| i.is_elevation_motion_issue() && !i.acceptable()), "{:?}", recorded.issues);
     // Which axes the late readings put over a limit, measured the way the compile measures it.
     let was = song.motion_clip(&clip).unwrap();
     let over: Vec<Axis> = Axis::ALL

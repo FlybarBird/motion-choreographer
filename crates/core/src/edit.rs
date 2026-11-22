@@ -2,8 +2,8 @@
 //! without a window. Each returns the new song or a typed refusal that the app
 //! shows as the reason a drag will not land.
 
-use crate::compile::{refresh_auto, suggested_duration};
-use crate::eval::{ease_keys, split_keys, Evaluator};
+use crate::compile::{compile, refresh_auto, suggested_duration};
+use crate::eval::{ease_keys, preset_ease, split_keys, Evaluator};
 use crate::framing::FocusMode;
 use crate::pose::{Axis, Preset, Project};
 use crate::song::{
@@ -28,6 +28,7 @@ pub enum Refusal {
     OtherCamera,
     NoSuchCamera,
     InvalidDuration,
+    ElevationMotionLimit,
 }
 
 impl fmt::Display for Refusal {
@@ -46,6 +47,7 @@ impl fmt::Display for Refusal {
             Refusal::OtherCamera => write!(f, "That preset belongs to another camera"),
             Refusal::NoSuchCamera => write!(f, "That camera is not in the project"),
             Refusal::InvalidDuration => write!(f, "The preset duration must be a finite number of seconds greater than zero"),
+            Refusal::ElevationMotionLimit => write!(f, "Fix the elevation motion issue before accepting this move"),
         }
     }
 }
@@ -535,7 +537,7 @@ fn to_keys_in_place(song: &mut Song, id: &str) -> Result<(), Refusal> {
     let mut curves = BTreeMap::new();
     for &axis in &clip.axes {
         let from = ev.value_at_start(&clip, axis);
-        curves.insert(axis, ease_keys(from, to.pose.get(axis), clip.duration_frames, *ease).to_vec());
+        curves.insert(axis, ease_keys(from, to.pose.get(axis), clip.duration_frames, preset_ease(axis, *ease)).to_vec());
     }
     let c = song.motion_clip_mut(id).ok_or(Refusal::NotFound)?;
     c.body = ClipBody::Keys { curves };
@@ -971,7 +973,11 @@ pub fn set_song_length(song: &Song, project: &Project, frames: i64) -> Edit {
 pub fn accept_issues(song: &Song, project: &Project, clip: &str, by: &str, at: &str) -> Edit {
     let mut next = song.clone();
     next.motion_clip_mut(clip).ok_or(Refusal::NotFound)?.accepted = Some(Accepted { by: by.into(), at: at.into() });
-    finish(next, project)
+    let next = finish(next, project)?;
+    if compile(&next, project).issues.iter().any(|i| i.clip_id() == Some(clip) && i.is_elevation_motion_issue()) {
+        return Err(Refusal::ElevationMotionLimit);
+    }
+    Ok(next)
 }
 
 pub fn clear_acceptance(song: &Song, project: &Project, clip: &str) -> Edit {

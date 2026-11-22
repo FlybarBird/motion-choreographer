@@ -244,7 +244,7 @@ a selected keys clip at the playhead, or become a new clip outside it.
 | To | The preset the move arrives at. Pick another to change it. |
 | Start, End | In timecode |
 | Duration | **Auto**: as fast as the rig's limits allow. **Custom**: the time you set. *Auto time is 7.90 s* tells you the fastest. |
-| Ease | Linear, Ease in, Ease out, Ease in-out (the default) |
+| Ease | Linear, Ease in, Ease out, Ease in-out (the default). Elevation always eases in and out. |
 | Issues | What is wrong with this move, and the buttons that fix it |
 | Convert to keys | Replace the move with keys that trace the same path |
 
@@ -280,16 +280,15 @@ under **Issues in this song**, each with **Go there**.
 | --- | --- | --- |
 | *Pan is too fast: 85 per second, limit 60* | The move is shorter than the rig can do it | **Use auto time**, or lengthen the move, or **Accept as programmed** |
 | *Tilt starts or stops too sharply* | The acceleration limit is exceeded | Lengthen the move or soften the ease or the curve, or **Accept as programmed** |
+| *Elevation starts or stops too sharply* | The lift exceeds its acceleration limit | Use **Auto time** for a preset move, give it more time, or smooth a recorded move. Fix the issue before arming. |
 | *Pan reaches 190, outside its range* | The pose is beyond the axis's Min or Max | Change the preset or the keys. Cannot be accepted. |
 | *Zoom steps by 12 at the start of this move* | The axis would have to jump instantly, usually where keys take over from another clip | Start the keys where the previous move ends, or leave room between them. Cannot be accepted. A camera's first recorded move is never a step: the camera waits where the take starts (chapter 8). |
 | *Keep-out rule broken: ...* | Two axes together enter a forbidden combination | Change the move so it stays out. Cannot be accepted. |
 
-**Accept as programmed** is for speed and acceleration only. It says: I know
-the rig will lag behind the timeline here, and that is fine. The acceptance
-records who accepted it and when, is written to the run log when the song is
-armed, and can be withdrawn (**Withdraw acceptance**). Range, jump and keep-out
-problems can never be accepted, because they are about where the rig goes, not
-how late it gets there.
+**Accept as programmed** allows a camera head's speed or acceleration overrun.
+The head may lag behind the timeline there. The run log records the acceptance
+when the song is armed, and **Withdraw acceptance** clears it. Elevation
+overruns, range, jump and keep-out issues must be fixed before arming.
 
 The limits themselves are in the project settings (Setup Guide, 7.5). If a
 limit is wrong, fix the limit there; do not accept your way round it.
@@ -393,12 +392,12 @@ position changes: one that stands still is not recorded.
 
 ### Cleaning it up
 
-The pass is reduced to as few keys as reproduce it closely: within 0.05 degrees
-of pan and tilt, 0.2 % of zoom and focus and 1 mm of elevation. A stretch where
-the rig stood still becomes two keys. The raw samples are kept, so with the
-clip selected, **Fewer keys** and **More keys** in the Inspector fit them again
-looser or tighter at any time. Fewer keys are easier to edit; more keys follow
-the take closer. Then shape it in the graph editor like any other keys clip.
+The pass normally fits within 0.05 degrees of pan and tilt, 0.2 percent of zoom
+and focus, and 1 mm of elevation. A stretch where the rig stood still becomes
+two keys. Recording and refitting smooth elevation if it can reach the recorded
+heights within the lift's limits and the recorded time. The raw samples are kept.
+With the clip selected, **Fewer keys** and **More keys** in the Inspector refit
+the samples. You can also shape the keys in the graph editor.
 
 ### Where the camera waits before a take
 
@@ -435,9 +434,9 @@ nothing selected, under **Recorded moves**; with a recorded clip selected,
   and then jumps to where the head had got to. That jump becomes the move the
   rig must have made: as quick as its limits allow, arriving on the frame the
   take does.
-- A move that is still over a limit after that, because there is no room in the
-  take to make it any slower, is accepted as programmed in your station's name,
-  exactly as the button in chapter 6 does it.
+- If a camera head still exceeds a speed or acceleration limit after smoothing,
+  the move can be accepted as programmed in your station's name. Any remaining
+  elevation overrun stays in the report and blocks Arm.
 - A recorded move that begins somewhere other than where the timeline has the
   camera, as a second take does when the head was moved in between, is a step
   no rig can make. It is given the move there instead, from its first frame,
@@ -626,7 +625,7 @@ unless all of these hold:
 
 - the transport is stopped and Record is off;
 - the open song is a committed revision with no unsaved edits;
-- every timeline issue is fixed, or (speed and acceleration only) accepted;
+- every timeline issue is fixed, or (head speed and acceleration only) accepted;
 - every camera's devices are answering, and each AutoPod+ is on and calibrated.
 
 When you press it, every camera's rig travels to its pose at the playhead, at
@@ -965,7 +964,7 @@ after the playhead is where you want the mark.
 | --- | --- | --- |
 | CAM 1, CAM 2 | **Prev** and **Next** clip on the selected camera's lane. The playhead goes to the clip. | Playhead **To start**, **To end** |
 | CAM 3 | **Ease**: steps through the eases of a preset move | **To keys**: turn the move into keys |
-| CAM 4 | **Auto time**: give the move its auto time again (amber when that would clear a problem) | **Accept as is**, or **Withdraw accept**, for a speed or acceleration problem |
+| CAM 4 | **Auto time**: give the move its auto time again (amber when that would clear a problem) | **Accept as is**, or **Withdraw accept**, for a head speed or acceleration problem |
 | CAM 5 | **Duplicate** the clip | Marker **Add** at the playhead |
 | CAM 6 | **Delete** the clip | Marker **Delete** at the playhead |
 | CAM 7 | **Undo** | **Redo** |

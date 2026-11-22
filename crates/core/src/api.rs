@@ -637,11 +637,11 @@ pub struct SmoothReport {
     pub moves: usize,
     /// Ids of the moves whose keys were smoothed.
     pub smoothed: Vec<String>,
-    /// Ids of the moves still over a speed or acceleration limit, accepted as they are.
+    /// Ids of the moves accepted despite a speed or acceleration overrun on the head.
     pub accepted: Vec<String>,
     /// Issues that stopped Arm before.
     pub blocking_before: usize,
-    /// Issues that still stop Arm. Range, jump and keep-out problems are never accepted here.
+    /// Issues that still stop Arm.
     pub left: Vec<Issue>,
     /// The furthest a smoothed move now is from what was recorded, on each axis that changed.
     pub departure: BTreeMap<Axis, f64>,

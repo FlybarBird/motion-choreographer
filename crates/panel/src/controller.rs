@@ -1306,7 +1306,7 @@ impl Controller {
                     } else if problems.iter().all(|p| p.acceptable()) {
                         Face::new("Problem", "Accept as is", Act::Accept).on(Color::Amber)
                     } else {
-                        Face::why("Range, jump and keep-out problems cannot be accepted. Change the move")
+                        Face::why("Fix the blocking issues on this move before accepting it")
                     }
                 }
                 None => none(),
@@ -1324,14 +1324,17 @@ impl Controller {
             };
             keys[0] = step("Prev", Act::PrevClip);
             keys[1] = step("Next", Act::NextClip);
-            keys[2] = match clip.map(|c| &c.body) {
-                Some(ClipBody::PresetMove { ease, .. }) => Face::new("Ease", ease.label(), Act::CycleEase),
+            keys[2] = match clip.map(|c| (&c.body, c)) {
+                Some((ClipBody::PresetMove { .. }, c)) if c.axes.as_slice() == [Axis::Elevation] => {
+                    Face::why("Elevation always eases in and out")
+                }
+                Some((ClipBody::PresetMove { ease, .. }, _)) => Face::new("Ease", ease.label(), Act::CycleEase),
                 Some(_) => Face::why("Only a preset move has an ease"),
                 None => none(),
             };
             keys[3] = match clip.map(|c| (&c.body, c)) {
                 Some((ClipBody::PresetMove { auto_duration: false, .. }, c)) => {
-                    let fast = self.problems_of(&c.id).iter().any(|p| p.acceptable());
+                    let fast = self.problems_of(&c.id).iter().any(|p| p.is_motion_overrun());
                     let f = Face::new("Time", if fast { "Use auto time" } else { "Auto time" }, Act::AutoTime);
                     if fast {
                         f.on(Color::Amber)

@@ -88,6 +88,15 @@ pub fn ease_keys(from: f64, to: f64, duration: i64, ease: Ease) -> [Key; 2] {
     }
 }
 
+/// Elevation preset moves always ease away from and back to rest.
+pub(crate) fn preset_ease(axis: Axis, ease: Ease) -> Ease {
+    if axis == Axis::Elevation {
+        Ease::EaseInOut
+    } else {
+        ease
+    }
+}
+
 /// Eased progress 0..1 at normalised time `t`.
 pub fn ease_value(ease: Ease, t: f64) -> f64 {
     let [k0, k1] = ease_keys(0.0, 1.0, 1_000_000, ease);
@@ -184,7 +193,7 @@ impl<'a> Evaluator<'a> {
                             clip: i,
                             before: prev_end,
                             end,
-                            kind: SegKind::Move(ease_keys(start, end, c.duration_frames, *ease)),
+                            kind: SegKind::Move(ease_keys(start, end, c.duration_frames, preset_ease(axis, *ease))),
                         }
                     }
                     ClipBody::Autofocus { .. } | ClipBody::AutoFollow { .. } => continue,
