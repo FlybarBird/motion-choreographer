@@ -504,6 +504,7 @@ mod tests {
             },
             accepted: None,
             recorded_pass: None,
+            recorded_reversed: false,
         }
     }
 
@@ -640,6 +641,7 @@ mod tests {
                             },
                             accepted: None,
                             recorded_pass: None,
+                            recorded_reversed: false,
                         });
                         let compiled = compile(&song, &p);
                         assert!(compiled.issues.is_empty(), "{ease:?}, inverted={inverted}: {:?}", compiled.issues);
@@ -726,6 +728,7 @@ mod tests {
                 body: ClipBody::Keys { curves: [(Axis::Pan, keys)].into() },
                 accepted: None,
                 recorded_pass: pass.map(str::to_string),
+                recorded_reversed: false,
             });
             song
         };

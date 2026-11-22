@@ -81,6 +81,32 @@ fn two_cameras(api: &Api) -> Project {
     api.put_project(&project).unwrap()
 }
 
+#[test]
+fn refitting_a_reversed_recording_keeps_it_backward_and_preserves_the_raw_take() {
+    let t = TestServer::start("reverse-recording");
+    let api = t.client("a");
+    api.take_lease("Operator", false).unwrap();
+    let project = api.project().unwrap();
+    let mut song = api.new_song("Reverse a recording", None).unwrap().song;
+    api.load_song(&song.id).unwrap();
+    let start = 25;
+    let duration = 100;
+    let samples = (0..=duration).map(|frame| 15.0 + 40.0 * frame as f64 / duration as f64).collect();
+    let id = take(&t, &project, &mut song, "cam1", start, [(Axis::Pan, samples)].into());
+    let raw = t.dir.join("songs").join(&song.id).join("passes/pass-0001.json");
+    let original_samples = std::fs::read(&raw).unwrap();
+
+    let reversed = edit::reverse_move(&song, &project, &id).unwrap();
+    put(&api, &reversed);
+    let refit: WorkingSong = api.post(&format!("/record/{id}/refit"), &Refit { scale: 0.1 }).unwrap();
+    let clip = refit.song.motion_clip(&id).unwrap();
+    assert!(clip.recorded_reversed);
+    assert_eq!(clip.recorded_pass.as_deref(), Some("pass-0001"));
+    assert_eq!(pose_at(&refit.song, "cam1", start).pan, 55.0);
+    assert_eq!(pose_at(&refit.song, "cam1", start + duration).pan, 15.0);
+    assert_eq!(std::fs::read(raw).unwrap(), original_samples);
+}
+
 /// A second take on a camera that had been moved since the first: it begins somewhere other
 /// than where the timeline has the camera. Smoothing gives the rig the move there.
 #[test]

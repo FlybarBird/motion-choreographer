@@ -672,16 +672,20 @@ fn inspect_move(ui: &mut Ui, s: &mut Session, id: &str) {
         }
     });
 
-    if clip.is_preset_move() {
-        ui.add_space(U);
-        if ui
-            .button("Convert to keys")
-            .on_hover_text("Replace the move with two keys per axis that can be shaped in the graph editor")
-            .clicked()
+    ui.add_space(U);
+    ui.horizontal_wrapped(|ui| {
+        if ui.button("Reverse move").on_hover_text("Play this move backward over the same time").clicked() {
+            s.reverse_move(id);
+        }
+        if clip.is_preset_move()
+            && ui
+                .button("Convert to keys")
+                .on_hover_text("Replace the move with two keys per axis that can be shaped in the graph editor")
+                .clicked()
         {
             s.edit(|song, project| edit::convert_to_keys(song, project, id));
         }
-    }
+    });
 }
 
 /// Smooth recorded moves to the rigs' limits: one camera's, or every camera's in the song.

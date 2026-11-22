@@ -3337,11 +3337,9 @@ impl Show {
         let Some(pass) = pass else {
             return Err(Fail::refused(format!("The raw samples of {pass_id} are missing from the data folder")));
         };
-        let whole = clip.axes.iter().all(|a| pass.samples.get(a).is_some_and(|v| v.len() as i64 == clip.duration_frames + 1));
-        if !whole {
+        let Some(samples) = pass.samples_for_clip(clip) else {
             return Err(Fail::refused("This clip was trimmed or split after it was recorded. Refit works on a whole pass"));
-        }
-        let samples: BTreeMap<Axis, Vec<f64>> = pass.samples.into_iter().filter(|(a, _)| clip.axes.contains(a)).collect();
+        };
         let limits = self.project.axes_of(&clip.camera);
         let curves = record::fit_pass_for_rig(&samples, req.scale, &limits.elevation, self.rate().fps());
         let song = edit::replace_curves(&entry.song, &self.project, clip_id, curves).map_err(|r| Fail::invalid(r.to_string()))?;
@@ -3358,8 +3356,7 @@ impl Show {
     fn raw_samples(&self, song_id: &str, clip: &MotionClip) -> Option<BTreeMap<Axis, Vec<f64>>> {
         let path = self.storage.pass_path(song_id, clip.recorded_pass.as_ref()?)?;
         let pass: RecordedPass = storage::read_json(&path)?;
-        let whole = clip.axes.iter().all(|a| pass.samples.get(a).is_some_and(|v| v.len() as i64 == clip.duration_frames + 1));
-        whole.then_some(pass.samples)
+        pass.samples_for_clip(clip)
     }
 
     /// Smooth the recorded moves of the loaded song, or of one camera in it, until each is

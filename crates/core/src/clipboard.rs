@@ -375,6 +375,7 @@ fn keys_clip(id: &str, camera: &str, start_frame: i64, curves: BTreeMap<Axis, Ve
         body: ClipBody::Keys { curves },
         accepted: None,
         recorded_pass: None,
+        recorded_reversed: false,
     })
 }
 
@@ -430,6 +431,7 @@ pub fn paste(song: &Song, project: &Project, snapshot: &Clipboard, at: i64) -> R
         clip.start_frame = at.checked_add(clip.start_frame).ok_or(Error::InvalidData("frame numbers overflow"))?;
         clip.accepted = None;
         clip.recorded_pass = None;
+        clip.recorded_reversed = false;
         if let ClipBody::PresetMove { auto_duration, .. } = &mut clip.body {
             *auto_duration = false;
         }
@@ -503,6 +505,7 @@ pub fn paste_keys(
     }
     clip.accepted = None;
     clip.recorded_pass = None;
+    clip.recorded_reversed = false;
     let selected = inserted
         .into_iter()
         .map(|(axis, frame)| (axis, destination[&axis].binary_search_by_key(&frame, |key| key.frame).unwrap()))
@@ -549,6 +552,7 @@ mod tests {
             },
             accepted: Some(Accepted { by: "operator".into(), at: "yesterday".into() }),
             recorded_pass: Some("pass-1".into()),
+            recorded_reversed: false,
         }
     }
 

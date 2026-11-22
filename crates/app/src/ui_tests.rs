@@ -289,6 +289,24 @@ fn squeezing_a_move_warns_and_the_inspector_button_clears_it() {
 }
 
 #[test]
+fn the_inspector_reverses_a_preset_in_one_undo_step() {
+    let project = Project::default();
+    let (song, id) =
+        ptz_core::edit::insert_preset_move(&Song::new("s", "Test Song", "01:00:00:00", 1500), &project, &presets()[1], 200)
+            .unwrap();
+    let mut r = rig(song.clone());
+    r.harness.state_mut().session.timeline.selection.insert(id.clone());
+    r.harness.run_steps(3);
+    r.press("Reverse move");
+    let clip = r.song().motion_clip(&id).unwrap();
+    let (from, to) = ptz_core::compile::move_endpoints(r.song(), clip).unwrap();
+    assert_eq!((from, to), (presets()[1].pose, song.home_pose));
+    assert_eq!(clip.duration_frames, song.motion_clip(&id).unwrap().duration_frames);
+    r.harness.state_mut().session.undo();
+    assert_eq!(r.song(), &song);
+}
+
+#[test]
 fn clicking_the_ruler_seeks_and_space_asks_for_the_primary_action() {
     let mut r = rig(Song::new("s", "Test Song", "01:00:00:00", 1500));
     let l = r.layout();

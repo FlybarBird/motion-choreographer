@@ -643,6 +643,7 @@ fn toolbar(ui: &mut Ui, s: &mut Session, clip: Option<&MotionClip>) -> bool {
             let on = any && current.iter().all(|i| *i == interp);
             let tip = match interp {
                 Interp::Hold => "Hold the value until the next key",
+                Interp::HoldNext => "Jump to the next key's value immediately and hold it",
                 Interp::Linear => "Straight line to the next key",
                 Interp::Bezier => "Curve to the next key, shaped by the handles",
             };

@@ -226,6 +226,7 @@ and Elevation.
 | Give it to another camera | Drag it onto that camera's lane, or change **Camera** in the Inspector |
 | Copy and paste | Select clips, markers or keys, press **Cmd-C**, move the playhead, then **Cmd-V**. Use Ctrl on Windows/Linux, or **Copy** / **Paste** in the toolbar or right-click menu. |
 | Duplicate it immediately after itself | Alt-drag it, or select it and press **Cmd-D** (**Duplicate**) |
+| Play a preset move or recorded clip backward | Select it and click **Reverse move** in the Inspector or right-click menu. |
 | Delete it | Select it and press **Delete** |
 
 Edges snap to the playhead, to markers and to other clips. Hold **Shift** while
@@ -264,8 +265,14 @@ a selected keys clip at the playhead, or become a new clip outside it.
 | Issues | What is wrong with this move, and the buttons that fix it |
 | Convert to keys | Replace the move with keys that trace the same path |
 
-Right-click a move for **Auto time** and **Convert to keys**. Right-click empty
-space for **Add marker at playhead**.
+**Reverse move** keeps the clip on the same frames. A preset move swaps its
+start and destination and keeps its current duration as **Custom**. If its new
+start creates a jump, use the Inspector issue to find the boundary and arrange
+a move into that pose before arming. Reversed recordings keep their original
+raw samples, and refitting or smoothing follows the reversed direction.
+
+Right-click a preset move for **Auto time** and **Convert to keys**. Right-click
+empty space for **Add marker at playhead**.
 
 ### Markers
 

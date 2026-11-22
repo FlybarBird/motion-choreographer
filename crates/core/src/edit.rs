@@ -2,8 +2,8 @@
 //! without a window. Each returns the new song or a typed refusal that the app
 //! shows as the reason a drag will not land.
 
-use crate::compile::{compile, refresh_auto, suggested_duration};
-use crate::eval::{ease_keys, preset_ease, split_keys, Evaluator};
+use crate::compile::{compile, move_endpoints, refresh_auto, suggested_duration};
+use crate::eval::{ease_keys, preset_ease, reverse_keys, split_keys, Evaluator};
 use crate::framing::FocusMode;
 use crate::pose::{Axis, Preset, Project};
 use crate::song::{
@@ -29,6 +29,7 @@ pub enum Refusal {
     NoSuchCamera,
     InvalidDuration,
     ElevationMotionLimit,
+    NotAMove,
 }
 
 impl fmt::Display for Refusal {
@@ -38,6 +39,7 @@ impl fmt::Display for Refusal {
             Refusal::Invalid(i) => write!(f, "{i}"),
             Refusal::NotAPresetMove => write!(f, "Only a preset move has this setting"),
             Refusal::NotKeys => write!(f, "Only a keys clip has keys"),
+            Refusal::NotAMove => write!(f, "Select a preset move or a keys clip to reverse"),
             Refusal::ConvertFirst(a) => {
                 write!(f, "A preset move drives {} here. Convert it to keys to add a key", a.label().to_lowercase())
             }
@@ -123,6 +125,7 @@ pub fn insert_camera_control(
         body,
         accepted: None,
         recorded_pass: None,
+        recorded_reversed: false,
     });
     grow(&mut next, end);
     Ok((finish(next, project)?, id))
@@ -184,6 +187,7 @@ pub fn insert_preset_move_timed(
         },
         accepted: None,
         recorded_pass: None,
+        recorded_reversed: false,
     };
     next.motion.push(clip);
     grow(&mut next, end);
@@ -220,6 +224,7 @@ pub fn insert_marked_move(
         },
         accepted: None,
         recorded_pass: None,
+        recorded_reversed: false,
     });
     grow(&mut next, to_frame);
     Ok((finish(next, project)?, id))
@@ -555,6 +560,46 @@ pub fn convert_to_keys(song: &Song, project: &Project, id: &str) -> Edit {
     finish(next, project)
 }
 
+/// Reverse a move in place, at the same start and end frames.
+pub fn reverse_move(song: &Song, project: &Project, id: &str) -> Edit {
+    let original = song.motion_clip(id).ok_or(Refusal::NotFound)?;
+    let mut next = song.clone();
+    let clip = motion_mut(&mut next, id)?;
+    match &mut clip.body {
+        ClipBody::PresetMove { auto_duration, from, to, ease } => {
+            let focus = to.focus();
+            let old_start = match from {
+                FromPose::Pinned(preset) => preset.clone(),
+                FromPose::Linked(_) => {
+                    let (pose, _) = move_endpoints(song, original).ok_or(Refusal::NotAPresetMove)?;
+                    PresetRef { name: "Original start".into(), pose, autofocus: focus, ..Default::default() }
+                }
+            };
+            *from = FromPose::Pinned(std::mem::replace(to, old_start));
+            if to.focus() != focus {
+                to.focus_override = Some(focus);
+            }
+            *ease = match *ease {
+                Ease::EaseIn => Ease::EaseOut,
+                Ease::EaseOut => Ease::EaseIn,
+                other => other,
+            };
+            // Keep the cue's duration even if the rig limits have changed since it was timed.
+            *auto_duration = false;
+        }
+        ClipBody::Keys { curves } => {
+            for keys in curves.values_mut() {
+                *keys = reverse_keys(keys, clip.duration_frames);
+            }
+            if clip.recorded_pass.is_some() {
+                clip.recorded_reversed = !clip.recorded_reversed;
+            }
+        }
+        _ => return Err(Refusal::NotAMove),
+    }
+    finish(next, project)
+}
+
 fn insert_key_sorted(keys: &mut Vec<Key>, at: i64, fallback: f64) {
     if keys.iter().any(|k| k.frame == at) {
         return;
@@ -673,6 +718,7 @@ pub fn add_key(song: &Song, project: &Project, camera: &str, axes: &[Axis], fram
             body: ClipBody::Keys { curves },
             accepted: None,
             recorded_pass: None,
+            recorded_reversed: false,
         });
         grow(&mut next, frame + duration);
     }
@@ -1085,6 +1131,7 @@ pub fn punch_keys(
                 body: ClipBody::Keys { curves: left_curves },
                 accepted: None,
                 recorded_pass: old.recorded_pass.clone(),
+                recorded_reversed: old.recorded_reversed,
             });
         }
         if !right_curves.is_empty() {
@@ -1098,6 +1145,7 @@ pub fn punch_keys(
                 body: ClipBody::Keys { curves: right_curves },
                 accepted: None,
                 recorded_pass: old.recorded_pass.clone(),
+                recorded_reversed: old.recorded_reversed,
             });
         }
     }
@@ -1112,6 +1160,7 @@ pub fn punch_keys(
         body: ClipBody::Keys { curves },
         accepted: None,
         recorded_pass: pass,
+        recorded_reversed: false,
     });
     grow(&mut next, end);
     Ok((finish(next, project)?, id))
@@ -1282,6 +1331,63 @@ mod tests {
                 assert_eq!(pose_at(&song, CAM, f), pose_at(&keyed, CAM, f), "frame {f} ease {ease:?}");
             }
         }
+    }
+
+    #[test]
+    fn reversing_a_linked_preset_keeps_its_frames_and_mirrors_its_motion() {
+        let (mut song, p) = base();
+        song.home_pose = preset("Home", -15.0, 60.0).pose;
+        let (song, id) = insert_preset_move(&song, &p, &preset("High", 35.0, 250.0), 100).unwrap();
+        for ease in Ease::ALL {
+            let song = set_ease(&song, &p, &id, ease).unwrap();
+            let original = song.motion_clip(&id).unwrap();
+            let reversed = reverse_move(&song, &p, &id).unwrap();
+            let reverse = reversed.motion_clip(&id).unwrap();
+            assert_eq!((reverse.start_frame, reverse.duration_frames), (original.start_frame, original.duration_frames));
+            let (from, to) = move_endpoints(&reversed, reverse).unwrap();
+            assert_eq!((from, to), (preset("High", 35.0, 250.0).pose, song.home_pose));
+            let forward = Evaluator::new(&song, CAM);
+            let backward = Evaluator::new(&reversed, CAM);
+            for step in 0..=2 * original.duration_frames {
+                let elapsed = step as f64 / 2.0;
+                let original_pose = forward.pose_at(original.end_frame() as f64 - elapsed);
+                let reverse_pose = backward.pose_at(reverse.start_frame as f64 + elapsed);
+                for axis in Axis::ALL {
+                    assert!((original_pose.get(axis) - reverse_pose.get(axis)).abs() < 1e-9, "{ease:?}, {axis:?}");
+                }
+            }
+            assert!(compile(&reversed, &p)
+                .blocking(&reversed)
+                .any(|i| { matches!(i, crate::compile::Issue::Jump { clip, axis: Axis::Elevation, .. } if *clip == id) }));
+        }
+    }
+
+    #[test]
+    fn reversing_a_recorded_clip_mirrors_holds_handles_and_padding_and_retains_the_take() {
+        let (song, p) = base();
+        let mut keys = vec![
+            Key::new(2, 10.0, Interp::Hold),
+            Key::new(5, 12.0, Interp::Bezier),
+            Key::new(15, 18.0, Interp::Linear),
+            Key::new(18, 20.0, Interp::Bezier),
+        ];
+        keys[1].out_handle = [3.0, 4.0];
+        keys[2].in_handle = [-2.0, -0.25];
+        let (song, id) = punch_keys(&song, &p, CAM, 100, 25, [(Axis::Pan, keys)].into(), Some("pass-1".into())).unwrap();
+        let reversed = reverse_move(&song, &p, &id).unwrap();
+        let clip = reversed.motion_clip(&id).unwrap();
+        assert_eq!(clip.recorded_pass.as_deref(), Some("pass-1"));
+        assert!(clip.recorded_reversed);
+        assert_eq!(Evaluator::new(&reversed, CAM).rest(Axis::Pan), 20.0);
+        let forward = Evaluator::new(&song, CAM);
+        let backward = Evaluator::new(&reversed, CAM);
+        for step in 0..=50 {
+            let elapsed = step as f64 / 2.0;
+            assert!((forward.axis_at(Axis::Pan, 125.0 - elapsed) - backward.axis_at(Axis::Pan, 100.0 + elapsed)).abs() < 1e-9);
+        }
+        let reloaded: Song = serde_json::from_str(&serde_json::to_string(&reversed).unwrap()).unwrap();
+        assert_eq!(reloaded, reversed);
+        assert_eq!(reverse_move(&reloaded, &p, &id).unwrap(), song);
     }
 
     #[test]

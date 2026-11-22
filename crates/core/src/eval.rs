@@ -17,6 +17,7 @@ pub fn segment_value(k0: &Key, k1: &Key, frame: f64) -> f64 {
     }
     match k0.interp {
         Interp::Hold => k0.value,
+        Interp::HoldNext => k1.value,
         Interp::Linear => k0.value + (k1.value - k0.value) * ((frame - f0) / len),
         Interp::Bezier => {
             let (p0, p1, p2, p3) = control_points(k0, k1);
@@ -307,6 +308,31 @@ pub fn pose_at_f(song: &Song, camera: &str, frame: f64) -> Pose {
     Evaluator::new(song, camera).pose_at(frame)
 }
 
+/// Reflect a curve in time, including its implicit holds at either end of the clip.
+pub fn reverse_keys(keys: &[Key], duration: i64) -> Vec<Key> {
+    let Some(last) = keys.last() else { return Vec::new() };
+    keys.iter()
+        .enumerate()
+        .rev()
+        .map(|(i, key)| {
+            // The segment that led into this key is now the one leaving it.
+            let interp = match i.checked_sub(1).map(|previous| keys[previous].interp) {
+                Some(Interp::Hold) => Interp::HoldNext,
+                Some(Interp::HoldNext) => Interp::Hold,
+                Some(interp) => interp,
+                None => last.interp,
+            };
+            Key {
+                frame: duration - key.frame,
+                value: key.value,
+                interp,
+                in_handle: [-key.out_handle[0], key.out_handle[1]],
+                out_handle: [-key.in_handle[0], key.in_handle[1]],
+            }
+        })
+        .collect()
+}
+
 /// Split a key list at a clip-local frame so both halves reproduce the original
 /// curve exactly. The left half ends with a key at `at`; the right half starts
 /// with one. Right-half frames stay in the original clip-local numbering.
@@ -347,6 +373,10 @@ pub fn split_keys(keys: &[Key], at: i64) -> (Vec<Key>, Vec<Key>) {
         Interp::Hold => {
             left.push(Key::new(at, k0.value, Interp::Hold));
             right.insert(0, Key::new(at, k0.value, Interp::Hold));
+        }
+        Interp::HoldNext => {
+            left.push(Key::new(at, k1.value, Interp::HoldNext));
+            right.insert(0, Key::new(at, k1.value, Interp::HoldNext));
         }
         Interp::Linear => {
             let v = segment_value(&k0, &k1, at as f64);
@@ -406,6 +436,7 @@ mod tests {
             },
             accepted: None,
             recorded_pass: None,
+            recorded_reversed: false,
         }
     }
 
@@ -432,6 +463,7 @@ mod tests {
             body: ClipBody::Keys { curves: [(Axis::Pan, keys)].into() },
             accepted: None,
             recorded_pass: pass.map(str::to_string),
+            recorded_reversed: false,
         }
     }
 

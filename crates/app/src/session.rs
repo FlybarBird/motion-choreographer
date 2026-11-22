@@ -619,6 +619,12 @@ impl Session {
         }
     }
 
+    pub fn reverse_move(&mut self, id: &str) {
+        if self.edit(|song, project| ptz_core::edit::reverse_move(song, project, id)) {
+            self.timeline.key_selection.retain(|(clip, _, _)| clip != id);
+        }
+    }
+
     pub fn undo(&mut self) {
         if let Err(why) = self.can_edit() {
             self.toast(why, true);

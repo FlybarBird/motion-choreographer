@@ -4,7 +4,7 @@
 use ptz_core::eval::keys_value;
 use ptz_core::fit::{default_tolerance, fit_keys, overruns, smooth_to_limits};
 use ptz_core::pose::{Axis, AxisLimits, Pose};
-use ptz_core::song::Key;
+use ptz_core::song::{Key, MotionClip};
 use ptz_core::time::FrameRate;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -30,6 +30,20 @@ pub struct RecordedPass {
 impl RecordedPass {
     pub fn frames(&self) -> usize {
         self.samples.values().map(|v| v.len()).min().unwrap_or(0)
+    }
+
+    /// Return a whole take's raw samples in the order this clip plays them.
+    pub(crate) fn samples_for_clip(mut self, clip: &MotionClip) -> Option<BTreeMap<Axis, Vec<f64>>> {
+        if !clip.axes.iter().all(|axis| self.samples.get(axis).is_some_and(|v| v.len() as i64 == clip.duration_frames + 1)) {
+            return None;
+        }
+        self.samples.retain(|axis, _| clip.has_axis(*axis));
+        if clip.recorded_reversed {
+            for values in self.samples.values_mut() {
+                values.reverse();
+            }
+        }
+        Some(self.samples)
     }
 }
 

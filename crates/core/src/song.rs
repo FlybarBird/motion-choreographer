@@ -160,17 +160,19 @@ impl FromPose {
 #[serde(rename_all = "snake_case")]
 pub enum Interp {
     Hold,
+    HoldNext,
     Linear,
     #[default]
     Bezier,
 }
 
 impl Interp {
-    pub const ALL: [Interp; 3] = [Interp::Hold, Interp::Linear, Interp::Bezier];
+    pub const ALL: [Interp; 4] = [Interp::Hold, Interp::HoldNext, Interp::Linear, Interp::Bezier];
 
     pub fn label(self) -> &'static str {
         match self {
             Interp::Hold => "Hold",
+            Interp::HoldNext => "Hold next",
             Interp::Linear => "Linear",
             Interp::Bezier => "Bezier",
         }
@@ -251,6 +253,9 @@ pub struct MotionClip {
     /// Set on clips written by a record pass; names the raw sample file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recorded_pass: Option<String>,
+    /// Play the raw samples in reverse order when refitting or smoothing this take.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub recorded_reversed: bool,
 }
 
 impl MotionClip {

@@ -561,6 +561,12 @@ fn context_menu(resp: &egui::Response, s: &mut Session, song: &Song, layout: &La
                     s.edit(|song, project| ptz_core::edit::convert_to_keys(song, project, &id));
                     ui.close();
                 }
+            }
+            if !clip.is_control() {
+                if ui.button("Reverse move").clicked() {
+                    s.reverse_move(&clip.id);
+                    ui.close();
+                }
                 ui.separator();
             }
         }
